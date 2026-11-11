@@ -188,7 +188,7 @@ impl ColumnLayout {
     }
     /// The index of the section holding block `y`, if the column holds it.
     pub fn section_index(self, y: i32) -> Option<usize> {
-        usize::try_from((y - self.min_y) >> 4)
+        usize::try_from((i64::from(y) - i64::from(self.min_y)) >> 4)
             .ok()
             .filter(|&s| s < self.sections)
     }
@@ -461,7 +461,7 @@ impl Chunk {
     /// The index of the section holding block `y`, if the column holds it.
     #[inline]
     pub fn section_index(&self, y: i32) -> Option<usize> {
-        usize::try_from((y - self.min_y) >> 4)
+        usize::try_from((i64::from(y) - i64::from(self.min_y)) >> 4)
             .ok()
             .filter(|&s| s < self.sections.len())
     }
