@@ -15,12 +15,16 @@ Work only in this repository.
   - water tint from a fluid modifier whose colormap depends only on the biome;
   - sky, fog and water fog colour from `biome_modifiers` (`biome_attributes.rs`): plain colour or
     number override layers, `base` then `post_process`, highest priority wins.
-- Read but not applied: block, item and fluid modifier effects, `sprites`, `creative_tabs`,
+- Block modifier `colormap` tints (`MeshTables::apply_polytone_block_tints`): a flat colour or a
+  biome-only colormap per tint index 0 and 1, blended like vanilla biome tints. Targets by id, `#tag`
+  and regex.
+- Read but not applied: block `render_type`, `offset_type` and the other block fields, item modifier
+  effects, fluid modifiers other than the water tint, `sprites`, `creative_tabs`,
   `particles`, `pack` config, dimension modifiers, `colors.json` custom colours.
 
 ## Next, in rough order
 
-1. Block modifier effects (tint, render type, offset) through the mesher's tint hook.
+1. Block modifier effects other than the tint (render type, offset); block tints that read the position.
 2. Item modifier effects (tint, rarity and name colour).
 3. Position-dependent colormaps (`POS_X`, `POS_Z`, ...), now logged as "isn't applied yet".
 4. Refused colormap features: `color_modifier`, `biome_id`, `legacy_temperature`, `grid`, `damage`.

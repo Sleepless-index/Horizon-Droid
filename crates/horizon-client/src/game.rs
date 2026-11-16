@@ -42,6 +42,17 @@ macro_rules! world_biomes {
 }
 
 /// The world's packs' content files, as a field-level borrow (see the macros).
+fn polytone_block_tints(tables: &mut MeshTables, facts: &BlockFacts, root: &std::path::Path) {
+    let tags = std::cell::OnceCell::new();
+    tables.apply_polytone_block_tints(facts, root, &|tag, block| {
+        tags.get_or_init(|| {
+            horizon_items::items::load_tags(root, "block", &horizon_world::loot::PackOverlay::NONE)
+                .unwrap_or_default()
+        })
+        .get(tag)
+        .is_some_and(|members| members.contains(block))
+    });
+}
 fn pack_files(world_tables: &Option<WorldTables>) -> horizon_world::loot::PackOverlay<'_> {
     match world_tables {
         Some(t) => horizon_world::loot::PackOverlay { files: &t.files },
@@ -1973,7 +1984,9 @@ impl PackResources {
         light: Arc<LightTables>,
     ) -> Result<Self> {
         let visibility = models::load_visibility(root, assets.registry)?;
-        let tables = Arc::new(MeshTables::new(&assets, &render, facts, visibility)?);
+        let mut tables = MeshTables::new(&assets, &render, facts, visibility)?;
+        polytone_block_tints(&mut tables, facts, root);
+        let tables = Arc::new(tables);
         let item_renderer = horizon_client::item_render::ItemRenderer::load_with_library(
             root,
             render.model_library.clone(),
@@ -19918,7 +19931,9 @@ fn load_resources(
     if let Some(folder) = launch_world {
         world_loading::preload_launch_world(folder, &root, assets.registry, biomes.clone());
     }
-    let tables = Arc::new(MeshTables::new(&assets, &render, &facts, visibility)?);
+    let mut tables = MeshTables::new(&assets, &render, &facts, visibility)?;
+    polytone_block_tints(&mut tables, &facts, &root);
+    let tables = Arc::new(tables);
     let pack = PackResources::assemble(
         &root,
         assets.clone(),

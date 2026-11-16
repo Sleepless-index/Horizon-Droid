@@ -8,13 +8,16 @@ mod lighting;
 mod sides;
 use crate::{
     assets::{Assets, RenderAssets},
-    biome::Biomes,
+    biome::{BiomeInfo, Biomes},
     blocks::{BlockFacts, RenderShape},
     chunk::{Chunk, MIN_Y},
     models::catalog::BakedFace,
 };
 use horizon_core::{
     biome::BiomeZoom, geometry::Direction, position::BlockPos, random::position_seed,
+};
+use horizon_polytone::{
+    Modifiers, block_modifiers::BlockModifier, colormaps::Colormaps, tint::ColorSource,
 };
 use horizon_world::{
     block_render::FaceVisibility,
@@ -422,6 +425,72 @@ fn visibility_reusing(pad: &Padded, info: &[Info], stack: &mut Vec<usize>) -> u6
 mod particle_tests;
 #[cfg(test)]
 mod visibility_tests;
+#[cfg(test)]
+mod custom_tint_tests {
+    use super::*;
+
+    fn png(rgb: [u8; 3]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut encoder = png::Encoder::new(&mut out, 2, 1);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&[rgb[0], rgb[1], rgb[2], 0, 0, 0])
+            .unwrap();
+        out
+    }
+
+    fn pack(name: &str) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("mesher-custom-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("assets/foo/polytone/block_modifiers");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("moss.json"),
+            r#"{"colormap": {"default_color": 1, "x_axis": "TEMPERATURE", "y_axis": 0}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("moss.png"), png([200, 10, 20])).unwrap();
+        root
+    }
+
+    #[test]
+    fn a_slot_samples_its_colormap_by_the_biomes_temperature() {
+        let root = pack("sample");
+        let set = BlockModifier::read(&root);
+        let entry = set.resolve_index("foo:moss", &|_| false).unwrap();
+        let custom = CustomTints {
+            maps: Colormaps::read(&root),
+            set,
+            slots: vec![(entry, 0)],
+        };
+        assert_eq!(custom.len(), 1);
+        assert_eq!(custom.sample(0, 0.0, 0.5), 0x00_0000);
+        assert_eq!(custom.sample(0, 1.0, 0.5), 0xC8_0A14);
+        assert_eq!(custom.default_color(0), custom.sample(0, 0.8, 0.4));
+        assert_eq!(custom.sample(7, 0.5, 0.5), 0xFF_FFFF);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resolver_slots_keep_the_built_in_four_apart_from_custom_ones() {
+        let slots: Vec<usize> = [
+            Resolver::Grass,
+            Resolver::Foliage,
+            Resolver::Dry,
+            Resolver::Water,
+            Resolver::Custom(0),
+            Resolver::Custom(3),
+        ]
+        .into_iter()
+        .map(Resolver::slot)
+        .collect();
+        assert_eq!(slots, [0, 1, 2, 3, 4, 7]);
+    }
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tint {
     None,
@@ -437,6 +506,7 @@ enum Tint {
     Constant(u32),
     Redstone(u8),
     Stem(u8),
+    Custom(u16),
 }
 /// Per-state data the mesher needs on every block, flattened for speed.
 #[derive(Clone, Copy)]
@@ -499,6 +569,38 @@ pub struct MeshTables {
     lava_still: u16,
     lava_flow: u16,
     animated_layers: Vec<bool>,
+    custom: CustomTints,
+}
+#[derive(Default)]
+struct CustomTints {
+    maps: Colormaps,
+    set: Modifiers<BlockModifier>,
+    slots: Vec<(usize, i32)>,
+}
+impl CustomTints {
+    fn len(&self) -> usize {
+        self.slots.len()
+    }
+    fn sample(&self, slot: u16, temperature: f64, downfall: f64) -> u32 {
+        let Some(&(entry, index)) = self.slots.get(usize::from(slot)) else {
+            return 0xFF_FFFF;
+        };
+        self.set
+            .get(entry)
+            .and_then(|modifier| modifier.tint.as_ref())
+            .and_then(|tint| tint.biome_color(index, &self.maps, temperature, downfall))
+            .map_or(0xFF_FFFF, |color| color & 0xFF_FFFF)
+    }
+    fn color(&self, slot: u16, biome: &BiomeInfo) -> u32 {
+        self.sample(
+            slot,
+            f64::from(biome.temperature),
+            f64::from(biome.downfall),
+        )
+    }
+    fn default_color(&self, slot: u16) -> u32 {
+        self.sample(slot, 0.8, 0.4)
+    }
 }
 fn stem_color(age: u8) -> u32 {
     let a = u32::from(age);
@@ -513,6 +615,67 @@ fn redstone_color(power: u8) -> u32 {
     ((r * 255.0) as u32) << 16 | ((g * 255.0) as u32) << 8 | (b * 255.0) as u32
 }
 impl MeshTables {
+    pub fn apply_polytone_block_tints(
+        &mut self,
+        facts: &BlockFacts,
+        root: &std::path::Path,
+        block_in_tag: &dyn Fn(&str, &str) -> bool,
+    ) {
+        let set = BlockModifier::read(root);
+        if set.is_empty() {
+            return;
+        }
+        let maps = Colormaps::read(root);
+        let mut slots: Vec<(usize, i32)> = Vec::new();
+        let mut warned = std::collections::HashSet::new();
+        for (id, state) in facts.states.iter().enumerate() {
+            let name = if state.name.contains(':') {
+                state.name.to_string()
+            } else {
+                format!("minecraft:{}", state.name)
+            };
+            let Some(entry) = set.resolve_index(&name, &|tag| block_in_tag(tag, &name)) else {
+                continue;
+            };
+            let Some(tint) = set.get(entry).and_then(|m| m.tint.as_ref()) else {
+                continue;
+            };
+            let Some(info) = self.info.get_mut(id) else {
+                continue;
+            };
+            for index in 0..2i32 {
+                let replacement = match tint.source(index) {
+                    None => continue,
+                    Some(ColorSource::Flat(color)) => Tint::Constant(color & 0xFF_FFFF),
+                    Some(source) if source.depends_only_on_biome(&maps) => {
+                        let key = (entry, index);
+                        let slot = match slots.iter().position(|s| *s == key) {
+                            Some(slot) => slot,
+                            None => {
+                                slots.push(key);
+                                slots.len() - 1
+                            }
+                        };
+                        let Ok(slot) = u16::try_from(slot) else {
+                            continue;
+                        };
+                        Tint::Custom(slot)
+                    }
+                    Some(_) => {
+                        if warned.insert(name.clone()) {
+                            log::warn!(
+                                "block_modifiers: the colormap of {name} reads the position or a missing colormap, which isn't applied yet"
+                            );
+                        }
+                        continue;
+                    }
+                };
+                info.tints[index as usize] = replacement;
+                info.tint_count = info.tint_count.max(index as u8 + 1);
+            }
+        }
+        self.custom = CustomTints { maps, set, slots };
+    }
     pub fn new(
         assets: &Assets,
         render: &RenderAssets,
@@ -661,6 +824,7 @@ impl MeshTables {
             lava_still: layer("minecraft:block/lava_still")?,
             lava_flow: layer("minecraft:block/lava_flow")?,
             animated_layers,
+            custom: CustomTints::default(),
         })
     }
     /// Whether a terrain sprite layer has an animated clip.
@@ -701,6 +865,7 @@ impl MeshTables {
             Tint::Constant(c) => c,
             Tint::Redstone(p) => redstone_color(p),
             Tint::Stem(age) => stem_color(age),
+            Tint::Custom(slot) => self.custom.default_color(slot),
         })
     }
     /// `TerrainParticle`'s colour: tint source 0's `colorAsTerrainParticle`,
@@ -722,7 +887,7 @@ impl MeshTables {
         }
         let [x, y, z] = pos;
         let origin = [x >> 4, z >> 4, y & !15];
-        let mut tints = Tints::new(region, biomes, zoom, blend_radius, origin);
+        let mut tints = Tints::new(region, biomes, zoom, blend_radius, origin, &self.custom);
         Mesher::tint(info, 0, &mut tints, [x & 15, y & 15, z & 15])
     }
     /// `BlockColors` for each of the state's tint indices at `pos`, as the
@@ -740,7 +905,7 @@ impl MeshTables {
         let sources = self.info.get(state.0 as usize).map(|info| {
             let [x, y, z] = pos;
             let origin = [x >> 4, z >> 4, y & !15];
-            let mut tints = Tints::new(region, biomes, zoom, blend_radius, origin);
+            let mut tints = Tints::new(region, biomes, zoom, blend_radius, origin, &self.custom);
             let local = [x & 15, y & 15, z & 15];
             let colors = [0, 1].map(|i| Mesher::tint(info, i, &mut tints, local));
             (colors, i32::from(info.tint_count))
@@ -954,12 +1119,24 @@ enum Resolver {
     Foliage,
     Dry,
     Water,
+    Custom(u16),
+}
+impl Resolver {
+    fn slot(self) -> usize {
+        match self {
+            Resolver::Grass => 0,
+            Resolver::Foliage => 1,
+            Resolver::Dry => 2,
+            Resolver::Water => 3,
+            Resolver::Custom(slot) => 4 + usize::from(slot),
+        }
+    }
 }
 /// Biome tints of one block layer: the zoomed biome of every block of the
 /// layer plus the blend radius around it, and the blended colours per column.
 struct Layer {
     zoomed: Vec<u16>,
-    colors: [[u32; 256]; 4],
+    colors: Vec<[u32; 256]>,
 }
 /// `ClientLevel.calculateBlockTint` behind a per-layer `BlockTintCache`: each
 /// block averages the colours of the biomes `BiomeManager.getBiome` picks (the
@@ -971,6 +1148,7 @@ struct Tints<'a> {
     zoom: BiomeZoom,
     radius: i32,
     plains: u16,
+    custom: &'a CustomTints,
     /// Chunk x, chunk z and the section's lowest block y.
     origin: [i32; 3],
     layers: [Option<Box<Layer>>; 16],
@@ -982,6 +1160,7 @@ impl<'a> Tints<'a> {
         zoom: BiomeZoom,
         radius: i32,
         origin: [i32; 3],
+        custom: &'a CustomTints,
     ) -> Self {
         Self {
             region,
@@ -989,6 +1168,7 @@ impl<'a> Tints<'a> {
             zoom,
             radius: radius.clamp(0, 7),
             plains: biomes.id("minecraft:plains"),
+            custom,
             origin,
             layers: Default::default(),
         }
@@ -1000,11 +1180,11 @@ impl<'a> Tints<'a> {
         let layer = self.layers[y as usize].get_or_insert_with(|| {
             Box::new(Layer {
                 zoomed: vec![NO_BIOME; dim * dim],
-                colors: [[UNSET; 256]; 4],
+                colors: vec![[UNSET; 256]; 4 + self.custom.len()],
             })
         });
         let slot = (z * 16 + x) as usize;
-        let cached = layer.colors[resolver as usize][slot];
+        let cached = layer.colors[resolver.slot()][slot];
         if cached != UNSET {
             return cached;
         }
@@ -1039,6 +1219,7 @@ impl<'a> Tints<'a> {
                     Resolver::Foliage => self.biomes.get(biome).foliage,
                     Resolver::Dry => self.biomes.get(biome).dry_foliage,
                     Resolver::Water => self.biomes.get(biome).water,
+                    Resolver::Custom(slot) => self.custom.color(slot, self.biomes.get(biome)),
                 };
                 red += c >> 16 & 255;
                 green += c >> 8 & 255;
@@ -1047,7 +1228,7 @@ impl<'a> Tints<'a> {
         }
         let n = ((2 * r + 1) * (2 * r + 1)) as u32;
         let color = (red / n) << 16 | (green / n) << 8 | (blue / n);
-        layer.colors[resolver as usize][slot] = color;
+        layer.colors[resolver.slot()][slot] = color;
         color
     }
 }
@@ -1113,6 +1294,7 @@ impl Mesher<'_> {
             self.zoom,
             self.blend_radius,
             [center.x, center.z, base_y],
+            &self.tables.custom,
         );
         let info = &self.tables.info;
         let catalog = &self.render.model_catalog;
@@ -1263,6 +1445,7 @@ impl Mesher<'_> {
             Tint::LilyPad => 0x20_8030,
             Tint::Redstone(p) => redstone_color(p),
             Tint::Stem(age) => stem_color(age),
+            Tint::Custom(slot) => tints.get(Resolver::Custom(slot), x, y, z),
         })
     }
     #[allow(clippy::too_many_arguments)]

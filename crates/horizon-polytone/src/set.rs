@@ -18,14 +18,22 @@ impl<T> Modifiers<T> {
         self.entries.push((targets, priority, modifier));
     }
 
-    pub fn resolve(&self, id: &str, in_tag: &dyn Fn(&str) -> bool) -> Option<&T> {
-        let mut best: Option<&(Targets, i32, T)> = None;
-        for entry in &self.entries {
+    pub fn resolve_index(&self, id: &str, in_tag: &dyn Fn(&str) -> bool) -> Option<usize> {
+        let mut best: Option<(usize, i32)> = None;
+        for (index, entry) in self.entries.iter().enumerate() {
             if entry.0.matches(id, in_tag) && best.is_none_or(|b| entry.1 > b.1) {
-                best = Some(entry);
+                best = Some((index, entry.1));
             }
         }
-        best.map(|e| &e.2)
+        best.map(|b| b.0)
+    }
+
+    pub fn get(&self, index: usize) -> Option<&T> {
+        self.entries.get(index).map(|e| &e.2)
+    }
+
+    pub fn resolve(&self, id: &str, in_tag: &dyn Fn(&str) -> bool) -> Option<&T> {
+        self.get(self.resolve_index(id, in_tag)?)
     }
 
     pub fn into_resolved(self, id: &str, in_tag: &dyn Fn(&str) -> bool) -> Option<T> {
@@ -73,6 +81,18 @@ mod tests {
         );
         assert_eq!(set.len(), 3);
         assert_eq!(set.iter().count(), 3);
+    }
+
+    #[test]
+    fn an_index_names_the_winning_entry_and_reads_it_back() {
+        let mut set = Modifiers::default();
+        set.push(targets(json!(".*")), 0, "everything");
+        set.push(targets(json!("minecraft:stone")), 5, "stone");
+        let index = set.resolve_index("minecraft:stone", &|_| false).unwrap();
+        assert_eq!(index, 1);
+        assert_eq!(set.get(index), Some(&"stone"));
+        assert_eq!(set.get(9), None);
+        assert_eq!(set.resolve_index("minecraft:dirt", &|_| false), Some(0));
     }
 
     #[test]
