@@ -543,9 +543,7 @@ impl Item {
             | Item::AutoReconnect
             | Item::MouseTweaks
             | Item::Sort
-            | Item::PackBrowser => {
-                Some(Cost::None)
-            }
+            | Item::PackBrowser => Some(Cost::None),
             _ => None,
         }
     }

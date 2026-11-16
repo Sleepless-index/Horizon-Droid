@@ -2277,6 +2277,13 @@ impl OptionsUi {
     }
     /// Whether the resource pack screen is open (not Create World's data packs on the same
     /// page).
+    fn cycle_extra(&mut self, s: &mut Settings, item: crate::extras::Item, back: bool) {
+        item.cycle(&mut s.extras, back);
+        if self.pack_browser != s.extras.pack_browser {
+            self.pack_browser = s.extras.pack_browser;
+            self.pack_screen = None;
+        }
+    }
     pub fn resource_packs_open(&self) -> bool {
         self.page() == Page::Packs && self.data_pack_dir.is_none()
     }
@@ -4347,7 +4354,7 @@ impl OptionsUi {
                             if let Some(name) = item.key_name() {
                                 self.selected_key = Some(name);
                             } else {
-                                item.cycle(&mut s.extras, right);
+                                self.cycle_extra(s, item, right);
                                 events.push(Event::Changed);
                             }
                         }
@@ -4683,7 +4690,7 @@ impl OptionsUi {
                 self.cycle_option(s, opt, amount > 0.0, framebuffer)
             }
             Some(HoveredControl::Extra(item)) if amount != 0.0 => {
-                item.cycle(&mut s.extras, amount > 0.0);
+                self.cycle_extra(s, item, amount > 0.0);
                 vec![Event::Changed]
             }
             Some(_) => Vec::new(),
@@ -5314,7 +5321,7 @@ impl OptionsUi {
                             if let Some(name) = item.key_name() {
                                 self.selected_key = Some(name);
                             } else {
-                                item.cycle(&mut s.extras, shift);
+                                self.cycle_extra(s, item, shift);
                                 events.push(Event::Changed);
                             }
                         }
@@ -5454,6 +5461,18 @@ impl OptionsUi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turning_on_the_pack_browser_reaches_the_pack_screen_without_reopening_options() {
+        let mut ui = OptionsUi::default();
+        let mut s = Settings::default();
+        assert!(!ui.pack_browser);
+        ui.cycle_extra(&mut s, crate::extras::Item::PackBrowser, false);
+        assert!(s.extras.pack_browser);
+        assert!(ui.pack_browser);
+        ui.cycle_extra(&mut s, crate::extras::Item::PackBrowser, false);
+        assert!(!ui.pack_browser);
+    }
 
     #[test]
     fn accessibility_sliders_and_toggles_survive_options_round_trip() {

@@ -268,7 +268,12 @@ fn cache_budgets(mib: u32) -> (usize, usize) {
     let automatic_mib = 48;
     #[cfg(not(all(target_os = "android", target_pointer_width = "32")))]
     let automatic_mib = 80;
-    let bytes = if mib == 0 { automatic_mib } else { mib.min(1024) } as usize * (1 << 20);
+    let bytes = if mib == 0 {
+        automatic_mib
+    } else {
+        mib.min(1024)
+    } as usize
+        * (1 << 20);
     (bytes / 5, bytes - bytes / 5)
 }
 #[cfg(test)]
