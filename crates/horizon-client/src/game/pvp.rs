@@ -328,7 +328,7 @@ impl Game<'_> {
             let names = &self.pack.names;
             w.refresh(|effects, lines| {
                 for &(id, amplifier, secs) in effects {
-                    let key = horizon_client_core::potions::description_id(id);
+                    let key = horizon_client::potions::description_id(id);
                     let mut name = names.display_get(&key).unwrap_or_else(|| id.to_owned());
                     // EffectsInInventory.getEffectName: the level from II to X.
                     if (1..=9).contains(&amplifier) {
