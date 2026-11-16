@@ -1106,7 +1106,10 @@ class LauncherOverhaulTests(unittest.TestCase):
 
         bundled_rs = (ROOT / "crates/horizon-client/src/game/android_bundled.rs").read_text(encoding="utf-8")
         self.assertNotIn("game.slot_view(usize::from(game.selected) + 36)", bundled_rs)
-        self.assertIn("game.inventory.get(game.selected).and_then(Option::as_ref).cloned()", bundled_rs)
+        self.assertIn(
+            "game.inventory.get(game.selected).and_then(Option::as_ref).cloned()",
+            "".join(bundled_rs.split()),  # rustfmt may wrap the call chain
+        )
 
         catalog_rs = (ROOT / "crates/horizon-client/src/android/catalog.rs").read_text(encoding="utf-8")
         self.assertIn("Page::Compiler", catalog_rs)
