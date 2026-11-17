@@ -20,14 +20,16 @@ Work only in this repository.
   and regex.
 - Item modifier `colormap` tints (`item_tints.rs`, applied in `ItemRenderer::resolve`): tint indices 0 to 4 replace the
   item model's tints, sampled at the owner's position with plains climate. Targets by id, `#tag` and regex.
+- Item modifier `bar_color` (a flat colour only; the `damage` type and textures leave vanilla's bar) and `rarity`
+  (name colour of the held-item name, tooltip and chat links).
 - Read but not applied: block `render_type`, `offset_type` and the other block fields, item modifier
-  effects other than the tint, fluid modifiers other than the water tint, `sprites`, `creative_tabs`,
+  effects other than the tint, flat `bar_color` and `rarity`, fluid modifiers other than the water tint, `sprites`, `creative_tabs`,
   `particles`, `pack` config, dimension modifiers, `colors.json` custom colours.
 
 ## Next, in rough order
 
 1. Block modifier effects other than the tint (render type, offset); block tints that read the position.
-2. Item modifier effects other than the tint (bar colour, rarity and name colour, tooltips).
+2. Item modifier tooltips, textured `bar_color`, arm pose, armor/scope textures.
 3. Position-dependent colormaps (`POS_X`, `POS_Z`, ...), now logged as "isn't applied yet".
 4. Refused colormap features: `color_modifier`, `biome_id`, `legacy_temperature`, `grid`, `damage`.
 5. Biome layers that modify (`add`, `multiply`, `alpha_blend`...), `REMOVE`, colormap and expression

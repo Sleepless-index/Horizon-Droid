@@ -3,7 +3,8 @@ use std::path::Path;
 
 use crate::Modifiers;
 use crate::colormaps::{Colormaps, SampleContext};
-use crate::item_modifiers::ItemModifier;
+use crate::item_modifiers::{ItemModifier, Rarity};
+use crate::tint::ColorSource;
 
 const TINT_SLOTS: i32 = 5;
 
@@ -28,7 +29,9 @@ impl ItemTints {
         for item in items {
             let in_tag = |tag: &str| tags.get(tag).is_some_and(|members| members.contains(&item));
             if let Some(index) = set.resolve_index(&item, &in_tag)
-                && set.get(index).is_some_and(|m| m.tint.is_some())
+                && set
+                    .get(index)
+                    .is_some_and(|m| m.tint.is_some() || m.bar.is_some() || m.rarity.is_some())
             {
                 by_item.insert(item, index);
             }
@@ -40,6 +43,26 @@ impl ItemTints {
             set,
             maps: Colormaps::read(root),
             by_item,
+        })
+    }
+
+    fn modifier(&self, item: &str) -> Option<&ItemModifier> {
+        self.by_item.get(item).and_then(|i| self.set.get(*i))
+    }
+
+    pub fn bar_color(&self, item: &str) -> Option<u32> {
+        match self.modifier(item)?.bar.as_ref()?.source(0)? {
+            ColorSource::Flat(color) => Some(*color & 0xFF_FFFF),
+            _ => None,
+        }
+    }
+
+    pub fn rarity(&self, item: &str) -> Option<&'static str> {
+        Some(match self.modifier(item)?.rarity? {
+            Rarity::Common => "common",
+            Rarity::Uncommon => "uncommon",
+            Rarity::Rare => "rare",
+            Rarity::Epic => "epic",
         })
     }
 
@@ -107,6 +130,38 @@ mod tests {
         let mut short = vec![0x11223344];
         items.retint("foo:stick", [0.0; 3], &mut short, opaque);
         assert_eq!(short, vec![0x11223344, 0xFF336699_u32 as i32]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_flat_bar_colour_and_a_rarity_are_read_and_a_textured_bar_is_left_to_vanilla() {
+        let root = scratch("item-bar");
+        put(
+            &root,
+            "assets/foo/polytone/item_modifiers/pick.json",
+            r##"{"bar_color": "#00FFFF", "rarity": "epic"}"##,
+        );
+        put(
+            &root,
+            "assets/foo/polytone/item_modifiers/axe.json",
+            r##"{"bar_color": "damage"}"##,
+        );
+        let items = ItemTints::read(
+            &root,
+            [
+                "foo:pick".to_owned(),
+                "foo:axe".to_owned(),
+                "foo:none".to_owned(),
+            ]
+            .into_iter(),
+            &none,
+        )
+        .unwrap();
+        assert_eq!(items.bar_color("foo:pick"), Some(0x00FFFF));
+        assert_eq!(items.rarity("foo:pick"), Some("epic"));
+        assert_eq!(items.bar_color("foo:axe"), None);
+        assert_eq!(items.rarity("foo:axe"), None);
+        assert_eq!(items.bar_color("foo:none"), None);
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -1230,6 +1230,9 @@ impl Game<'_> {
             .with_component_fields(vec![("hover_event".into(), shown)])
     }
     pub(super) fn item_rarity(&self, item: &str) -> String {
+        if let Some(rarity) = self.pack.item_renderer.polytone_rarity(item) {
+            return rarity.to_owned();
+        }
         static RARITY: std::sync::OnceLock<std::collections::HashMap<String, String>> =
             std::sync::OnceLock::new();
         let map = RARITY.get_or_init(|| {

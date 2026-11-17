@@ -2074,7 +2074,10 @@ impl Game<'_> {
         let props = self.stations().enchantments.props(&stack.item);
         let rarity = horizon_client::item_tooltip::rarity(
             stack,
-            props.map_or("common", |p| p.rarity.as_str()),
+            self.pack
+                .item_renderer
+                .polytone_rarity(&stack.item)
+                .unwrap_or_else(|| props.map_or("common", |p| p.rarity.as_str())),
         );
         match rarity {
             "uncommon" => rgba(255, 255, 85, 255),

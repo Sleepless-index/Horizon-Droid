@@ -618,6 +618,12 @@ impl ItemRenderer {
             grass,
         })
     }
+    pub fn polytone_bar_color(&self, item: &str) -> Option<u32> {
+        self.polytone.as_ref()?.bar_color(item)
+    }
+    pub fn polytone_rarity(&self, item: &str) -> Option<&'static str> {
+        self.polytone.as_ref()?.rarity(item)
+    }
     /// `ModelBakery` item baking, cached per model.
     pub fn bake(&self, model: &str) -> Arc<BakedItemModel> {
         if let Ok(cache) = self.baked.lock()

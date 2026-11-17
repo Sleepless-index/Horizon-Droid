@@ -8009,6 +8009,11 @@ impl Game<'_> {
             .map(|c| c.bar())
             .unwrap_or_else(|| hud_overlays::damage_bar(stack.damage as i32, max_damage));
         // Client-only: a mod may replace or hide the bar vanilla just chose.
+        if let Some(color) = self.pack.item_renderer.polytone_bar_color(&stack.item)
+            && let Some((_, bar_color)) = &mut bar
+        {
+            *bar_color = color;
+        }
         self.native_item_bar(stack, &mut bar);
         let decorations = hud_overlays::ItemDecorations {
             count: stack.count,
