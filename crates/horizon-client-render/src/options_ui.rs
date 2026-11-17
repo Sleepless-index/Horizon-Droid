@@ -2624,22 +2624,15 @@ impl OptionsUi {
                 vec![
                     Row::Buttons(
                         open("horizon.pages.open.graphics", Page::Graphics),
-                        Some(open(
-                            "horizon.pages.open.graphics_advanced",
-                            Page::GraphicsAdvanced,
-                        )),
+                        Some(open("horizon.pages.open.shader_packs", Page::ShaderPacks)),
                     ),
                     Row::Buttons(
-                        open("horizon.pages.open.shader_packs", Page::ShaderPacks),
-                        Some(open("horizon.pages.open.controller", Page::Controller)),
+                        open("horizon.pages.open.controller", Page::Controller),
+                        Some(open("horizon.pages.open.extras", Page::Extras)),
                     ),
                     Row::Buttons(
-                        open("horizon.pages.open.extras", Page::Extras),
-                        Some(open("horizon.pages.open.pvp", Page::Pvp)),
-                    ),
-                    Row::Buttons(
-                        open("horizon.pages.open.mods", Page::Mods),
-                        None,
+                        open("horizon.pages.open.pvp", Page::Pvp),
+                        Some(open("horizon.pages.open.mods", Page::Mods)),
                     ),
                     // No AI hides the AI Agent page and everything AI.
                     if s.extras.no_ai {
@@ -2667,7 +2660,7 @@ impl OptionsUi {
                 rows
             }
             Page::Video => {
-                // Horizon's graphics screens, Simple and Advanced.
+                // Horizon's graphics screen; its Advanced... button opens the rest.
                 let mut rows = vec![Row::Buttons(
                     button(
                         0.0,
@@ -2676,13 +2669,7 @@ impl OptionsUi {
                         tr("horizon.pages.open.horizon_graphics"),
                         Act::Push(Page::Graphics),
                     ),
-                    Some(button(
-                        0.0,
-                        0.0,
-                        150.0,
-                        tr("horizon.pages.open.graphics_advanced"),
-                        Act::Push(Page::GraphicsAdvanced),
-                    )),
+                    None,
                 )];
                 rows.push(Row::Header("options.video.display.header"));
                 rows.push(Row::Big(Opt::ExclusiveMode));
@@ -7373,7 +7360,6 @@ mod tests {
             pushes(&mut ui),
             [
                 Page::Graphics,
-                Page::GraphicsAdvanced,
                 Page::ShaderPacks,
                 Page::Controller,
                 Page::Extras,
@@ -7413,9 +7399,8 @@ mod tests {
         // Vanilla's own pages keep the Horizon pages they had.
         ui.stack = vec![Page::Main, Page::Video];
         let video = pushes(&mut ui);
-        for page in [Page::Graphics, Page::GraphicsAdvanced] {
-            assert!(video.contains(&page), "{page:?}");
-        }
+        assert!(video.contains(&Page::Graphics));
+        assert!(!video.contains(&Page::GraphicsAdvanced));
         ui.stack = vec![Page::Main, Page::Controls];
         assert!(pushes(&mut ui).contains(&Page::Controller));
     }
