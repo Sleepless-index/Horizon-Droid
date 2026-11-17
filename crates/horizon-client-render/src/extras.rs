@@ -539,6 +539,18 @@ impl Item {
     }
     /// A click (`_back` for the right button: every item left is a switch,
     /// so both flip it). The sort key binds instead.
+    pub fn slider_position(self, e: &Extras) -> Option<f32> {
+        match self {
+            Item::Pvp(o) => o.slider_position(&e.pvp),
+            _ => None,
+        }
+    }
+    pub fn set_slider(self, e: &mut Extras, position: f32) -> bool {
+        match self {
+            Item::Pvp(o) => o.set_slider(&mut e.pvp, position),
+            _ => false,
+        }
+    }
     pub fn cycle(self, e: &mut Extras, _back: bool) {
         match self {
             Item::Fullbright => e.fullbright = !e.fullbright,

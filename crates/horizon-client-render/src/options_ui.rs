@@ -1566,6 +1566,11 @@ enum WKind {
         value: f32,
         name: String,
     },
+    ExtraSlider {
+        label: Text,
+        value: f32,
+        item: crate::extras::Item,
+    },
     Text {
         text: Text,
         color: u32,
@@ -1715,6 +1720,7 @@ pub struct OptionsUi {
     /// The shader pack option whose slider is held, and the handle's own position: it follows
     /// the pointer while the option takes the nearest of its values.
     shader_dragging: Option<(String, f32)>,
+    extra_dragging: Option<(crate::extras::Item, f32)>,
     /// Shift is held during the click (it resets a shader pack option to its default).
     pub shift: bool,
     /// The pressed slider's own position (`AbstractSliderButton.value`) and
@@ -1782,6 +1788,9 @@ pub struct OptionsUi {
     /// The list's rows as last laid out: each row's top and bottom (GUI
     /// pixels), for the narration's row under the mouse.
     row_bands: Vec<[f32; 2]>,
+    /// The Extras or PvP & HUD items that take a whole row (`wide_extras`), measured
+    /// when the page is drawn.
+    wide_extras: Vec<crate::extras::Item>,
 }
 impl Default for OptionsUi {
     fn default() -> Self {
@@ -1794,6 +1803,7 @@ impl Default for OptionsUi {
             scroll: 0.0,
             dragging: None,
             shader_dragging: None,
+            extra_dragging: None,
             shift: false,
             slider_value: None,
             scrollbar_drag_y: None,
@@ -1828,6 +1838,7 @@ impl Default for OptionsUi {
             framebuffer: [1280, 720],
             split_guest: false,
             row_bands: Vec::new(),
+            wide_extras: Vec::new(),
         }
     }
 }
@@ -1894,6 +1905,33 @@ fn option_widget(s: &Settings, opt: Opt, x: f32, y: f32, w: f32) -> Widget {
         },
         Kind::Cycle => button(x, y, w, opt.label(s), Act::Cycle(opt)),
     }
+}
+fn extras_rows(page: Page) -> Vec<Result<crate::extras::Item, &'static str>> {
+    match page {
+        Page::Pvp => crate::pvp::rows()
+            .into_iter()
+            .map(|r| r.map(crate::extras::Item::Pvp))
+            .collect(),
+        _ => crate::extras::rows(),
+    }
+}
+/// The items of `page`'s rows whose label, with any of their first values, is wider than a
+/// half-width button holds (`width` measures text with the screen's font): those take the
+/// whole row, so no label is cut short, in any language.
+fn wide_extras(s: &Settings, page: Page, width: impl Fn(&str) -> f32) -> Vec<crate::extras::Item> {
+    let room = 150.0 - 4.0;
+    extras_rows(page)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|&item| {
+            let mut e = s.extras.clone();
+            (0..4).any(|_| {
+                let label = format!("{}: {}", item.caption(), item.value(&e));
+                item.cycle(&mut e, false);
+                width(&label) > room
+            })
+        })
+        .collect()
 }
 /// What a button opening one of Horizon's pages says on hover.
 fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
@@ -2557,8 +2595,9 @@ impl OptionsUi {
         match self.page() {
             Page::Extras | Page::Pvp => {
                 // Each section's switches two to a row, as vanilla's
-                // OptionsList.addSmall lays out an options screen.
-                let extra = |item: crate::extras::Item| {
+                // OptionsList.addSmall lays out an options screen; one whose label would run
+                // past half a row (`wide_extras`) gets the whole row.
+                let extra = |item: crate::extras::Item, width: f32| {
                     let value = format!("{}: {}", item.caption(), item.value(&s.extras));
                     let label = if item.key_name().is_some() && self.selected_key == item.key_name()
                     {
@@ -2566,7 +2605,32 @@ impl OptionsUi {
                     } else {
                         Text::literal(value)
                     };
-                    let widget = button(0.0, 0.0, 150.0, label, Act::Extra(item));
+                    if let Some(value) = item.slider_position(&s.extras) {
+                        let held = self.extra_dragging.filter(|(i, _)| *i == item);
+                        let shown = held.map_or(value, |h| h.1);
+                        let widget = Widget {
+                            x: 0.0,
+                            y: 0.0,
+                            w: width,
+                            h: 20.0,
+                            kind: WKind::ExtraSlider {
+                                label,
+                                value: shown,
+                                item,
+                            },
+                            list: false,
+                            row: 0,
+                        };
+                        return if item
+                            .parent()
+                            .is_some_and(|parent| parent.switch(&s.extras) == Some(false))
+                        {
+                            inactive(widget)
+                        } else {
+                            widget
+                        };
+                    }
+                    let widget = button(0.0, 0.0, width, label, Act::Extra(item));
                     // A setting of a switch that is off does nothing: inactive,
                     // as vanilla greys out an option that can't apply.
                     if item
@@ -2590,20 +2654,20 @@ impl OptionsUi {
                 }
                 let mut section = Vec::new();
                 let flush = |rows: &mut Vec<Row>, section: &mut Vec<crate::extras::Item>| {
-                    rows.extend(
-                        section
-                            .chunks(2)
-                            .map(|c| Row::Buttons(extra(c[0]), c.get(1).map(|&b| extra(b)))),
-                    );
-                    section.clear();
+                    let mut half = None;
+                    for item in section.drain(..) {
+                        if self.wide_extras.contains(&item) {
+                            rows.extend(half.take().map(|h| Row::Buttons(extra(h, 150.0), None)));
+                            rows.push(Row::Buttons(extra(item, 310.0), None));
+                        } else if let Some(h) = half.take() {
+                            rows.push(Row::Buttons(extra(h, 150.0), Some(extra(item, 150.0))));
+                        } else {
+                            half = Some(item);
+                        }
+                    }
+                    rows.extend(half.map(|h| Row::Buttons(extra(h, 150.0), None)));
                 };
-                let page_rows = match self.page() {
-                    Page::Pvp => crate::pvp::rows()
-                        .into_iter()
-                        .map(|r| r.map(crate::extras::Item::Pvp))
-                        .collect(),
-                    _ => crate::extras::rows(),
-                };
+                let page_rows = extras_rows(self.page());
                 for row in page_rows {
                     match row {
                         Err(header) => {
@@ -3786,6 +3850,9 @@ impl OptionsUi {
             crate::screen_draw::paint(batch, atlas, &draws);
             return;
         }
+        if matches!(self.page(), Page::Extras | Page::Pvp) {
+            self.wide_extras = wide_extras(s, self.page(), |t| atlas.font.width(t));
+        }
         let (widgets, top, bottom, content) = self.layout(s, w, h);
         self.size = (w, h);
         let in_world = self.in_world;
@@ -3906,6 +3973,22 @@ impl OptionsUi {
                 WKind::ShaderSlider { label, value, name } => {
                     let label = fitted.as_ref().map_or(label, |f| &f.0);
                     let held = self.shader_dragging.as_ref().filter(|(n, _)| n == name);
+                    let dragging = held.is_some();
+                    ui::slider(
+                        batch,
+                        atlas,
+                        wd.x,
+                        wd.y,
+                        wd.w,
+                        label,
+                        held.map_or(*value, |h| h.1),
+                        hover || dragging,
+                        true,
+                        dragging,
+                    );
+                }
+                WKind::ExtraSlider { label, value, item } => {
+                    let held = self.extra_dragging.filter(|(i, _)| i == item);
                     let dragging = held.is_some();
                     ui::slider(
                         batch,
@@ -4221,6 +4304,16 @@ impl OptionsUi {
                 *at = ui::slider_value(wd.x, wd.w, x);
                 options.set_position(name, *at);
             }
+            if let Some((item, at)) = &mut self.extra_dragging
+                && let Some(wd) = widgets
+                    .iter()
+                    .find(|wd| matches!(&wd.kind, WKind::ExtraSlider { item: i, .. } if i == item))
+            {
+                *at = ui::slider_value(wd.x, wd.w, x);
+                if item.set_slider(&mut s.extras, *at) {
+                    events.push(Event::Changed);
+                }
+            }
             if let Some(opt) = self.dragging
                 && let Some(wd) = widgets
                     .iter()
@@ -4463,6 +4556,13 @@ impl OptionsUi {
                     }
                     self.shader_dragging = Some((name, at));
                 }
+                WKind::ExtraSlider { item, .. } => {
+                    let at = ui::slider_value(wd.x, wd.w, x);
+                    if item.set_slider(&mut s.extras, at) {
+                        events.push(Event::Changed);
+                    }
+                    self.extra_dragging = Some((item, at));
+                }
                 WKind::Slider { opt, .. } => {
                     self.can_change_value = true;
                     self.dragging = Some(opt);
@@ -4499,7 +4599,9 @@ impl OptionsUi {
         }
         // AbstractSliderButton suppresses the press sound and plays once on
         // release, even if the pointer has left the widget or its value stayed.
-        let slider = self.dragging.take().is_some() | self.shader_dragging.take().is_some();
+        let slider = self.dragging.take().is_some()
+            | self.shader_dragging.take().is_some()
+            | self.extra_dragging.take().is_some();
         let graphics_slider = self.graphics.release();
         let calibration_slider = self.calibration.as_mut().is_some_and(|c| c.release());
         if slider || graphics_slider || calibration_slider {
@@ -7403,6 +7505,43 @@ mod tests {
         assert!(!video.contains(&Page::GraphicsAdvanced));
         ui.stack = vec![Page::Main, Page::Controls];
         assert!(pushes(&mut ui).contains(&Page::Controller));
+    }
+    #[test]
+    fn extras_and_pvp_labels_fit_their_buttons() {
+        let width = |t: &str| {
+            t.chars()
+                .map(|c| match c {
+                    'i' | '\'' | ':' | '.' | ',' | '!' => 2.0,
+                    'l' => 3.0,
+                    ' ' | 't' | 'I' => 4.0,
+                    'f' | 'k' => 5.0,
+                    _ => 6.0,
+                })
+                .sum::<f32>()
+        };
+        let s = Settings::default();
+        let mut ui = OptionsUi::default();
+        for page in [Page::Extras, Page::Pvp] {
+            ui.stack = vec![Page::Main, page];
+            ui.wide_extras = wide_extras(&s, page, width);
+            let rows = ui.list_rows(&s);
+            let buttons: Vec<&Widget> = rows
+                .iter()
+                .flat_map(|r| match r {
+                    Row::Buttons(a, b) => std::iter::once(a).chain(b.as_ref()).collect(),
+                    _ => Vec::new(),
+                })
+                .collect();
+            for b in &buttons {
+                let WKind::Button { label, .. } = &b.kind else {
+                    continue;
+                };
+                let label = label.plain();
+                assert!(width(&label) <= b.w - 4.0, "{page:?}: {label} on {}", b.w);
+            }
+            assert!(buttons.iter().any(|b| b.w == 150.0), "{page:?}");
+            assert!(buttons.iter().any(|b| b.w == 310.0), "{page:?}");
+        }
     }
     #[test]
     fn touch_options_cycle_four_schemes_and_adjust_circle_and_sensitivity() {

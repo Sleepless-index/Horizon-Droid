@@ -1416,7 +1416,9 @@ impl Game<'_> {
         if t.phase == TouchPhase::Started && self.screen == Screen::Options {
             self.ui.options.touch_start();
         }
-        if t.phase == TouchPhase::Started && self.rotate_zone_at((p[0], p[1])) {
+        if t.phase == TouchPhase::Started
+            && (self.rotate_zone_at((p[0], p[1])) || self.screen == Screen::HudEditor)
+        {
             self.pad.touch_ui.hold_pointer(t.id);
         }
         let direct = self.pad.touch_ui.direct_pointer(t.id, p, t.phase);

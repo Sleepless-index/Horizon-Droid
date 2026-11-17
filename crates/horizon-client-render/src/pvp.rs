@@ -1407,6 +1407,34 @@ impl Opt {
             _ => return None,
         })
     }
+    fn sized(self, p: &mut Pvp) -> Option<(&mut u8, u8, u8, u8)> {
+        Some(match self {
+            Opt::CrosshairSize => (&mut p.crosshair.size, SIZES.0, SIZES.1, 1),
+            Opt::ShieldSize => (
+                &mut p.tweaks.shield_size,
+                SHIELD_SIZES.0,
+                SHIELD_SIZES.1,
+                10,
+            ),
+            Opt::TotemSize => (&mut p.tweaks.totem_size, TOTEM_SIZES.0, TOTEM_SIZES.1, 25),
+            _ => return None,
+        })
+    }
+    /// Where a size option's value sits from 0 to 1, for the ones a slider sets.
+    pub fn slider_position(self, p: &Pvp) -> Option<f32> {
+        let mut copy = p.clone();
+        let (value, lo, hi, _) = self.sized(&mut copy)?;
+        Some(f32::from(value.saturating_sub(lo)) / f32::from(hi - lo))
+    }
+    /// Sets a size option from a slider position, in the steps the button went by.
+    pub fn set_slider(self, p: &mut Pvp, position: f32) -> bool {
+        let Some((value, lo, hi, by)) = self.sized(p) else {
+            return false;
+        };
+        let steps = ((f32::from(hi - lo) * position.clamp(0.0, 1.0)) / f32::from(by)).round() as u8;
+        *value = (lo + steps * by).min(hi);
+        true
+    }
     /// A click; `back` (right button, wheel up) goes the other way.
     pub fn cycle(self, p: &mut Pvp, back: bool) {
         let c = &mut p.crosshair;
@@ -1514,6 +1542,27 @@ impl Opt {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn size_sliders_snap_to_the_steps_the_buttons_went_by() {
+        let mut p = Pvp::default();
+        assert!(Opt::ShieldSize.set_slider(&mut p, 0.0));
+        assert_eq!(p.tweaks.shield_size, 50);
+        assert!(Opt::ShieldSize.set_slider(&mut p, 1.0));
+        assert_eq!(p.tweaks.shield_size, 100);
+        assert!(Opt::ShieldSize.set_slider(&mut p, 0.4));
+        assert_eq!(p.tweaks.shield_size, 70);
+        assert!(Opt::TotemSize.set_slider(&mut p, 0.4));
+        assert_eq!(p.tweaks.totem_size, 50);
+        assert!(Opt::CrosshairSize.set_slider(&mut p, 1.0));
+        assert_eq!(p.crosshair.size, 12);
+        assert!(Opt::CrosshairSize.set_slider(&mut p, -3.0));
+        assert_eq!(p.crosshair.size, 1);
+        assert_eq!(Opt::CrosshairSize.slider_position(&p), Some(0.0));
+        assert_eq!(Opt::ShieldSize.slider_position(&p), Some(0.4));
+        assert!(!Opt::CrosshairDot.set_slider(&mut p, 0.5));
+        assert_eq!(Opt::CrosshairDot.slider_position(&p), None);
+    }
+
     use super::*;
 
     /// The mask drawn as rows of `#` and `.` over `-r..=r`.
