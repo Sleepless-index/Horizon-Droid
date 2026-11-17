@@ -364,7 +364,9 @@ pub struct PackScreen {
     /// The browser's search box has the keyboard.
     browser_focus: bool,
     /// The first grid row the browser shows.
-    browser_scroll: usize,
+    browser_scroll: f64,
+    /// The pointer's offset in the scroll bar's thumb while it is held.
+    browser_bar_held: Option<f64>,
 }
 
 fn tr(key: &str) -> Text {
@@ -404,6 +406,10 @@ const ICON: i32 = 34;
 const BROWSER_SEARCH_W: i32 = 200;
 const SEARCH_BTN_W: i32 = 56;
 const SEARCH_Y: i32 = 32;
+/// The grid's scroll bar, and the row of page buttons below it.
+const BAR_W: i32 = 6;
+const PAGER_H: i32 = 26;
+const PAGER_BTN_W: i32 = 30;
 /// The Back and Install buttons.
 const BACK_W: i32 = 60;
 const BACK_H: i32 = 20;
@@ -447,7 +453,8 @@ impl PackScreen {
             browsing_allowed: false,
             backdrop: Backdrop::None,
             browser_icons: Vec::new(),
-            browser_scroll: 0,
+            browser_scroll: 0.0,
+            browser_bar_held: None,
             browser_search: {
                 let mut field = TextField::new(0, 0, BROWSER_SEARCH_W, 18);
                 field.hint = Some(tr("horizon.pack.searchHint").with_style(&Style {
@@ -828,24 +835,28 @@ impl PackScreen {
     /// The mouse wheel (`AbstractScrollArea.mouseScrolled`).
     /// The pointer moved with the button held: a held scrollbar follows it.
     pub fn drag(&mut self, y: f64) {
+        if let Some(grab) = self.browser_bar_held {
+            let (track, thumb) = self.browser_bar();
+            let travel = f64::from(track.3 - thumb.3).max(1.0);
+            let top = y - grab - f64::from(track.1);
+            self.set_browser_scroll(top / travel * self.browser_max_scroll());
+            return;
+        }
         for l in &mut self.lists {
             l.drag(y);
         }
     }
     /// `onRelease`.
     pub fn release(&mut self) {
+        self.browser_bar_held = None;
         for l in &mut self.lists {
             l.held = None;
         }
     }
     pub fn scroll(&mut self, x: f64, y: f64, amount: f64) {
         if self.browser.is_some() {
-            let hits = self.browser.as_ref().map_or(0, |b| b.hits.len());
-            let last = self.browser_last_row(hits);
-            if amount > 0.0 {
-                self.browser_scroll = self.browser_scroll.saturating_sub(1);
-            } else if amount < 0.0 {
-                self.browser_scroll = (self.browser_scroll + 1).min(last);
+            if amount != 0.0 {
+                self.set_browser_scroll(self.browser_scroll - amount * 8.0);
             }
             return;
         }
@@ -924,9 +935,10 @@ impl PackScreen {
         let query = self.browser_search.value.clone();
         if let Some(browser) = &mut self.browser {
             browser.query = query;
+            browser.page = 0;
             browser.search();
         }
-        self.browser_scroll = 0;
+        self.browser_scroll = 0.0;
     }
     /// Whether the browser's own search box has the keyboard, so the game
     /// sends it typing rather than treating it as a hotkey.
@@ -1093,26 +1105,50 @@ impl PackScreen {
                         }
                         // A filter is only meaningful once it is searched on.
                         browser.query = query;
+                        browser.page = 0;
                         browser.search();
                     }
-                    self.browser_scroll = 0;
+                    self.browser_scroll = 0.0;
                     return Some(Action::None);
                 }
             }
-            let fits = self.browser_row_count();
-            let busy = self.browser.as_ref().is_some_and(|b| b.busy);
-            let hits = self.browser.as_ref().map_or(0, |b| b.hits.len() as i32);
-            for slot in 0..fits {
-                let hit = self.browser_hit(slot);
-                if hit as i32 >= hits {
-                    break;
-                }
-                let (ix, iy) = self.install_button(slot);
-                if d::inside(point, ix, iy, INSTALL_W, BACK_H) {
-                    if busy {
-                        return Some(Action::None);
+            let (px, py, pw, ph) = self.browser_area();
+            let (track, thumb) = self.browser_bar();
+            if self.browser_max_scroll() > 0.0
+                && d::inside(point, track.0 - 8, track.1, BAR_W + 12, track.3)
+            {
+                let grab = if d::inside(point, thumb.0 - 8, thumb.1, BAR_W + 12, thumb.3) {
+                    y - f64::from(thumb.1)
+                } else {
+                    f64::from(thumb.3) / 2.0
+                };
+                self.browser_bar_held = Some(grab);
+                self.drag(y);
+                return Some(Action::None);
+            }
+            let (prev, next, _) = self.pager();
+            let (page, last, busy) = self
+                .browser
+                .as_ref()
+                .map_or((0, 0, true), |b| (b.page, b.last_page(), b.busy));
+            if d::inside(point, prev.0, prev.1, PAGER_BTN_W, BACK_H) && page > 0 && !busy {
+                self.turn_page(-1);
+                return Some(Action::None);
+            }
+            if d::inside(point, next.0, next.1, PAGER_BTN_W, BACK_H) && page < last && !busy {
+                self.turn_page(1);
+                return Some(Action::None);
+            }
+            let hits = self.browser_hits();
+            if d::inside(point, px, py, pw, ph) {
+                for i in 0..hits {
+                    let (ix, iy) = self.install_button(i);
+                    if d::inside(point, ix, iy, INSTALL_W, BACK_H) {
+                        if busy {
+                            return Some(Action::None);
+                        }
+                        return Some(Action::BrowsePick(i as usize));
                     }
-                    return Some(Action::BrowsePick(hit));
                 }
             }
             // The screen is modal: nothing beneath it takes the click.
@@ -1134,6 +1170,12 @@ impl PackScreen {
             (x + 208, fy, 100, Footer::Done),
         ]
     }
+    fn turn_page(&mut self, delta: i32) {
+        if let Some(browser) = &mut self.browser {
+            browser.turn(delta);
+        }
+        self.browser_scroll = 0.0;
+    }
     fn open_browser(&mut self, m: &Measure) {
         let mut browser = crate::pack_browser::Browser::new();
         // Opens on the text already in the search box, so a player who
@@ -1143,7 +1185,7 @@ impl PackScreen {
         browser.search();
         self.browser_search.set_value(m, &self.search.value);
         self.browser_focus = true;
-        self.browser_scroll = 0;
+        self.browser_scroll = 0.0;
         self.browser = Some(browser);
         // Horizon's own screen, so it may ask for the menu panorama.
         self.backdrop = Backdrop::Panorama;
@@ -1170,13 +1212,13 @@ impl PackScreen {
         let (cx, cy, cw, _) = self.card_box(i);
         (cx + cw - INSTALL_W - CARD_PAD, cy + CARD_PAD)
     }
-    /// The browser's content column: centred, and never wider than it reads
-    /// comfortably.
+    /// The browser's content column: the grid, with a gutter for its scroll
+    /// bar on the right and the page row below.
     fn browser_area(&self) -> (i32, i32, i32, i32) {
         let x = SIDEBAR_W + 6;
         let top = TOPBAR_H + 6;
-        let w = (self.width - x - 6).max(120);
-        let h = (self.height - top - 6).max(ROW_H);
+        let w = (self.width - x - 6 - BAR_W - 4).max(120);
+        let h = (self.height - top - PAGER_H - 6).max(ROW_H);
         (x, top, w, h)
     }
     /// Two columns where there is room for them, otherwise one.
@@ -1184,39 +1226,57 @@ impl PackScreen {
         let (_, _, w, _) = self.browser_area();
         if w >= 360 { 2 } else { 1 }
     }
-    /// The card at `i`: its box in the grid.
+    /// The card for hit `i`: its box in the grid, scrolled.
     fn card_box(&self, i: i32) -> (i32, i32, i32, i32) {
         let (px, py, pw, _) = self.browser_area();
         let cols = self.browser_columns();
         let cw = (pw - 6 * (cols - 1)) / cols;
         let (cx, cy) = (i % cols, i / cols);
-        (px + cx * (cw + 6), py + cy * (ROW_H + 6), cw, ROW_H)
+        (
+            px + cx * (cw + 6),
+            py + cy * (ROW_H + 6) - self.browser_scroll as i32,
+            cw,
+            ROW_H,
+        )
     }
     /// The filter row `i` in the sidebar.
     fn filter_box(&self, i: i32) -> (i32, i32, i32, i32) {
         (6, TOPBAR_H + 18 + i * FILTER_H, SIDEBAR_W - 12, FILTER_H)
     }
-    /// How many card rows fit the column.
-    fn browser_visible_rows(&self) -> i32 {
+    fn browser_hits(&self) -> i32 {
+        self.browser.as_ref().map_or(0, |b| b.hits.len() as i32)
+    }
+    /// How far the grid can scroll, in pixels.
+    fn browser_max_scroll(&self) -> f64 {
+        let rows = (self.browser_hits() + self.browser_columns() - 1) / self.browser_columns();
+        let content = (rows * (ROW_H + 6) - 6).max(0);
         let (_, _, _, ph) = self.browser_area();
-        ((ph + 6) / (ROW_H + 6)).max(1)
+        f64::from((content - ph).max(0))
     }
-    /// How many cards fit the column.
-    fn browser_row_count(&self) -> i32 {
-        self.browser_visible_rows() * self.browser_columns()
+    fn set_browser_scroll(&mut self, to: f64) {
+        self.browser_scroll = to.clamp(0.0, self.browser_max_scroll());
     }
-    /// The first row that can still be scrolled to for `hits` cards.
-    fn browser_last_row(&self, hits: usize) -> usize {
-        let cols = self.browser_columns() as usize;
-        let rows = hits.div_ceil(cols);
-        rows.saturating_sub(self.browser_visible_rows() as usize)
+    /// The grid's scroll bar: the track beside it, and the thumb in it.
+    fn browser_bar(&self) -> ((i32, i32, i32, i32), (i32, i32, i32, i32)) {
+        let (px, py, pw, ph) = self.browser_area();
+        let track = (px + pw + 4, py, BAR_W, ph);
+        let max = self.browser_max_scroll();
+        let content = ph as f64 + max;
+        let thumb_h = ((f64::from(ph) * f64::from(ph) / content) as i32).clamp(18, ph);
+        let travel = f64::from(ph - thumb_h);
+        let thumb_y = if max > 0.0 {
+            py + (travel * self.browser_scroll / max) as i32
+        } else {
+            py
+        };
+        (track, (track.0, thumb_y, BAR_W, thumb_h))
     }
-    /// The hit shown in grid slot `slot`.
-    fn browser_hit(&self, slot: i32) -> usize {
-        self.browser_scroll
-            .min(self.browser_last_row(self.browser.as_ref().map_or(0, |b| b.hits.len())))
-            * self.browser_columns() as usize
-            + slot as usize
+    /// The page row's buttons: previous, next, and the label's centre.
+    fn pager(&self) -> ((i32, i32), (i32, i32), i32) {
+        let (px, _, pw, _) = self.browser_area();
+        let y = self.height - PAGER_H + 2;
+        let mid = px + pw / 2;
+        ((mid - 90, y), (mid + 60, y), mid)
     }
     /// Horizon's Add button, and the screen it opens. Nothing is drawn
     /// unless the player turned `packBrowser` on, so the screen's vanilla
@@ -1289,6 +1349,57 @@ impl PackScreen {
             d::string_widget(out, m, &label, fx + 11, fy - 1, 0);
         }
         let (px, py, pw, ph) = self.browser_area();
+        let (prev, next, mid) = self.pager();
+        let enabled = |on: bool| on && !browser.busy;
+        for (at, label, on) in [
+            (prev, "<", enabled(browser.page > 0)),
+            (next, ">", enabled(browser.page < browser.last_page())),
+        ] {
+            d::button(
+                out,
+                m,
+                &Text::literal(label),
+                at.0,
+                at.1,
+                PAGER_BTN_W,
+                BACK_H,
+                on,
+                on && d::inside(mouse, at.0, at.1, PAGER_BTN_W, BACK_H),
+            );
+        }
+        let page = Text::literal(format!(
+            "Page {} of {}",
+            browser.page + 1,
+            browser.last_page() + 1
+        ))
+        .with_color(d::GRAY);
+        let pw_text = m.width(&page);
+        d::string_widget(out, m, &page, mid - pw_text / 2 + 5, prev.1 + 6, 0);
+        if self.browser_max_scroll() > 0.0 {
+            let (track, thumb) = self.browser_bar();
+            d::fill(
+                out,
+                track.0,
+                track.1,
+                track.0 + track.2,
+                track.1 + track.3,
+                SIDEBAR_BG,
+            );
+            let lit = self.browser_bar_held.is_some()
+                || d::inside(mouse, track.0 - 4, track.1, BAR_W + 8, track.3);
+            d::fill(
+                out,
+                thumb.0,
+                thumb.1,
+                thumb.0 + thumb.2,
+                thumb.1 + thumb.3,
+                if lit {
+                    0xFF_8A_93_B0u32 as i32
+                } else {
+                    0xFF_5A_62_7Cu32 as i32
+                },
+            );
+        }
         let message = if browser.busy && browser.installing.is_none() {
             Some(tr("horizon.pack.addWorking"))
         } else if let Some(status) = &browser.status {
@@ -1309,18 +1420,19 @@ impl PackScreen {
             d::label(out, &lines, px + 4, py + 20, pw - 8, true);
             return;
         }
-        let fits = self.browser_row_count();
-        for slot in 0..fits {
-            let index = self.browser_hit(slot);
-            let Some(hit) = browser.hits.get(index) else {
-                break;
-            };
-            let i = slot;
+        out.push(Draw::Scissor {
+            x0: px,
+            y0: py,
+            x1: px + pw,
+            y1: py + ph,
+        });
+        for (index, hit) in browser.hits.iter().enumerate() {
+            let i = index as i32;
             let (cx, cy, cw, ch) = self.card_box(i);
-            if cy + ch > py + ph {
-                break;
+            if cy + ch <= py || cy >= py + ph {
+                continue;
             }
-            let over = d::inside(mouse, cx, cy, cw, ch);
+            let over = d::inside(mouse, cx, cy, cw, ch) && d::inside(mouse, px, py, pw, ph);
             d::fill(
                 out,
                 cx,
@@ -1390,7 +1502,7 @@ impl PackScreen {
                 false,
             );
             let (ix, iy) = self.install_button(i);
-            let done = browser.installed.contains(&index);
+            let done = browser.known.contains(&hit.id) || browser.installed.contains(&index);
             let running = browser.installing == Some(index);
             let label = if done {
                 tr("horizon.pack.installed")
@@ -1428,6 +1540,7 @@ impl PackScreen {
                 0,
             );
         }
+        out.push(Draw::NoScissor);
     }
     fn draw_list(&self, out: &mut Vec<Draw>, m: &Measure, side: usize, mouse: (i32, i32)) {
         let l = &self.lists[side];
@@ -1840,29 +1953,93 @@ mod click_sound_tests {
             downloads: 0,
             icon_url: String::new(),
         };
-        screen.browser.as_mut().unwrap().hits = (0..20).map(hit).collect();
-        let visible = screen.browser_row_count();
-        assert!(visible < 20, "the test needs more hits than fit");
-        assert_eq!(screen.browser_hit(0), 0);
+        {
+            let b = screen.browser.as_mut().unwrap();
+            b.hits = (0..20).map(hit).collect();
+            b.total = 90;
+            b.busy = false;
+        }
+        let max = screen.browser_max_scroll();
+        assert!(max > 0.0, "twenty cards do not fit one screen");
         let before = screen.lists[0].scroll;
         screen.scroll(240.0, 160.0, -1.0);
-        assert_eq!(screen.browser_hit(0), screen.browser_columns() as usize);
+        assert!(screen.browser_scroll > 0.0 && screen.browser_scroll < f64::from(ROW_H));
         assert_eq!(
             screen.lists[0].scroll, before,
             "the pack lists behind must not scroll"
         );
-        for _ in 0..40 {
+        for _ in 0..500 {
             screen.scroll(240.0, 160.0, -1.0);
         }
-        let last = screen.browser_hit(visible - 1);
-        assert!(
-            last >= 19 || screen.browser_hit(visible) >= 20,
-            "every hit can be reached"
-        );
-        for _ in 0..40 {
+        assert_eq!(screen.browser_scroll, max, "the last card can be reached");
+        let (last_card, _, _, _) = screen.card_box(19);
+        let (_, py, _, ph) = screen.browser_area();
+        assert!(last_card >= 0 && screen.card_box(19).1 + ROW_H <= py + ph + 1);
+        for _ in 0..1000 {
             screen.scroll(240.0, 160.0, 1.0);
         }
-        assert_eq!(screen.browser_hit(0), 0);
+        assert_eq!(screen.browser_scroll, 0.0);
+    }
+
+    #[test]
+    fn the_scroll_bar_can_be_dragged_and_the_page_buttons_turn_pages() {
+        let atlas =
+            crate::hud::HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets"))
+                .unwrap();
+        let m = Measure(&atlas.font);
+        let mut screen = PackScreen::new(
+            &m,
+            tr("resourcePack.title"),
+            480,
+            320,
+            false,
+            Vec::new(),
+            &[],
+        );
+        screen.browsing_allowed = true;
+        screen.open_browser(&m);
+        {
+            let b = screen.browser.as_mut().unwrap();
+            b.hits = (0..20)
+                .map(|i| crate::pack_browser::Hit {
+                    id: format!("p{i}"),
+                    title: String::new(),
+                    author: String::new(),
+                    description: String::new(),
+                    downloads: 0,
+                    icon_url: String::new(),
+                })
+                .collect();
+            b.total = 90;
+            b.busy = false;
+        }
+        let (track, thumb) = screen.browser_bar();
+        let x = f64::from(track.0 + 2);
+        screen.click(&m, x, f64::from(thumb.1 + 2));
+        assert!(screen.browser_bar_held.is_some());
+        screen.drag(f64::from(track.1 + track.3));
+        assert_eq!(
+            screen.browser_scroll,
+            screen.browser_max_scroll(),
+            "dragged to the end"
+        );
+        screen.release();
+        assert!(screen.browser_bar_held.is_none());
+        screen.click(&m, x, f64::from(track.1 + 1));
+        screen.release();
+        assert!(
+            screen.browser_scroll < screen.browser_max_scroll(),
+            "a click on the track jumps"
+        );
+
+        let (_, next, _) = screen.pager();
+        screen.click(&m, f64::from(next.0 + 2), f64::from(next.1 + 2));
+        assert_eq!(screen.browser.as_ref().unwrap().page, 1);
+        assert_eq!(screen.browser_scroll, 0.0, "a new page starts at the top");
+        let (prev, _, _) = screen.pager();
+        screen.browser.as_mut().unwrap().busy = false;
+        screen.click(&m, f64::from(prev.0 + 2), f64::from(prev.1 + 2));
+        assert_eq!(screen.browser.as_ref().unwrap().page, 0);
     }
 
     #[test]

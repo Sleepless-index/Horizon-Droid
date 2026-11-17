@@ -7,8 +7,7 @@ use horizon_client::{
     assets::Assets,
     gfx::PreparedTextures,
     hud::HudAtlas,
-    lang,
-    pack_browser,
+    lang, pack_browser,
     pack_screen::{self, Compat, PackInfo, Source as PackSource},
     packs::{self, Pack, Position},
     streaming::WorkerContext,
@@ -197,10 +196,11 @@ impl Game<'_> {
         let Some(browser) = &mut screen.browser else {
             return;
         };
+        browser.watch_dir(&packs_dir());
         let Some(message) = browser.poll() else {
             return;
         };
-        if let pack_browser::Message::Results(_) = &message {
+        if let pack_browser::Message::Results(..) = &message {
             // The rows draw their icons as they land.
             browser.fetch_icons();
         }
@@ -212,8 +212,10 @@ impl Game<'_> {
             }
             return;
         }
-        if let pack_browser::Message::Downloaded(name) = message {
-            log::info!("Horizon: added the resource pack {name}");
+        if let pack_browser::Message::Downloaded(name) | pack_browser::Message::Exists(name) =
+            message
+        {
+            log::info!("Horizon: the resource pack {name} is in the packs folder");
             // Rebuilding the screen would shut the list; keep it and only
             // refresh what the lists read.
             let selection = self.settings.resource_packs.clone();

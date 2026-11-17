@@ -37,11 +37,14 @@ pub struct Hit {
 /// What the worker sends back.
 #[derive(Debug)]
 pub enum Message {
-    Results(Vec<Hit>),
+    /// One page of hits and the number of hits Modrinth has in all.
+    Results(Vec<Hit>, usize),
     /// A project's icon, as the PNG bytes Modrinth served.
     Icon(String, Vec<u8>),
     /// A pack landed in the packs folder under this file name.
     Downloaded(String),
+    /// The pack is already in the packs folder under this file name.
+    Exists(String),
     /// A technical reason in English: the screen shows it inside
     /// `horizon.pack.addFailed`.
     Failed(String),
@@ -66,7 +69,11 @@ pub const FILTERS: [(&str, &str, &str); 6] = [
 /// The search URL for `query` with the chosen filters (indices into
 /// [`FILTERS`]), restricted to resource packs. An empty query is Modrinth's
 /// own browse (its default ordering).
-pub fn search_url(query: &str, chosen: &std::collections::BTreeSet<usize>) -> String {
+pub fn search_url(
+    query: &str,
+    chosen: &std::collections::BTreeSet<usize>,
+    offset: usize,
+) -> String {
     // One inner list per group: within a group Modrinth ORs, between groups
     // it ANDs, so picking 16x and 32x widens rather than excluding both.
     let mut groups: Vec<(&str, Vec<String>)> = Vec::new();
@@ -87,7 +94,7 @@ pub fn search_url(query: &str, chosen: &std::collections::BTreeSet<usize>) -> St
         facets = format!("[[\"project_type:resourcepack\"],{}]", extra.join(","));
     }
     format!(
-        "{API}/search?limit={LIMIT}&index=relevance&facets={}&query={}",
+        "{API}/search?limit={LIMIT}&offset={offset}&index=relevance&facets={}&query={}",
         urlencode(&facets),
         urlencode(query.trim())
     )
@@ -150,6 +157,39 @@ pub fn parse_search(body: &str) -> Result<Vec<Hit>, String> {
             })
         })
         .collect())
+}
+
+/// How many hits Modrinth has for the search, from a `/search` reply.
+pub fn parse_total(body: &str) -> usize {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("total_hits")?.as_u64())
+        .map_or(0, |n| n as usize)
+}
+
+const INDEX_FILE: &str = "horizon-pack-index.json";
+
+fn index_path(dir: &Path) -> PathBuf {
+    dir.parent().unwrap_or(dir).join(INDEX_FILE)
+}
+
+/// The Modrinth projects installed through the browser whose file is still in
+/// `dir`, by project id.
+pub fn read_index(dir: &Path) -> std::collections::BTreeMap<String, String> {
+    let text = std::fs::read_to_string(index_path(dir)).unwrap_or_default();
+    let map: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(&text).unwrap_or_default();
+    map.into_iter()
+        .filter(|(_, file)| dir.join(file).exists())
+        .collect()
+}
+
+fn record(dir: &Path, project: &str, file: &str) {
+    let mut map = read_index(dir);
+    map.insert(project.to_owned(), file.to_owned());
+    if let Ok(text) = serde_json::to_string_pretty(&map) {
+        let _ = std::fs::write(index_path(dir), text);
+    }
 }
 
 /// The primary file of the newest version: its URL, its file name and the
@@ -246,6 +286,12 @@ pub struct Browser {
     pub installing: Option<usize>,
     /// Hits already installed this visit, by index.
     pub installed: std::collections::BTreeSet<usize>,
+    /// Modrinth projects already in the packs folder, by project id.
+    pub known: std::collections::BTreeSet<String>,
+    /// The zero-based page of results shown, and how many hits there are.
+    pub page: usize,
+    pub total: usize,
+    dir: Option<PathBuf>,
     /// The sidebar filters that are on, as indices into [`FILTERS`].
     pub filters: std::collections::BTreeSet<usize>,
     sender: Sender<Message>,
@@ -276,6 +322,10 @@ impl Clone for Browser {
             status: self.status.clone(),
             installing: self.installing,
             installed: self.installed.clone(),
+            known: self.known.clone(),
+            page: self.page,
+            total: self.total,
+            dir: self.dir.clone(),
             filters: self.filters.clone(),
             sender,
             receiver,
@@ -301,6 +351,10 @@ impl Browser {
             status: None,
             installing: None,
             installed: Default::default(),
+            known: Default::default(),
+            page: 0,
+            total: 0,
+            dir: None,
             filters: Default::default(),
             sender,
             receiver,
@@ -314,16 +368,20 @@ impl Browser {
         let was_busy = self.busy;
         self.busy = false;
         match &message {
-            Message::Results(hits) => {
+            Message::Results(hits, total) => {
                 self.hits = hits.clone();
+                self.total = *total;
                 self.selected = None;
                 self.scroll = 0.0;
                 self.status = None;
             }
-            Message::Downloaded(_) => {
+            Message::Downloaded(_) | Message::Exists(_) => {
                 self.status = None;
                 if let Some(i) = self.installing.take() {
                     self.installed.insert(i);
+                    if let Some(hit) = self.hits.get(i) {
+                        self.known.insert(hit.id.clone());
+                    }
                 }
             }
             // An icon is the screen's to keep; it does not end a search.
@@ -343,12 +401,12 @@ impl Browser {
         }
         self.busy = true;
         self.status = None;
-        let url = search_url(&self.query, &self.filters);
+        let url = search_url(&self.query, &self.filters, self.page * LIMIT);
         let sender = self.sender.clone();
         spawn("pack-browser-search", move || {
             let message = match get_text(&url) {
                 Ok(body) => match parse_search(&body) {
-                    Ok(hits) => Message::Results(hits),
+                    Ok(hits) => Message::Results(hits, parse_total(&body)),
                     Err(reason) => Message::Failed(reason),
                 },
                 Err(reason) => Message::Failed(reason),
@@ -385,6 +443,31 @@ impl Browser {
         });
     }
 
+    /// The last page there is for the hits counted so far.
+    pub fn last_page(&self) -> usize {
+        self.total.saturating_sub(1) / LIMIT
+    }
+
+    /// Shows the page `delta` away, if there is one.
+    pub fn turn(&mut self, delta: i32) {
+        if self.busy {
+            return;
+        }
+        let page = (self.page as i64 + i64::from(delta)).clamp(0, self.last_page() as i64);
+        if page as usize != self.page {
+            self.page = page as usize;
+            self.search();
+        }
+    }
+
+    /// Reads which projects are already in `dir`, once.
+    pub fn watch_dir(&mut self, dir: &Path) {
+        if self.dir.is_none() {
+            self.dir = Some(dir.to_path_buf());
+            self.known = read_index(dir).into_keys().collect();
+        }
+    }
+
     /// Downloads the selected pack into `dir` on a worker thread.
     pub fn download(&mut self, index: usize, dir: &Path, game_version: &str) {
         if self.busy {
@@ -393,14 +476,18 @@ impl Browser {
         let Some(hit) = self.hits.get(index) else {
             return;
         };
+        if self.known.contains(&hit.id) {
+            return;
+        }
         self.installing = Some(index);
         self.busy = true;
         self.status = None;
         let url = versions_url(&hit.id, game_version);
+        let project = hit.id.clone();
         let dir = dir.to_path_buf();
         let sender = self.sender.clone();
         spawn("pack-browser-download", move || {
-            let _ = sender.send(download_pack(&url, &dir));
+            let _ = sender.send(download_pack(&url, &dir, &project));
         });
     }
 }
@@ -412,11 +499,16 @@ fn spawn(name: &str, work: impl FnOnce() + Send + 'static) {
 }
 
 /// Fetches the version list, then the pack, and writes it into `dir`.
-fn download_pack(versions: &str, dir: &Path) -> Message {
+fn download_pack(versions: &str, dir: &Path, project: &str) -> Message {
     let (url, name, sha1) = match get_text(versions).and_then(|body| parse_version_file(&body)) {
         Ok(found) => found,
         Err(reason) => return Message::Failed(reason),
     };
+    let safe = safe_file_name(&name);
+    if dir.join(&safe).exists() {
+        record(dir, project, &safe);
+        return Message::Exists(safe);
+    }
     let body = match get_bytes(&url, MAX_PACK_BYTES) {
         Ok(body) => body,
         Err(reason) => return Message::Failed(reason),
@@ -440,11 +532,14 @@ fn download_pack(versions: &str, dir: &Path) -> Message {
     // half-written zip.
     let partial = path.with_extension("partial");
     match std::fs::write(&partial, &body).and_then(|()| std::fs::rename(&partial, &path)) {
-        Ok(()) => Message::Downloaded(
-            path.file_name()
+        Ok(()) => {
+            let file = path
+                .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or(name),
-        ),
+                .unwrap_or(name);
+            record(dir, project, &file);
+            Message::Downloaded(file)
+        }
         Err(e) => {
             let _ = std::fs::remove_file(&partial);
             Message::Failed(e.to_string())
@@ -529,12 +624,12 @@ mod tests {
     #[test]
     fn search_asks_only_for_resource_packs() {
         let none = std::collections::BTreeSet::new();
-        let url = search_url("blue", &none);
+        let url = search_url("blue", &none, 0);
         assert!(url.starts_with("https://api.modrinth.com/v2/search?"));
         assert!(url.contains("project_type%3Aresourcepack"));
         assert!(url.ends_with("query=blue"));
         // A query with its own separators cannot add parameters.
-        assert!(search_url("a&b=c", &none).ends_with("query=a%26b%3Dc"));
+        assert!(search_url("a&b=c", &none, 0).ends_with("query=a%26b%3Dc"));
     }
 
     #[test]
@@ -542,19 +637,21 @@ mod tests {
         let chosen = |v: &[usize]| v.iter().copied().collect();
         // Two resolutions are one group: Modrinth ORs inside a list.
         let both: std::collections::BTreeSet<usize> = chosen(&[3, 4]);
-        let url = search_url("", &both);
+        let url = search_url("", &both, 0);
         assert!(url.contains(&urlencode(
             r#"[["project_type:resourcepack"],["resolutions:16x","resolutions:32x"]]"#
         )));
         // A category and a resolution are separate lists, so they AND.
         let mixed: std::collections::BTreeSet<usize> = chosen(&[0, 3]);
-        let url = search_url("", &mixed);
+        let url = search_url("", &mixed, 0);
         assert!(url.contains(&urlencode(
             r#"[["project_type:resourcepack"],["categories:realistic"],["resolutions:16x"]]"#
         )));
         // Out-of-range indices are ignored rather than panicking.
         let silly: std::collections::BTreeSet<usize> = chosen(&[99]);
-        assert!(search_url("", &silly).contains(&urlencode(r#"[["project_type:resourcepack"]]"#)));
+        assert!(
+            search_url("", &silly, 0).contains(&urlencode(r#"[["project_type:resourcepack"]]"#))
+        );
     }
 
     #[test]
@@ -635,5 +732,51 @@ mod tests {
         std::fs::write(dir.join("p (2).zip"), b"x").unwrap();
         assert_eq!(free_path(&dir, "p.zip"), Some(dir.join("p (3).zip")));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_later_page_asks_modrinth_for_its_offset_and_the_total_is_read() {
+        let none = std::collections::BTreeSet::new();
+        assert!(search_url("x", &none, 40).contains("&offset=40&"));
+        assert_eq!(parse_total(r#"{"hits": [], "total_hits": 133}"#), 133);
+        assert_eq!(parse_total("nonsense"), 0);
+        let mut browser = Browser::new();
+        browser.total = 45;
+        assert_eq!(browser.last_page(), 2);
+        browser.total = 20;
+        assert_eq!(browser.last_page(), 0);
+    }
+
+    #[test]
+    fn a_pack_installed_before_is_known_and_never_downloaded_again() {
+        let root = std::env::temp_dir().join(format!("horizon-pack-index-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("resourcepacks");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Blue.zip"), b"zip").unwrap();
+        record(&dir, "proj1", "Blue.zip");
+        record(&dir, "gone", "Missing.zip");
+        let mut browser = Browser::new();
+        browser.watch_dir(&dir);
+        assert!(browser.known.contains("proj1"));
+        assert!(
+            !browser.known.contains("gone"),
+            "a deleted pack is no longer installed"
+        );
+        browser.hits = vec![Hit {
+            id: "proj1".into(),
+            title: "Blue".into(),
+            author: String::new(),
+            description: String::new(),
+            downloads: 0,
+            icon_url: String::new(),
+        }];
+        browser.download(0, &dir, "26.3");
+        assert!(
+            !browser.busy && browser.installing.is_none(),
+            "no download starts"
+        );
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
