@@ -17,7 +17,10 @@ use horizon_core::{
     biome::BiomeZoom, geometry::Direction, position::BlockPos, random::position_seed,
 };
 use horizon_polytone::{
-    Modifiers, block_modifiers::BlockModifier, colormaps::Colormaps, tint::ColorSource,
+    Modifiers,
+    block_modifiers::{BlockModifier, BlockOffset, BlockRenderType},
+    colormaps::Colormaps,
+    tint::ColorSource,
 };
 use horizon_world::{
     block_render::FaceVisibility,
@@ -532,6 +535,8 @@ struct Info {
     tint_count: u8,
     /// `OffsetType` as (max horizontal, max vertical): vertical 0 for XZ.
     offset: Option<(f32, f32)>,
+    /// A Polytone block modifier's render type, over the model's own layer.
+    render_type: Option<BlockRenderType>,
     /// `isSolid()` (legacy), for fluid corner heights.
     legacy_solid: bool,
     /// `HalfTransparentBlock`/`LeavesBlock`: water sides show the overlay sprite.
@@ -637,10 +642,19 @@ impl MeshTables {
             let Some(entry) = set.resolve_index(&name, &|tag| block_in_tag(tag, &name)) else {
                 continue;
             };
-            let Some(tint) = set.get(entry).and_then(|m| m.tint.as_ref()) else {
+            let Some(modifier) = set.get(entry) else {
                 continue;
             };
             let Some(info) = self.info.get_mut(id) else {
+                continue;
+            };
+            if let Some(render_type) = modifier.render_type {
+                info.render_type = Some(render_type);
+            }
+            if let Some(offset) = modifier.offset {
+                info.offset = offset_limits(offset);
+            }
+            let Some(tint) = modifier.tint.as_ref() else {
                 continue;
             };
             for index in 0..2i32 {
@@ -805,6 +819,7 @@ impl MeshTables {
                 tints,
                 tint_count,
                 offset,
+                render_type: None,
                 legacy_solid: s.legacy_solid,
                 overlay: s.has_class("HalfTransparentBlock") || s.has_class("LeavesBlock"),
                 leaves: s.has_class("LeavesBlock"),
@@ -943,6 +958,53 @@ impl MeshTables {
     /// `BlockState.getOffset` for blocks with a random model offset.
     pub fn offset(&self, state: BlockStateId, x: i32, z: i32) -> Option<[f64; 3]> {
         offset(self.info.get(state.0 as usize)?, x, z)
+    }
+}
+fn offset_limits(offset: BlockOffset) -> Option<(f32, f32)> {
+    match offset {
+        BlockOffset::None => None,
+        BlockOffset::Xz => Some((0.25, 0.0)),
+        BlockOffset::Xyz => Some((0.25, 0.2)),
+    }
+}
+fn render_layer(
+    render_type: Option<BlockRenderType>,
+    model: (bool, bool, bool),
+) -> (bool, bool, bool) {
+    match render_type {
+        None => model,
+        Some(BlockRenderType::Solid) => (false, true, true),
+        Some(BlockRenderType::Cutout) => (false, false, false),
+        Some(BlockRenderType::Translucent) => (true, false, false),
+    }
+}
+#[cfg(test)]
+mod block_field_tests {
+    use super::*;
+
+    #[test]
+    fn offset_types_set_the_most_a_block_moves() {
+        assert_eq!(offset_limits(BlockOffset::None), None);
+        assert_eq!(offset_limits(BlockOffset::Xz), Some((0.25, 0.0)));
+        assert_eq!(offset_limits(BlockOffset::Xyz), Some((0.25, 0.2)));
+    }
+
+    #[test]
+    fn a_render_type_overrides_the_models_layer_and_none_keeps_it() {
+        let model = (true, false, false);
+        assert_eq!(render_layer(None, model), model);
+        assert_eq!(
+            render_layer(Some(BlockRenderType::Solid), model),
+            (false, true, true)
+        );
+        assert_eq!(
+            render_layer(Some(BlockRenderType::Cutout), (false, true, false)),
+            (false, false, false)
+        );
+        assert_eq!(
+            render_layer(Some(BlockRenderType::Translucent), (false, true, false)),
+            (true, false, false)
+        );
     }
 }
 /// `OffsetType.XZ`/`XYZ`: a per-column jitter from `Mth.getSeed(x, 0, z)`.
@@ -1489,7 +1551,11 @@ impl Mesher<'_> {
         if self.tables.is_animated(face.layer as u16) {
             out.note_sprite_layer(face.layer as u16);
         }
-        let target = if face.translucent {
+        let (translucent, opaque, force_opaque) = render_layer(
+            state.render_type,
+            (face.translucent, face.opaque, force_opaque),
+        );
+        let target = if translucent {
             &mut out.translucent
         } else {
             &mut out.solid
@@ -1506,7 +1572,7 @@ impl Mesher<'_> {
                 q.uv[i],
                 // Opaque leaves (forceOpaque) and quads over opaque texels draw in the
                 // solid layer: no alpha cutout (a dirt path's side skips its clear top row).
-                if (face.opaque && !face.translucent) || force_opaque {
+                if (opaque && !translucent) || force_opaque {
                     face.layer as u16 | OPAQUE_LAYER
                 } else {
                     face.layer as u16

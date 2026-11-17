@@ -85,6 +85,7 @@ fn info(solid: bool) -> Info {
         tints: [Tint::None; 2],
         tint_count: 0,
         offset: None,
+        render_type: None,
         legacy_solid: false,
         overlay: false,
         leaves: false,

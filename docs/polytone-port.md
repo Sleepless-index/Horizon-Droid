@@ -22,13 +22,15 @@ Work only in this repository.
   item model's tints, sampled at the owner's position with plains climate. Targets by id, `#tag` and regex.
 - Item modifier `bar_color` (a flat colour only; the `damage` type and textures leave vanilla's bar) and `rarity`
   (name colour of the held-item name, tooltip and chat links).
-- Read but not applied: block `render_type`, `offset_type` and the other block fields, item modifier
-  effects other than the tint, flat `bar_color` and `rarity`, fluid modifiers other than the water tint, `sprites`, `creative_tabs`,
+- Block modifier `render_type` (solid, cutout, translucent: which terrain layer the block's faces draw in) and
+  `offset_type` (`none`, `xz`, `xyz`; the model offset only, collision and the outline keep vanilla's).
+- Read but not applied: the other block fields (`map_color`, `can_occlude`, particles), item modifier
+  tooltips, arm pose and armor/scope textures, fluid modifiers other than the water tint, `sprites`, `creative_tabs`,
   `particles`, `pack` config, dimension modifiers, `colors.json` custom colours.
 
 ## Next, in rough order
 
-1. Block modifier effects other than the tint (render type, offset); block tints that read the position.
+1. Block tints that read the position; custom `offset_type` objects; `can_occlude`.
 2. Item modifier tooltips, textured `bar_color`, arm pose, armor/scope textures.
 3. Position-dependent colormaps (`POS_X`, `POS_Z`, ...), now logged as "isn't applied yet".
 4. Refused colormap features: `color_modifier`, `biome_id`, `legacy_temperature`, `grid`, `damage`.
