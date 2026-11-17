@@ -276,6 +276,7 @@ impl Game<'_> {
             };
             extras_hud::draw_minimap(batch, atlas, &mut corners, &look);
         }
+        self.draw_pvp_hud(batch, &mut corners);
         if mod_panels {
             self.draw_mod_panels(batch, &mut corners);
         }
@@ -285,7 +286,7 @@ impl Game<'_> {
     /// (`Hud.extractEffects`: beneficial at y 1, harmful at y 26).
     fn effect_rows_height(&self) -> f32 {
         let effects = &self.potions.effects.list;
-        if effects.is_empty() || self.screen != Screen::Playing {
+        if effects.is_empty() || self.screen != Screen::Playing || self.pvp_effects_shown() {
             return 0.0;
         }
         let harmful = effects.iter().any(|e| {

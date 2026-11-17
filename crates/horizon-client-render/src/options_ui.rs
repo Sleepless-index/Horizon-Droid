@@ -2585,22 +2585,16 @@ impl OptionsUi {
                         widget
                     }
                 };
-                // The PvP preset first; on the Extras page beside the way to the PvP & HUD page.
-                let preset = button(0.0, 0.0, 150.0, tr("horizon.pvp.preset"), Act::PvpPreset);
-                let second = if self.page() == Page::Extras {
-                    button(
-                        0.0,
-                        0.0,
-                        150.0,
-                        tr("horizon.pages.open.pvp"),
-                        Act::Push(Page::Pvp),
-                    )
-                } else {
+                // PvP & HUD opens with its preset and the editor; Extras doesn't repeat them,
+                // nor the way to PvP & HUD (Horizon Settings has it).
+                let mut rows = Vec::new();
+                if self.page() == Page::Pvp {
+                    let preset = button(0.0, 0.0, 150.0, tr("horizon.pvp.preset"), Act::PvpPreset);
                     // The editor moves what the game shows: only from a world.
                     let edit = button(0.0, 0.0, 150.0, tr("horizon.pvp.editor"), Act::HudEditor);
-                    if self.in_world { edit } else { inactive(edit) }
-                };
-                let mut rows = vec![Row::Buttons(preset, Some(second))];
+                    let edit = if self.in_world { edit } else { inactive(edit) };
+                    rows.push(Row::Buttons(preset, Some(edit)));
+                }
                 let mut section = Vec::new();
                 let flush = |rows: &mut Vec<Row>, section: &mut Vec<crate::extras::Item>| {
                     rows.extend(
@@ -2648,25 +2642,22 @@ impl OptionsUi {
                     ),
                     Row::Buttons(
                         open("horizon.pages.open.extras", Page::Extras),
-                        Some(open("horizon.pages.open.mods", Page::Mods)),
+                        Some(open("horizon.pages.open.pvp", Page::Pvp)),
+                    ),
+                    Row::Buttons(
+                        open("horizon.pages.open.mods", Page::Mods),
+                        Some(self.extra_button(s, crate::extras::Item::DiscordPresence)),
                     ),
                     // No AI hides the AI Agent page and everything AI.
-                    Row::Buttons(
-                        self.extra_button(s, crate::extras::Item::DiscordPresence),
-                        Some(if s.extras.no_ai {
-                            self.extra_button(s, crate::extras::Item::NoAi)
-                        } else {
-                            open("horizon.pages.open.agent", Page::Agent)
-                        }),
-                    ),
-                ]
-                .into_iter()
-                .chain(
-                    (!s.extras.no_ai).then(|| {
+                    if s.extras.no_ai {
                         Row::Buttons(self.extra_button(s, crate::extras::Item::NoAi), None)
-                    }),
-                )
-                .collect()
+                    } else {
+                        Row::Buttons(
+                            open("horizon.pages.open.agent", Page::Agent),
+                            Some(self.extra_button(s, crate::extras::Item::NoAi)),
+                        )
+                    },
+                ]
             }
             Page::Agent => {
                 let mut rows = vec![Row::Buttons(
@@ -7395,10 +7386,15 @@ mod tests {
                 Page::ShaderPacks,
                 Page::Controller,
                 Page::Extras,
+                Page::Pvp,
                 Page::Mods,
                 Page::Agent,
             ]
         );
+        // PvP & HUD has its own way in here; Extras no longer carries it.
+        ui.push(Page::Extras);
+        assert!(!pushes(&mut ui).contains(&Page::Pvp));
+        ui.back(&mut Settings::default());
         // No AI hides the AI Agent page.
         let mut no_ai = Settings::default();
         no_ai.extras.no_ai = true;
