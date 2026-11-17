@@ -14,7 +14,7 @@ Work only in this repository.
     (a biome's own colour still wins, water is replaced everywhere);
   - water tint from a fluid modifier whose colormap depends only on the biome;
   - sky, fog and water fog colour from `biome_modifiers` (`biome_attributes.rs`): plain colour or
-    number override layers, `base` then `post_process`, highest priority wins.
+    number override layers, `base` then `post_process`, highest priority wins. Targets by id, `#tag` (from `tags/worldgen/biome`) and regex.
 - Block modifier `colormap` tints (`MeshTables::apply_polytone_block_tints`): a flat colour or a
   biome-only colormap per tint index 0 and 1, blended like vanilla biome tints. Targets by id, `#tag`
   and regex.

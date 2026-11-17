@@ -69,9 +69,9 @@ impl BiomeAttributes {
         self.modifiers.is_empty()
     }
 
-    pub fn visuals(&self, biome: &str) -> BiomeVisuals {
+    pub fn visuals(&self, biome: &str, in_tag: &dyn Fn(&str) -> bool) -> BiomeVisuals {
         let mut visuals = BiomeVisuals::default();
-        if let Some(m) = self.modifiers.resolve(biome, &|_| false) {
+        if let Some(m) = self.modifiers.resolve(biome, in_tag) {
             visuals.apply(&m.base);
             visuals.apply(&m.post_process);
         }
@@ -95,11 +95,29 @@ mod tests {
         );
         let attrs = BiomeAttributes::read(&root);
         assert!(!attrs.is_empty());
-        let swamp = attrs.visuals("minecraft:swamp");
+        let swamp = attrs.visuals("minecraft:swamp", &|_| false);
         assert_eq!(swamp.sky, Some(0x102030));
         assert_eq!(swamp.fog, Some(0x0000FF));
         assert_eq!(swamp.water_fog, Some(0x010203));
-        assert!(attrs.visuals("minecraft:plains").is_empty());
+        assert!(attrs.visuals("minecraft:plains", &|_| false).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_tag_target_reaches_the_biomes_in_the_tag() {
+        let root = scratch("biome-attrs-tag");
+        put(
+            &root,
+            "assets/foo/polytone/biome_modifiers/oceans.json",
+            r##"{"targets": "#minecraft:is_ocean", "attributes_modifiers": {"visual/sky_color": "#0A0B0C"}}"##,
+        );
+        let attrs = BiomeAttributes::read(&root);
+        let in_tag = |tag: &str| tag == "minecraft:is_ocean";
+        assert_eq!(
+            attrs.visuals("minecraft:ocean", &in_tag).sky,
+            Some(0x0A0B0C)
+        );
+        assert!(attrs.visuals("minecraft:ocean", &|_| false).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -114,8 +132,8 @@ mod tests {
                 "post_process": {"visual/sky_color": "#222222"}}}"##,
         );
         let attrs = BiomeAttributes::read(&root);
-        assert!(attrs.visuals("foo:plains").is_empty());
-        let plains = attrs.visuals("minecraft:plains");
+        assert!(attrs.visuals("foo:plains", &|_| false).is_empty());
+        let plains = attrs.visuals("minecraft:plains", &|_| false);
         assert_eq!(plains.sky, Some(0x222222));
         assert_eq!(plains.fog, None);
         let _ = std::fs::remove_dir_all(&root);

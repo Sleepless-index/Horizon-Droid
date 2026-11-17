@@ -161,6 +161,7 @@ struct Colormaps {
     dry: Vec<u32>,
     polytone: horizon_polytone::biome_colors::BiomeOverrides,
     visuals: horizon_polytone::biome_attributes::BiomeAttributes,
+    tags: std::collections::HashMap<String, std::collections::HashSet<String>>,
 }
 fn color(v: &Value) -> Option<u32> {
     match v {
@@ -199,7 +200,11 @@ impl BiomeInfo {
     fn from_json(name: String, v: &Value, maps: &Colormaps) -> Self {
         let effects = &v["effects"];
         let attributes = &v["attributes"];
-        let visuals = maps.visuals.visuals(&name);
+        let visuals = maps.visuals.visuals(&name, &|tag| {
+            maps.tags
+                .get(tag)
+                .is_some_and(|members| members.contains(&name))
+        });
         let temperature = v["temperature"].as_f64().unwrap_or(0.5) as f32;
         let downfall = v["downfall"].as_f64().unwrap_or(0.5) as f32;
         let modifier = match effects["grass_color_modifier"].as_str() {
@@ -296,12 +301,24 @@ pub fn identifier_order(a: &str, b: &str) -> std::cmp::Ordering {
 }
 impl Biomes {
     pub fn load(root: &Path) -> Result<Self> {
+        let visuals = horizon_polytone::biome_attributes::BiomeAttributes::read(root);
+        let tags = if visuals.is_empty() {
+            Default::default()
+        } else {
+            horizon_items::items::load_tags(
+                root,
+                "worldgen/biome",
+                &horizon_world::loot::PackOverlay::NONE,
+            )
+            .unwrap_or_default()
+        };
         let maps = Colormaps {
             grass: colormap(root, "grass")?,
             foliage: colormap(root, "foliage")?,
             dry: colormap(root, "dry_foliage")?,
             polytone: horizon_polytone::biome_colors::BiomeOverrides::read(root),
-            visuals: horizon_polytone::biome_attributes::BiomeAttributes::read(root),
+            visuals,
+            tags,
         };
         let mut list = Vec::new();
         let mut names: Vec<_> = fs::read_dir(root.join("data/minecraft/worldgen/biome"))?
@@ -493,6 +510,7 @@ mod pack_tests {
             dry: Vec::new(),
             polytone: Default::default(),
             visuals: Default::default(),
+            tags: Default::default(),
         };
         let list: Vec<BiomeInfo> = names
             .iter()
@@ -582,6 +600,7 @@ mod pack_tests {
             dry: Vec::new(),
             polytone: Default::default(),
             visuals: horizon_polytone::biome_attributes::BiomeAttributes::read(&root),
+            tags: Default::default(),
         };
         let plains = BiomeInfo::from_json("minecraft:plains".to_owned(), &json!({}), &maps);
         assert_eq!(plains.sky, Some(0x102030));
@@ -609,6 +628,7 @@ mod pack_tests {
             dry: Vec::new(),
             polytone: horizon_polytone::biome_colors::BiomeOverrides::read(&root),
             visuals: Default::default(),
+            tags: Default::default(),
         };
         let plain = BiomeInfo::from_json("minecraft:plains".to_owned(), &json!({}), &maps);
         assert_eq!(plain.grass, 0x112233);
