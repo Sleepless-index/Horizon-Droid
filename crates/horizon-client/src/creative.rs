@@ -232,13 +232,58 @@ impl Creative {
     /// prepared before it fall back to `creative-tabs.json`'s item ids.
     pub fn load(root: &Path) -> Result<Self> {
         let path = root.join("creative-inventory.json");
-        if path.exists() {
-            Self::from_json(&serde_json::from_slice(&fs::read(path)?)?)
+        let mut creative = if path.exists() {
+            Self::from_json(&serde_json::from_slice(&fs::read(path)?)?)?
         } else {
             Self::from_legacy(&serde_json::from_slice(&fs::read(
                 root.join("creative-tabs.json"),
-            )?)?)
+            )?)?)?
+        };
+        let modifiers = horizon_polytone::creative_tabs::TabModifier::read_all(root);
+        if !modifiers.is_empty() {
+            let tags = horizon_items::items::load_tags(
+                root,
+                "item",
+                &horizon_world::loot::PackOverlay::NONE,
+            )
+            .unwrap_or_default();
+            creative.apply_tab_modifiers(&modifiers, &|item, tag| {
+                tags.get(tag).is_some_and(|members| members.contains(item))
+            });
         }
+        Ok(creative)
+    }
+    fn apply_tab_modifiers(
+        &mut self,
+        modifiers: &[horizon_polytone::creative_tabs::TabModifier],
+        in_tag: &dyn Fn(&str, &str) -> bool,
+    ) {
+        for exported in &mut self.exported {
+            let tab = &mut exported.tab;
+            if tab.search || tab.inventory || tab.hotbar {
+                continue;
+            }
+            for modifier in modifiers
+                .iter()
+                .filter(|m| m.targets.matches(&tab.id, |_| false))
+            {
+                if let Some(icon) = &modifier.icon {
+                    tab.icon = icon.clone();
+                }
+                let mut pairs: Vec<(String, (ItemStack, bool))> = tab
+                    .items
+                    .drain(..)
+                    .zip(exported.operator.drain(..))
+                    .map(|(stack, operator)| (stack.item.to_string(), (stack, operator)))
+                    .collect();
+                modifier.apply_to(&mut pairs, &|id| (ItemStack::new(id, 1), false), in_tag);
+                for (_, (stack, operator)) in pairs {
+                    tab.items.push(stack);
+                    exported.operator.push(operator);
+                }
+            }
+        }
+        self.rebuild();
     }
     pub fn from_json(raw: &Value) -> Result<Self> {
         let mut tabs = Vec::new();

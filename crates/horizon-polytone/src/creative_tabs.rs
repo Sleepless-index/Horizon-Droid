@@ -180,6 +180,29 @@ impl TabModifier {
     }
 
     /// The tab's items after this modifier's removals and additions.
+    pub fn apply_to<T>(
+        &self,
+        items: &mut Vec<(String, T)>,
+        create: &dyn Fn(&str) -> T,
+        in_tag: &dyn Fn(&str, &str) -> bool,
+    ) {
+        let mut kept: std::collections::HashMap<String, std::collections::VecDeque<T>> =
+            std::collections::HashMap::new();
+        let mut ids = Vec::with_capacity(items.len());
+        for (id, payload) in items.drain(..) {
+            ids.push(id.clone());
+            kept.entry(id).or_default().push_back(payload);
+        }
+        self.apply(&mut ids, in_tag);
+        for id in ids {
+            let payload = kept
+                .get_mut(&id)
+                .and_then(std::collections::VecDeque::pop_front)
+                .unwrap_or_else(|| create(&id));
+            items.push((id, payload));
+        }
+    }
+
     pub fn apply(&self, items: &mut Vec<String>, in_tag: &dyn Fn(&str, &str) -> bool) {
         items.retain(|item| {
             !self
@@ -208,6 +231,30 @@ impl TabModifier {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn apply_to_keeps_the_payload_of_every_item_that_stays() {
+        let m = TabModifier::parse(
+            &json!({"removals": [{"type": "id_match", "path": "^b$"}],
+                    "additions": [{"items": "c"}]}),
+            Some("minecraft:t"),
+        )
+        .unwrap();
+        let mut items = vec![
+            ("minecraft:a".to_owned(), 1),
+            ("minecraft:b".to_owned(), 2),
+            ("minecraft:a".to_owned(), 3),
+        ];
+        m.apply_to(&mut items, &|_| 0, &|_, _| false);
+        assert_eq!(
+            items,
+            vec![
+                ("minecraft:a".to_owned(), 1),
+                ("minecraft:a".to_owned(), 3),
+                ("minecraft:c".to_owned(), 0)
+            ]
+        );
+    }
 
     #[test]
     fn removals_and_additions_edit_a_tab_in_order() {

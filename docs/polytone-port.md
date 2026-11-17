@@ -32,8 +32,11 @@ Work only in this repository.
 - Dimension modifiers (`dimension_attributes.rs`, applied in `Environment::load_dimension` and `sample`): `base` edits the
   dimension's own fog start, fog end, cloud fog end and sky, fog and cloud colours; `post_process` edits the final
   sampled values. The `rain` and `thunder` groups and the other attributes are not applied.
+- Creative tab modifiers (`Creative::load`): `removals`, `additions` (before or after a predicate match, new stacks as
+  plain items) and `icon` change a category tab's stacks and icon; the search, inventory and hotbar tabs are left
+  alone. A tab's `name` isn't applied.
 - Read but not applied: the other block fields (`map_color`, `can_occlude`, particles), item modifier
-  tooltips, arm pose and armor/scope textures, flowing-water-only tints, `fog_fade`, `sprites`, `creative_tabs`,
+  tooltips, arm pose and armor/scope textures, flowing-water-only tints, `fog_fade`, `sprites`,
   `particles`, `pack` config, `colors.json` custom colours.
 
 ## Next, in rough order
@@ -43,7 +46,7 @@ Work only in this repository.
 3. Position-dependent colormaps for fluid tints (blocks and items already read the position).
 4. Refused colormap features: `color_modifier`, `biome_id`, `legacy_temperature`, `grid`, `damage`.
 5. Biome layers: `blend_to_gray`, `REMOVE`, colormap and expression arguments, other attributes; weather groups and the other dimension attributes; fog distances and cloud colour.
-6. Wire `sprites`, `creative_tabs`, `particles`, `colors.json` custom colours.
+6. Wire `sprites`, `particles`, `colors.json` custom colours.
 
 ## Rules
 
