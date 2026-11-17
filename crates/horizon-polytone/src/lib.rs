@@ -14,6 +14,7 @@ pub mod biome_colors;
 pub mod block_modifiers;
 pub mod colormaps;
 pub mod colors;
+pub mod dimension_attributes;
 pub mod creative_tabs;
 pub mod expr;
 mod files;

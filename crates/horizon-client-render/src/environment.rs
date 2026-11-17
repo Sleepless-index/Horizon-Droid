@@ -2,6 +2,7 @@
 //! (`KeyframeTrackSampler`, `EasingType`): sky/fog colours, sky light factor,
 //! celestial angles and star brightness for the overworld day cycle.
 use crate::Result;
+use horizon_polytone::dimension_attributes::{DimensionEdits, Group};
 use serde_json::Value;
 use std::{collections::HashMap, fs, path::Path};
 
@@ -115,10 +116,21 @@ impl Track {
         std::array::from_fn(|i| from[i] + (to[i] - from[i]) * alpha)
     }
 }
+const SCALARS: [(&str, f32); 3] = [
+    ("minecraft:visual/fog_start_distance", 0.0),
+    ("minecraft:visual/fog_end_distance", 1024.0),
+    ("minecraft:visual/cloud_fog_end_distance", 2048.0),
+];
+const COLORS: [&str; 3] = [
+    "minecraft:visual/sky_color",
+    "minecraft:visual/fog_color",
+    "minecraft:visual/cloud_color",
+];
 pub struct Environment {
     period: i64,
     tracks: HashMap<String, Track>,
     base: HashMap<String, [f32; 4]>,
+    edits: DimensionEdits,
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Sky {
@@ -153,6 +165,7 @@ impl Environment {
         } else {
             serde_json::json!({"period_ticks": 24000, "tracks": {}})
         };
+        let dimension_name = dimension;
         let dimension: Value = serde_json::from_slice(&fs::read(
             root.join(format!("data/minecraft/dimension_type/{dimension}.json")),
         )?)?;
@@ -208,10 +221,30 @@ impl Environment {
                 base.insert(k.clone(), v);
             }
         }
+        let edits = horizon_polytone::dimension_attributes::DimensionAttributes::read(root)
+            .edits(&format!("minecraft:{dimension_name}"));
+        for (name, default) in SCALARS {
+            if edits.is_empty() {
+                break;
+            }
+            let vanilla = base.get(name).map_or(default, |v| v[0]);
+            let edited = edits.scalar(Group::Base, name, vanilla);
+            if edited != vanilla {
+                base.insert(name.into(), [edited, 0.0, 0.0, 0.0]);
+            }
+        }
+        for name in COLORS {
+            let vanilla = base.get(name).copied().unwrap_or([0.0, 0.0, 0.0, 1.0]);
+            let edited = edits.color(Group::Base, name, [vanilla[0], vanilla[1], vanilla[2]]);
+            if edited != [vanilla[0], vanilla[1], vanilla[2]] {
+                base.insert(name.into(), [edited[0], edited[1], edited[2], vanilla[3]]);
+            }
+        }
         Ok(Self {
             period: timeline["period_ticks"].as_i64().unwrap_or(24000),
             tracks,
             base,
+            edits,
         })
     }
     fn value(&self, name: &str, base: [f32; 4], ticks: i64) -> [f32; 4] {
@@ -265,7 +298,7 @@ impl Environment {
                 .get(name)
                 .map_or(0.0, |t| t.sample(ticks, self.period)[0])
         };
-        Sky {
+        let mut sky = Sky {
             sky_color: three(v(
                 "minecraft:visual/sky_color",
                 biome_sky.map_or_else(|| self.base("minecraft:visual/sky_color"), rgb),
@@ -309,7 +342,23 @@ impl Environment {
                 .base
                 .get("minecraft:visual/cloud_fog_end_distance")
                 .map_or(2048.0, |v| v[0]),
+        };
+        if !self.edits.is_empty() {
+            let post = |name: &str, c: [f32; 3]| self.edits.color(Group::PostProcess, name, c);
+            sky.sky_color = post("minecraft:visual/sky_color", sky.sky_color);
+            sky.fog_color = post("minecraft:visual/fog_color", sky.fog_color);
+            let cloud = post(
+                "minecraft:visual/cloud_color",
+                [sky.cloud_color[0], sky.cloud_color[1], sky.cloud_color[2]],
+            );
+            sky.cloud_color = [cloud[0], cloud[1], cloud[2], sky.cloud_color[3]];
+            let scalar = |name: &str, v: f32| self.edits.scalar(Group::PostProcess, name, v);
+            sky.fog_start = scalar("minecraft:visual/fog_start_distance", sky.fog_start);
+            sky.fog_end = scalar("minecraft:visual/fog_end_distance", sky.fog_end);
+            sky.cloud_fog_end =
+                scalar("minecraft:visual/cloud_fog_end_distance", sky.cloud_fog_end);
         }
+        sky
     }
 }
 /// WeatherAttributes: rain then thunder layers lerped by their levels
@@ -400,6 +449,33 @@ pub fn sky_darken(environment: &Environment, day_time: i64, rain: f32, thunder: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dimension_modifier_changes_the_base_and_the_final_values() {
+        let root = std::env::temp_dir().join(format!("horizon-dim-env-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("data/minecraft/dimension_type")).unwrap();
+        fs::create_dir_all(root.join("assets/foo/polytone/dimension_modifiers")).unwrap();
+        fs::write(
+            root.join("data/minecraft/dimension_type/the_nether.json"),
+            r##"{"attributes": {"minecraft:visual/fog_end_distance": 96,
+                "minecraft:visual/fog_color": "#330808"}}"##,
+        )
+        .unwrap();
+        fs::write(
+            root.join("assets/foo/polytone/dimension_modifiers/n.json"),
+            r##"{"targets": "minecraft:the_nether", "attributes_modifiers": {
+                "base": {"visual/fog_end_distance": {"argument": 0.5, "modifier": "multiply"}},
+                "post_process": {"visual/fog_color": "#FF0000"}}}"##,
+        )
+        .unwrap();
+        let sky = Environment::load_dimension(&root, "the_nether", false)
+            .unwrap()
+            .sample(0, None, None);
+        assert_eq!(sky.fog_end, 48.0);
+        assert_eq!(sky.fog_color, [1.0, 0.0, 0.0]);
+        let _ = fs::remove_dir_all(&root);
+    }
 
     fn overworld() -> Option<Environment> {
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

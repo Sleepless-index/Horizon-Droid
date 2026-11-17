@@ -28,9 +28,12 @@ Work only in this repository.
   (name colour of the held-item name, tooltip and chat links).
 - Block modifier `render_type` (solid, cutout, translucent: which terrain layer the block's faces draw in) and
   `offset_type` (`none`, `xz`, `xyz`; the model offset only, collision and the outline keep vanilla's).
+- Dimension modifiers (`dimension_attributes.rs`, applied in `Environment::load_dimension` and `sample`): `base` edits the
+  dimension's own fog start, fog end, cloud fog end and sky, fog and cloud colours; `post_process` edits the final
+  sampled values. The `rain` and `thunder` groups and the other attributes are not applied.
 - Read but not applied: the other block fields (`map_color`, `can_occlude`, particles), item modifier
   tooltips, arm pose and armor/scope textures, flowing-water-only tints, `fog_fade`, `sprites`, `creative_tabs`,
-  `particles`, `pack` config, dimension modifiers, `colors.json` custom colours.
+  `particles`, `pack` config, `colors.json` custom colours.
 
 ## Next, in rough order
 
@@ -38,7 +41,7 @@ Work only in this repository.
 2. Item modifier tooltips, textured `bar_color`, arm pose, armor/scope textures.
 3. Position-dependent colormaps (`POS_X`, `POS_Z`, ...), now logged as "isn't applied yet".
 4. Refused colormap features: `color_modifier`, `biome_id`, `legacy_temperature`, `grid`, `damage`.
-5. Biome layers: `blend_to_gray`, `REMOVE`, colormap and expression arguments, other attributes; dimension modifiers and weather groups; fog distances and cloud colour.
+5. Biome layers: `blend_to_gray`, `REMOVE`, colormap and expression arguments, other attributes; weather groups and the other dimension attributes; fog distances and cloud colour.
 6. Wire `sprites`, `creative_tabs`, `particles`, `colors.json` custom colours.
 
 ## Rules

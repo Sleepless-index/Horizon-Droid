@@ -37,7 +37,7 @@ impl Channel {
         value
     }
 
-    fn push(&mut self, modifier: Modifier, argument: &Argument) {
+    pub fn push(&mut self, modifier: Modifier, argument: &Argument) {
         let operand = match (modifier, argument) {
             (Modifier::Override, Argument::Color(argb)) => Operand::Argb(*argb),
             (Modifier::Override, Argument::Number(n)) if n.is_finite() => {
