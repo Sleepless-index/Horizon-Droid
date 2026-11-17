@@ -332,7 +332,6 @@ impl Opt {
                 "options.modelPart.right_pants_leg",
                 "options.modelPart.hat",
             ][i],
-            Opt::SkinLayers3d => "horizon.options.three_d_skin_layers",
             Opt::MainHand => "options.mainHand",
             Opt::AllowServerListing => "options.allowServerListing",
             Opt::RealmsNotifications => "options.realmsNotifications.button",
@@ -907,11 +906,6 @@ impl Opt {
             } else {
                 "options.key.hold"
             }),
-            Opt::SkinLayers3d => tr(if s.extras.three_d_skin_layers {
-                "options.on"
-            } else {
-                "options.off"
-            }),
             Opt::ToggleAttack => tr(if s.toggle_attack {
                 "options.key.toggle"
             } else {
@@ -1249,7 +1243,6 @@ impl Opt {
             Opt::ChunkBuilder => s.prioritize_chunk_updates = next(s.prioritize_chunk_updates, 3),
             Opt::ToggleCrouch => s.toggle_crouch = !s.toggle_crouch,
             Opt::ToggleSprint => s.toggle_sprint = !s.toggle_sprint,
-            Opt::SkinLayers3d => s.extras.three_d_skin_layers = !s.extras.three_d_skin_layers,
             Opt::ToggleAttack => s.toggle_attack = !s.toggle_attack,
             Opt::ToggleUse => s.toggle_use = !s.toggle_use,
             Opt::AutoJump => s.auto_jump = !s.auto_jump,
@@ -2646,7 +2639,7 @@ impl OptionsUi {
                     ),
                     Row::Buttons(
                         open("horizon.pages.open.mods", Page::Mods),
-                        Some(self.extra_button(s, crate::extras::Item::DiscordPresence)),
+                        None,
                     ),
                     // No AI hides the AI Agent page and everything AI.
                     if s.extras.no_ai {
@@ -2747,8 +2740,6 @@ impl OptionsUi {
             Page::Skin => {
                 // SkinCustomizationScreen: the seven layers, then Main Hand.
                 let mut opts: Vec<Opt> = (0..MODEL_PART_KEYS.len()).map(Opt::ModelPart).collect();
-                // Horizon's own: the outer layer as real pixels, not one box.
-                opts.push(Opt::SkinLayers3d);
                 opts.push(Opt::MainHand);
                 #[allow(unused_mut)]
                 let mut rows = pairs(&opts);

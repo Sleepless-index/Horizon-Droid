@@ -2,14 +2,12 @@
 //! settings, kept in `horizon-extras.txt` next to `options.txt` so that file
 //! stays exactly vanilla's, and the logic behind them. Every extra is off by
 //! default; see `docs/extras.md`. Horizon's own switches outside the Extras page
-//! (No AI, Agent Control, Discord Rich Presence) are kept here too.
+//! (No AI, Agent Control) are kept here too.
 use std::{collections::VecDeque, fs, path::Path};
 
 pub const FILE: &str = "horizon-extras.txt";
 /// The name the options screen uses while the sort key waits for a key.
 pub const SORT_KEY: &str = "horizon.sort";
-/// The 3D skin layers line, here and in the `options.txt` that held it first.
-const SKIN_LAYERS_KEY: &str = "threeDSkinLayers";
 
 /// The minimap's sizes in GUI pixels, and its zooms in blocks per pixel.
 pub const MINIMAP_SIZES: [(u8, &str); 3] = [(64, "Small"), (96, "Medium"), (128, "Large")];
@@ -118,12 +116,6 @@ pub struct Extras {
     /// Agents may control the game the player starts: it opens its control socket for
     /// horizon-ctl and MCP clients (off by default; an agent's own launch always opens it).
     pub agent_control: bool,
-    /// "Playing Horizon" on the player's Discord profile (`discord_presence`; on by default).
-    pub discord_presence: bool,
-    /// 3D skin layers (`threeDSkinLayers`, Options → Skin Customization): each
-    /// painted texel of a player's outer layer drawn as a slab
-    /// (`horizon_client::mobs::skin_layers`).
-    pub three_d_skin_layers: bool,
     /// The PvP & HUD page's options (`pvp`).
     pub pvp: crate::pvp::Pvp,
 }
@@ -159,8 +151,6 @@ impl Default for Extras {
             sort_key: "key.keyboard.unknown".into(),
             no_ai: false,
             agent_control: false,
-            discord_presence: true,
-            three_d_skin_layers: false,
             pvp: Default::default(),
         }
     }
@@ -237,8 +227,6 @@ impl Extras {
                 "sortKey" if value.starts_with("key.") => e.sort_key = value.to_owned(),
                 horizon_core::no_ai::KEY => e.no_ai = flag(e.no_ai),
                 "agentControl" => e.agent_control = flag(e.agent_control),
-                "discordPresence" => e.discord_presence = flag(e.discord_presence),
-                SKIN_LAYERS_KEY => e.three_d_skin_layers = flag(e.three_d_skin_layers),
                 key => {
                     e.pvp.parse_line(key, value);
                 }
@@ -248,7 +236,7 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "packBrowser:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nownNameTag:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\ndiscordPresence:{}\n{}:{}\n",
+            "packBrowser:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nownNameTag:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\n",
             bool_text(self.pack_browser),
             bool_text(self.fullbright),
             bool_text(self.dynamic_lights),
@@ -283,30 +271,9 @@ impl Extras {
             horizon_core::no_ai::KEY,
             bool_text(self.no_ai),
             bool_text(self.agent_control),
-            bool_text(self.discord_presence),
-            SKIN_LAYERS_KEY,
-            bool_text(self.three_d_skin_layers),
         );
         self.pvp.serialize(&mut text);
         text
-    }
-    /// Adopts the settings `options.txt` held before they moved here, while
-    /// this file (`own`) has no line of its own: 3D skin layers was an
-    /// `options.txt` line. Vanilla's `Options.save` drops lines it doesn't
-    /// know, so it is read there once, the first start after the update.
-    pub fn read_old_options(&mut self, own: &str, options_txt: &str) {
-        fn line(text: &str) -> Option<&str> {
-            text.lines().find_map(|l| {
-                l.split_once(':')
-                    .filter(|(key, _)| *key == SKIN_LAYERS_KEY)
-                    .map(|(_, value)| value)
-            })
-        }
-        if line(own).is_none()
-            && let Some(value) = line(options_txt)
-        {
-            self.three_d_skin_layers = value == "true";
-        }
     }
     /// Binds the extra key `name` (`SORT_KEY`); false for
     /// another name (a vanilla mapping).
@@ -436,7 +403,6 @@ pub enum Item {
     NoAi,
     AgentControl,
     /// On the Horizon Settings page.
-    DiscordPresence,
     /// The Select Resource Packs screen's Add button (Modrinth).
     PackBrowser,
     /// On the PvP & HUD page (`pvp::rows`).
@@ -475,7 +441,6 @@ impl Item {
             Item::SortKey => "Sort key",
             Item::NoAi => "No AI",
             Item::AgentControl => "Agent Control",
-            Item::DiscordPresence => "Discord Rich Presence",
             Item::PackBrowser => "Resource pack browser",
             Item::Pvp(o) => o.caption(),
         }
@@ -488,7 +453,7 @@ impl Item {
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
             Fullbright | DynamicLights | OwnNameTag | MouseTweaks | Sort | AutoReconnect | NoAi
-            | AgentControl | DiscordPresence | PackBrowser => {
+            | AgentControl | PackBrowser => {
                 return None;
             }
         })
@@ -520,9 +485,6 @@ impl Item {
             }
             Item::NoAi => {
                 "Hides and turns off every AI feature: agent control, horizon-ctl and the MCP servers. The launcher's switch too."
-            }
-            Item::DiscordPresence => {
-                "Shows Playing Horizon on your Discord profile while Discord runs: menus, single player or multiplayer, the dimension and the time played. Never a world's name or a server's address."
             }
             Item::PackBrowser => {
                 "Select Resource Packs gets an Add button that searches Modrinth and installs a pack into your packs folder. Off, the game never contacts Modrinth."
@@ -559,7 +521,6 @@ impl Item {
             Item::Sort => e.sort,
             Item::NoAi => e.no_ai,
             Item::AgentControl => e.agent_control,
-            Item::DiscordPresence => e.discord_presence,
             Item::PackBrowser => e.pack_browser,
             Item::Pvp(o) => return o.switch(&e.pvp),
             _ => return None,
@@ -589,7 +550,6 @@ impl Item {
             Item::Sort => e.sort = !e.sort,
             Item::NoAi => e.no_ai = !e.no_ai,
             Item::AgentControl => e.agent_control = !e.agent_control,
-            Item::DiscordPresence => e.discord_presence = !e.discord_presence,
             Item::PackBrowser => e.pack_browser = !e.pack_browser,
             Item::Pvp(o) => o.cycle(&mut e.pvp, _back),
             Item::SortKey => {}
@@ -615,7 +575,6 @@ mod tests {
         assert!(!d.fullbright && !d.dynamic_lights);
         assert!(!d.zoom && !d.fps && !d.keystrokes && !d.minimap && !d.auto_reconnect);
         assert!(!d.mouse_tweaks && !d.sort && !d.own_name_tag);
-        assert!(d.discord_presence);
         assert_eq!(Extras::parse(""), d);
         assert_eq!(Extras::parse(&d.serialize()), d);
         let mut e = d.clone();
@@ -644,7 +603,6 @@ mod tests {
         e.mouse_tweaks_wheel = false;
         e.sort = true;
         e.sort_key = "key.keyboard.r".into();
-        e.discord_presence = false;
         assert_eq!(Extras::parse(&e.serialize()), e);
     }
 

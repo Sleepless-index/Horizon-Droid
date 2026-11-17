@@ -737,8 +737,7 @@ pub struct Downloader {
 const MAX_SKIN_IMAGES: usize = 1024;
 impl Downloader {
     /// The decoded 64×64 RGBA image an atlas location holds, when it is
-    /// still in memory (3D skin layers builds its geometry from it, and the
-    /// disk cache backs whatever was dropped).
+    /// still in memory (the disk cache backs whatever was dropped).
     pub fn image(&self, location: &str) -> Option<&[u8]> {
         self.images.get(location).map(Vec::as_slice)
     }

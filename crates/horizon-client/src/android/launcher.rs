@@ -280,7 +280,6 @@ impl Launcher {
         self.prepared_session = None;
         self.launching = false;
         self.launch_pending_tick = false;
-        horizon_client::discord_presence::stop();
         horizon_client::ui_theme::reset_atlas();
         self.cursor = (0.0, 0.0);
         self.drag = None;

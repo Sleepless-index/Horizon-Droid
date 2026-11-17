@@ -123,7 +123,6 @@ mod decorated_pot;
 mod dedicated;
 mod deflect;
 mod dialogs;
-mod discord;
 mod dispense_fixture;
 mod dispenser;
 mod dragon;
@@ -302,7 +301,6 @@ mod shield;
 mod shoulders;
 mod sign_edit;
 mod skin_changer;
-mod skin_models;
 mod sniffers;
 mod spawner;
 mod spear;
@@ -2636,9 +2634,6 @@ struct Game<'a> {
     /// and mannequins) resolve through the services in the background.
     skin_profiles: RefCell<horizon_client::skins::Resolver>,
     skin_slots: horizon_client::skins::SkinSlots,
-    /// 3D skin layers: each player's outer layer as one slab per painted
-    /// texel, built once per (skin, slim) (`mobs::skin_layers`).
-    skin_3d: RefCell<skin_models::SkinModels>,
     /// Atlas trim slots in use: (sprite name, slot), least recently drawn first.
     trim_slots: Vec<(String, usize)>,
     cart_models: minecarts::CartModels,
@@ -18332,7 +18327,6 @@ impl Game<'_> {
                     self.heal_hold_latches();
                     // For the "I'm playing" ping: an atomic, sent on when it changes.
                     horizon_client::heartbeat::set_lan(self.is_published());
-                    self.update_discord_presence();
                     let steps = self.clock.advance(elapsed);
                     // The world ticking in the frame: once its ticks took a
                     // tick's length, the rest are dropped (`FixedStep::tick_fits`).
@@ -19003,7 +18997,6 @@ impl<'a> Game<'a> {
             }),
             skin_profiles: RefCell::new(horizon_client::skins::Resolver::new()),
             skin_slots: horizon_client::skins::SkinSlots::new(horizon_client::hud::SKIN_SLOTS),
-            skin_3d: Default::default(),
             trim_slots: Vec::new(),
             cart_models: prepared.cart_models,
             riding: None,
@@ -20647,7 +20640,6 @@ fn run_event_loop(mut game: Game<'_>) -> Result<()> {
     leave_fullscreen_after(&result, &mut game.settings);
     result?;
 
-    horizon_client::discord_presence::stop();
     write_report(&game)?;
     if let Some(e) = game.error.take() {
         return Err(e);
@@ -21423,7 +21415,6 @@ fn run_loading(
     }
     result?;
 
-    horizon_client::discord_presence::stop();
     match app {
         App::Ready(mut split) => {
             write_report(&split.host)?;
@@ -21504,14 +21495,6 @@ pub fn run() -> Result<()> {
     // Minecraft's constructor opens the narrator; a server has none.
     if options.execution_role.is_client() {
         narrator::start(&early_settings);
-    }
-    // "Playing Horizon" on Discord: never for a server; an automated run only talks to a test's fake Discord.
-    if options.dedicated.is_none() {
-        let automated = options.benchmark.is_some()
-            || options.offscreen
-            || options.frames.is_some()
-            || options.world_frames.is_some();
-        horizon_client::discord_presence::start(early_settings.extras.discord_presence, automated);
     }
     // Snapshots of derived tables live in the game folder, never beside the
     // shared resources.
