@@ -17524,6 +17524,9 @@ impl Game<'_> {
                         if self.screen == Screen::SkinChanger {
                             self.skin_changer_drag();
                         }
+                        if self.screen == Screen::HudEditor {
+                            self.hud_editor_drag();
+                        }
                         if self.screen == Screen::WorldOptions {
                             self.world_options_drag();
                         }
