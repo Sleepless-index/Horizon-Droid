@@ -1717,6 +1717,7 @@ dependencies = [
  "horizon-items",
  "horizon-mods",
  "horizon-narrator",
+ "horizon-polytone",
  "horizon-port-pack",
  "horizon-protocol",
  "horizon-server-files",

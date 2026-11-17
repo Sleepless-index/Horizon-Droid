@@ -493,6 +493,11 @@ pub struct ItemRenderer {
     grass: Vec<i32>,
     /// `minecraft:item` registry ids (`Item.getId`).
     item_ids: HashMap<String, i32>,
+    polytone: Option<horizon_polytone::item_tints::ItemTints>,
+}
+
+fn opaque(rgb: i32) -> i32 {
+    rgb | 0xFF00_0000_u32 as i32
 }
 
 /// Every `items/**/*.json` client item definition, by identifier.
@@ -577,7 +582,26 @@ impl ItemRenderer {
                 Some(out)
             })
             .unwrap_or_default();
+        let polytone = horizon_polytone::item_tints::ItemTints::read(
+            root,
+            models.prototypes.keys().map(|k| {
+                if k.contains(':') {
+                    k.clone()
+                } else {
+                    format!("minecraft:{k}")
+                }
+            }),
+            &|| {
+                horizon_items::items::load_tags(
+                    root,
+                    "item",
+                    &horizon_world::loot::PackOverlay::NONE,
+                )
+                .unwrap_or_default()
+            },
+        );
         Ok(Self {
+            polytone,
             item_ids,
             models,
             library,
@@ -676,7 +700,11 @@ impl ItemRenderer {
         let layers = resolved
             .layers
             .into_iter()
-            .map(|layer| {
+            .map(|mut layer| {
+                if let Some(p) = &self.polytone {
+                    let at = owner.map_or([0.0; 3], |o| o.position);
+                    p.retint(&stack.item, at, &mut layer.tints, opaque);
+                }
                 let (geometry, baked, extents) = match layer.content {
                     LayerContent::Model { model } => {
                         let baked = self.bake(&model);

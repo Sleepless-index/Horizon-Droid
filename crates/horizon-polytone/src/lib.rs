@@ -19,6 +19,7 @@ pub mod expr;
 mod files;
 pub mod fluid_modifiers;
 pub mod item_modifiers;
+pub mod item_tints;
 mod modifiers;
 pub mod pack;
 pub mod particles;

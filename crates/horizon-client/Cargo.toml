@@ -19,6 +19,7 @@ horizon-core = { path = "../horizon-core" }
 horizon-threads = { path = "../horizon-threads" }
 horizon-hdr = { path = "../horizon-hdr" }
 horizon-world = { path = "../horizon-world" }
+horizon-polytone = { path = "../horizon-polytone" }
 horizon-protocol = { path = "../horizon-protocol" }
 # server.properties, eula.txt and the user lists, shared with horizon-server.
 horizon-server-files = { path = "../horizon-server-files" }
