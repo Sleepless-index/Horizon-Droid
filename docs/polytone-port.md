@@ -18,6 +18,8 @@ Work only in this repository.
 - Block modifier `colormap` tints (`MeshTables::apply_polytone_block_tints`): a flat colour or a
   biome-only colormap per tint index 0 and 1, blended like vanilla biome tints. Targets by id, `#tag`
   and regex.
+- Fluid modifiers: lava and flowing lava take a `colormap` tint of their own (sampled with plains climate), and the
+  `fog_colormap` (flat) and `fog_radius` of water and lava recolour and scale the fog under the fluid.
 - Item modifier `colormap` tints (`item_tints.rs`, applied in `ItemRenderer::resolve`): tint indices 0 to 4 replace the
   item model's tints, sampled at the owner's position with plains climate. Targets by id, `#tag` and regex.
 - Item modifier `bar_color` (a flat colour only; the `damage` type and textures leave vanilla's bar) and `rarity`
@@ -25,7 +27,7 @@ Work only in this repository.
 - Block modifier `render_type` (solid, cutout, translucent: which terrain layer the block's faces draw in) and
   `offset_type` (`none`, `xz`, `xyz`; the model offset only, collision and the outline keep vanilla's).
 - Read but not applied: the other block fields (`map_color`, `can_occlude`, particles), item modifier
-  tooltips, arm pose and armor/scope textures, fluid modifiers other than the water tint, `sprites`, `creative_tabs`,
+  tooltips, arm pose and armor/scope textures, flowing-water-only tints, `fog_fade`, `sprites`, `creative_tabs`,
   `particles`, `pack` config, dimension modifiers, `colors.json` custom colours.
 
 ## Next, in rough order

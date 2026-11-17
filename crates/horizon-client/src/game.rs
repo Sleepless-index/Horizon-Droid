@@ -43,6 +43,7 @@ macro_rules! world_biomes {
 
 /// The world's packs' content files, as a field-level borrow (see the macros).
 fn polytone_block_tints(tables: &mut MeshTables, facts: &BlockFacts, root: &std::path::Path) {
+    tables.apply_polytone_fluid_tints(root);
     let tags = std::cell::OnceCell::new();
     tables.apply_polytone_block_tints(facts, root, &|tag, block| {
         tags.get_or_init(|| {

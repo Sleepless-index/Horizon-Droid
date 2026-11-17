@@ -63,6 +63,31 @@ pub fn water_tag(tag: &str) -> bool {
     tag == "minecraft:water"
 }
 
+pub fn lava_tag(tag: &str) -> bool {
+    tag == "minecraft:lava"
+}
+
+pub fn lava_colors(root: &Path) -> [Option<u32>; 2] {
+    let set = FluidModifier::read(root);
+    if set.is_empty() {
+        return [None; 2];
+    }
+    let maps = crate::colormaps::Colormaps::read(root);
+    let context = crate::colormaps::SampleContext {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+        temperature: 0.8,
+        downfall: 0.4,
+    };
+    ["minecraft:lava", "minecraft:flowing_lava"].map(|id| {
+        set.resolve(id, &lava_tag)?
+            .tint
+            .as_ref()?
+            .color(0, &maps, &context)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +157,26 @@ mod tests {
         );
         assert!(FluidModifier::read(&root).is_empty());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn lava_takes_its_own_colour_per_kind_and_the_lava_tag_covers_both() {
+        let root = scratch("fluid-lava");
+        put(
+            &root,
+            &format!("{DIR}/lava.json"),
+            r##"{"targets": "#minecraft:lava", "colormap": "#112233"}"##,
+        );
+        put(
+            &root,
+            &format!("{DIR}/flow.json"),
+            r##"{"targets": "minecraft:flowing_lava", "priority": 1, "colormap": "#445566"}"##,
+        );
+        assert_eq!(lava_colors(&root), [Some(0x112233), Some(0x445566)]);
+        let _ = std::fs::remove_dir_all(&root);
+        let empty = scratch("fluid-lava-none");
+        assert_eq!(lava_colors(&empty), [None, None]);
+        let _ = std::fs::remove_dir_all(&empty);
     }
 
     #[test]

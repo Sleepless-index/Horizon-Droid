@@ -575,6 +575,7 @@ pub struct MeshTables {
     lava_flow: u16,
     animated_layers: Vec<bool>,
     custom: CustomTints,
+    lava_tint: [u32; 2],
 }
 #[derive(Default)]
 struct CustomTints {
@@ -620,6 +621,17 @@ fn redstone_color(power: u8) -> u32 {
     ((r * 255.0) as u32) << 16 | ((g * 255.0) as u32) << 8 | (b * 255.0) as u32
 }
 impl MeshTables {
+    pub fn apply_polytone_fluid_tints(&mut self, root: &std::path::Path) {
+        let [still, flowing] = horizon_polytone::fluid_modifiers::lava_colors(root);
+        self.lava_tint = [still.unwrap_or(0xFF_FFFF), flowing.unwrap_or(0xFF_FFFF)];
+    }
+    pub fn lava_tint(&self, kind: FluidKind) -> u32 {
+        match kind {
+            FluidKind::Lava => self.lava_tint[0],
+            FluidKind::FlowingLava => self.lava_tint[1],
+            _ => 0xFF_FFFF,
+        }
+    }
     pub fn apply_polytone_block_tints(
         &mut self,
         facts: &BlockFacts,
@@ -840,6 +852,7 @@ impl MeshTables {
             lava_flow: layer("minecraft:block/lava_flow")?,
             animated_layers,
             custom: CustomTints::default(),
+            lava_tint: [0xFF_FFFF; 2],
         })
     }
     /// Whether a terrain sprite layer has an animated clip.
