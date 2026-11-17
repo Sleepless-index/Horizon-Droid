@@ -212,6 +212,7 @@
   "horizon.multiplayer.connected_friend_direct": "Connected straight to your friend...",
   "horizon.multiplayer.connected_friend_relay": "Connected to your friend through the relay...",
   "horizon.pack.add": "+",
+  "horizon.pack.catalog": "Catalog",
   "horizon.pack.addInfo": "Add a resource pack from Modrinth",
   "horizon.pack.addWorking": "Asking Modrinth...",
   "horizon.pack.addNone": "No resource packs found",
