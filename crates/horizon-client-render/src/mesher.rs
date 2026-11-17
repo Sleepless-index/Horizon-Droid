@@ -19,7 +19,7 @@ use horizon_core::{
 use horizon_polytone::{
     Modifiers,
     block_modifiers::{BlockModifier, BlockOffset, BlockRenderType},
-    colormaps::Colormaps,
+    colormaps::{Colormaps, SampleContext},
     tint::ColorSource,
 };
 use horizon_world::{
@@ -461,6 +461,31 @@ mod custom_tint_tests {
     }
 
     #[test]
+    fn a_slot_whose_colormap_reads_the_position_changes_along_the_world() {
+        let root = pack("position");
+        let dir = root.join("assets/foo/polytone/block_modifiers");
+        std::fs::write(
+            dir.join("moss.json"),
+            r#"{"colormap": {"x_axis": "POS_X / 256", "y_axis": 0}}"#,
+        )
+        .unwrap();
+        let set = BlockModifier::read(&root);
+        let entry = set.resolve_index("foo:moss", &|_| false).unwrap();
+        let custom = CustomTints {
+            maps: Colormaps::read(&root),
+            set,
+            slots: vec![(entry, 0)],
+        };
+        let at = |x| SampleContext {
+            x,
+            ..SampleContext::default()
+        };
+        assert_eq!(custom.sample(0, &at(0.0)), 0x00_0000);
+        assert_eq!(custom.sample(0, &at(200.0)), 0xC8_0A14);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn a_slot_samples_its_colormap_by_the_biomes_temperature() {
         let root = pack("sample");
         let set = BlockModifier::read(&root);
@@ -471,10 +496,18 @@ mod custom_tint_tests {
             slots: vec![(entry, 0)],
         };
         assert_eq!(custom.len(), 1);
-        assert_eq!(custom.sample(0, 0.0, 0.5), 0x00_0000);
-        assert_eq!(custom.sample(0, 1.0, 0.5), 0xC8_0A14);
-        assert_eq!(custom.default_color(0), custom.sample(0, 0.8, 0.4));
-        assert_eq!(custom.sample(7, 0.5, 0.5), 0xFF_FFFF);
+        let climate = |temperature, downfall| SampleContext {
+            temperature,
+            downfall,
+            ..SampleContext::default()
+        };
+        assert_eq!(custom.sample(0, &climate(0.0, 0.5)), 0x00_0000);
+        assert_eq!(custom.sample(0, &climate(1.0, 0.5)), 0xC8_0A14);
+        assert_eq!(
+            custom.default_color(0),
+            custom.sample(0, &climate(0.8, 0.4))
+        );
+        assert_eq!(custom.sample(7, &climate(0.5, 0.5)), 0xFF_FFFF);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -587,25 +620,37 @@ impl CustomTints {
     fn len(&self) -> usize {
         self.slots.len()
     }
-    fn sample(&self, slot: u16, temperature: f64, downfall: f64) -> u32 {
+    fn sample(&self, slot: u16, at: &SampleContext) -> u32 {
         let Some(&(entry, index)) = self.slots.get(usize::from(slot)) else {
             return 0xFF_FFFF;
         };
         self.set
             .get(entry)
             .and_then(|modifier| modifier.tint.as_ref())
-            .and_then(|tint| tint.biome_color(index, &self.maps, temperature, downfall))
+            .and_then(|tint| tint.color(index, &self.maps, at))
             .map_or(0xFF_FFFF, |color| color & 0xFF_FFFF)
     }
-    fn color(&self, slot: u16, biome: &BiomeInfo) -> u32 {
+    fn color(&self, slot: u16, biome: &BiomeInfo, [x, y, z]: [i32; 3]) -> u32 {
         self.sample(
             slot,
-            f64::from(biome.temperature),
-            f64::from(biome.downfall),
+            &SampleContext {
+                x: f64::from(x),
+                y: f64::from(y),
+                z: f64::from(z),
+                temperature: f64::from(biome.temperature),
+                downfall: f64::from(biome.downfall),
+            },
         )
     }
     fn default_color(&self, slot: u16) -> u32 {
-        self.sample(slot, 0.8, 0.4)
+        self.sample(
+            slot,
+            &SampleContext {
+                temperature: 0.8,
+                downfall: 0.4,
+                ..SampleContext::default()
+            },
+        )
     }
 }
 fn stem_color(age: u8) -> u32 {
@@ -673,7 +718,7 @@ impl MeshTables {
                 let replacement = match tint.source(index) {
                     None => continue,
                     Some(ColorSource::Flat(color)) => Tint::Constant(color & 0xFF_FFFF),
-                    Some(source) if source.depends_only_on_biome(&maps) => {
+                    Some(source) if source.resolves(&maps) => {
                         let key = (entry, index);
                         let slot = match slots.iter().position(|s| *s == key) {
                             Some(slot) => slot,
@@ -690,7 +735,7 @@ impl MeshTables {
                     Some(_) => {
                         if warned.insert(name.clone()) {
                             log::warn!(
-                                "block_modifiers: the colormap of {name} reads the position or a missing colormap, which isn't applied yet"
+                                "block_modifiers: the colormap of {name} is missing, so its tint isn't applied"
                             );
                         }
                         continue;
@@ -1294,7 +1339,11 @@ impl<'a> Tints<'a> {
                     Resolver::Foliage => self.biomes.get(biome).foliage,
                     Resolver::Dry => self.biomes.get(biome).dry_foliage,
                     Resolver::Water => self.biomes.get(biome).water,
-                    Resolver::Custom(slot) => self.custom.color(slot, self.biomes.get(biome)),
+                    Resolver::Custom(slot) => self.custom.color(
+                        slot,
+                        self.biomes.get(biome),
+                        [bx + x + dx, by, bz + z + dz],
+                    ),
                 };
                 red += c >> 16 & 255;
                 green += c >> 8 & 255;

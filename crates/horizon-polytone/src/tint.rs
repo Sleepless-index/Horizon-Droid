@@ -23,6 +23,13 @@ pub enum ColorSource {
 }
 
 impl ColorSource {
+    pub fn resolves(&self, maps: &Colormaps) -> bool {
+        match self {
+            Self::Linked(id) => maps.get(id).is_some(),
+            _ => true,
+        }
+    }
+
     fn leaf(json: &Json) -> Result<Self, String> {
         match json {
             Json::Number(_) => parse_color(json)

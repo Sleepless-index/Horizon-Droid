@@ -18,7 +18,8 @@ Work only in this repository.
     order (`base` then `post_process`) to the colour the biome has, highest priority file wins. A sky or fog the biome
     leaves to its dimension has nothing to edit, so only an override sets it. Targets by id, `#tag` (from `tags/worldgen/biome`) and regex.
 - Block modifier `colormap` tints (`MeshTables::apply_polytone_block_tints`): a flat colour or a
-  biome-only colormap per tint index 0 and 1, blended like vanilla biome tints. Targets by id, `#tag`
+  colormap per tint index 0 and 1, blended like vanilla biome tints; a colormap whose axes read the position
+  (`POS_X`, `POS_Y`, `POS_Z`, `o.getX()`...) is sampled at each blended block's world position. Targets by id, `#tag`
   and regex.
 - Fluid modifiers: lava and flowing lava take a `colormap` tint of their own (sampled with plains climate), and the
   `fog_colormap` (flat) and `fog_radius` of water and lava recolour and scale the fog under the fluid.
@@ -37,9 +38,9 @@ Work only in this repository.
 
 ## Next, in rough order
 
-1. Block tints that read the position; custom `offset_type` objects; `can_occlude`.
+1. Custom `offset_type` objects; `can_occlude`.
 2. Item modifier tooltips, textured `bar_color`, arm pose, armor/scope textures.
-3. Position-dependent colormaps (`POS_X`, `POS_Z`, ...), now logged as "isn't applied yet".
+3. Position-dependent colormaps for fluid tints (blocks and items already read the position).
 4. Refused colormap features: `color_modifier`, `biome_id`, `legacy_temperature`, `grid`, `damage`.
 5. Biome layers: `blend_to_gray`, `REMOVE`, colormap and expression arguments, other attributes; weather groups and the other dimension attributes; fog distances and cloud colour.
 6. Wire `sprites`, `creative_tabs`, `particles`, `colors.json` custom colours.
