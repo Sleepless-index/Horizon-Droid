@@ -13,8 +13,10 @@ Work only in this repository.
   - grass, foliage, dry foliage and water colour from `colors.json` and biome-only colormaps
     (a biome's own colour still wins, water is replaced everywhere);
   - water tint from a fluid modifier whose colormap depends only on the biome;
-  - sky, fog and water fog colour from `biome_modifiers` (`biome_attributes.rs`): plain colour or
-    number override layers, `base` then `post_process`, highest priority wins. Targets by id, `#tag` (from `tags/worldgen/biome`) and regex.
+  - sky, fog and water fog colour from `biome_modifiers` (`biome_attributes.rs`): override layers and the colour
+    modifiers `add`, `subtract`, `multiply` (a colour or a number), `minimum`, `maximum` and `alpha_blend`, applied in
+    order (`base` then `post_process`) to the colour the biome has, highest priority file wins. A sky or fog the biome
+    leaves to its dimension has nothing to edit, so only an override sets it. Targets by id, `#tag` (from `tags/worldgen/biome`) and regex.
 - Block modifier `colormap` tints (`MeshTables::apply_polytone_block_tints`): a flat colour or a
   biome-only colormap per tint index 0 and 1, blended like vanilla biome tints. Targets by id, `#tag`
   and regex.
@@ -36,8 +38,7 @@ Work only in this repository.
 2. Item modifier tooltips, textured `bar_color`, arm pose, armor/scope textures.
 3. Position-dependent colormaps (`POS_X`, `POS_Z`, ...), now logged as "isn't applied yet".
 4. Refused colormap features: `color_modifier`, `biome_id`, `legacy_temperature`, `grid`, `damage`.
-5. Biome layers that modify (`add`, `multiply`, `alpha_blend`...), `REMOVE`, colormap and expression
-   arguments; dimension modifiers and weather groups; fog distances and cloud colour.
+5. Biome layers: `blend_to_gray`, `REMOVE`, colormap and expression arguments, other attributes; dimension modifiers and weather groups; fog distances and cloud colour.
 6. Wire `sprites`, `creative_tabs`, `particles`, `colors.json` custom colours.
 
 ## Rules

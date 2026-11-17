@@ -266,13 +266,15 @@ impl BiomeInfo {
                 .unwrap_or(0x3F76E4),
             sky: visuals
                 .sky
-                .or_else(|| color(&attributes["minecraft:visual/sky_color"])),
+                .resolve(color(&attributes["minecraft:visual/sky_color"])),
             fog: visuals
                 .fog
-                .or_else(|| color(&attributes["minecraft:visual/fog_color"])),
+                .resolve(color(&attributes["minecraft:visual/fog_color"])),
             water_fog: visuals
                 .water_fog
-                .or_else(|| color(&attributes["minecraft:visual/water_fog_color"]))
+                .resolve(Some(
+                    color(&attributes["minecraft:visual/water_fog_color"]).unwrap_or(0x050533),
+                ))
                 .unwrap_or(0x050533),
             features: v["features"]
                 .as_array()
@@ -608,6 +610,36 @@ mod pack_tests {
         assert_eq!(plains.water_fog, 0x050533);
         let other = BiomeInfo::from_json("minecraft:desert".to_owned(), &json!({}), &maps);
         assert_eq!(other.sky, None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_colour_modifier_edits_the_sky_and_water_fog_a_biome_has() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-polytone-biome-ops-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("assets/foo/polytone/biome_modifiers")).unwrap();
+        std::fs::write(
+            root.join("assets/foo/polytone/biome_modifiers/p.json"),
+            r##"{"targets": "minecraft:plains", "attributes_modifiers": {
+                "visual/sky_color": {"argument": 0.5, "modifier": "multiply"},
+                "visual/water_fog_color": {"argument": "#000011", "modifier": "add"}}}"##,
+        )
+        .unwrap();
+        let maps = Colormaps {
+            grass: Vec::new(),
+            foliage: Vec::new(),
+            dry: Vec::new(),
+            polytone: Default::default(),
+            visuals: horizon_polytone::biome_attributes::BiomeAttributes::read(&root),
+            tags: Default::default(),
+        };
+        let own = json!({"attributes": {"minecraft:visual/sky_color": "#804020"}});
+        let plains = BiomeInfo::from_json("minecraft:plains".to_owned(), &own, &maps);
+        assert_eq!(plains.sky, Some(0x402010));
+        assert_eq!(plains.water_fog, 0x050544);
+        let bare = BiomeInfo::from_json("minecraft:plains".to_owned(), &json!({}), &maps);
+        assert_eq!(bare.sky, None);
         let _ = std::fs::remove_dir_all(&root);
     }
 
