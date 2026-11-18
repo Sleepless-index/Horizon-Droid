@@ -525,14 +525,14 @@ fn classify(name: &str, prop: &dyn Fn(&str) -> Option<String>) -> Kind {
             "banner" => {
                 let segment: f32 = prop("rotation").and_then(|r| r.parse().ok()).unwrap_or(0.0);
                 return Kind::Banner {
-                    color: DYES[dye].1,
+                    color: horizon_client_core::pack_colors::dye(dye, DYES[dye].1),
                     wall: false,
                     angle: segment * 22.5,
                 };
             }
             "wall_banner" => {
                 return Kind::Banner {
-                    color: DYES[dye].1,
+                    color: horizon_client_core::pack_colors::dye(dye, DYES[dye].1),
                     wall: true,
                     angle: y_rot(facing()),
                 };

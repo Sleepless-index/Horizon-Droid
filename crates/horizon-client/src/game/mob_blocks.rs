@@ -219,7 +219,7 @@ impl Game<'_> {
                 .iter()
                 .position(|n| *n == dye)
                 .unwrap_or(0);
-            let color = render::abgr(render::DYE[index]);
+            let color = render::abgr(render::dye_rgb(index));
             render::draw(flag, m, &flag_poses, r, color, light, 0, out);
         }
     }

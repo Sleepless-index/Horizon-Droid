@@ -18,7 +18,13 @@ const CHAT_KEYS: [KeyCode; 5] = [
 ];
 
 /// A pixel arrow centred on `c`; `dir`: 0 up, 1 down, 2 left, 3 right.
-fn arrow(batch: &mut HudBatch, atlas: &horizon_client::hud::HudAtlas, c: [f32; 2], dir: u8, ink: u32) {
+fn arrow(
+    batch: &mut HudBatch,
+    atlas: &horizon_client::hud::HudAtlas,
+    c: [f32; 2],
+    dir: u8,
+    ink: u32,
+) {
     let [cx, cy] = c;
     for k in 0..4 {
         let (k, w) = (k as f32, 2.0 * k as f32 + 1.0);
@@ -40,7 +46,12 @@ fn arrow(batch: &mut HudBatch, atlas: &horizon_client::hud::HudAtlas, c: [f32; 2
 }
 
 /// A pixel clipboard centred on `c`, for Paste.
-fn clipboard_icon(batch: &mut HudBatch, atlas: &horizon_client::hud::HudAtlas, c: [f32; 2], ink: u32) {
+fn clipboard_icon(
+    batch: &mut HudBatch,
+    atlas: &horizon_client::hud::HudAtlas,
+    c: [f32; 2],
+    ink: u32,
+) {
     let [cx, cy] = c;
     let (left, top) = (cx - 4.0, cy - 4.0);
     batch.fill(atlas, left, top, 1.0, 10.0, ink);
@@ -151,7 +162,14 @@ impl Game<'_> {
             match i {
                 2 => {
                     let tw = HudBatch::text_width(atlas, "Tab");
-                    batch.text(atlas, "Tab", (c[0] - tw / 2.0).floor() + 1.0, c[1] - 4.0, ink, true);
+                    batch.text(
+                        atlas,
+                        "Tab",
+                        (c[0] - tw / 2.0).floor() + 1.0,
+                        c[1] - 4.0,
+                        ink,
+                        true,
+                    );
                 }
                 0 => arrow(batch, atlas, c, 0, ink),
                 1 => arrow(batch, atlas, c, 1, ink),

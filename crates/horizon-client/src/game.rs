@@ -45,6 +45,10 @@ macro_rules! world_biomes {
 fn polytone_block_tints(tables: &mut MeshTables, facts: &BlockFacts, root: &std::path::Path) {
     tables.apply_polytone_fluid_tints(root);
     tables.apply_polytone_colors(root);
+    let colors = horizon_polytone::colors::PackColors::read(root);
+    let (dye, sheep) = colors.dye_and_sheep(&horizon_client::mobs::render::DYE_NAMES);
+    horizon_client::pack_colors::set(dye, sheep);
+    horizon_client::potions::set_pack_effect_colors(&colors.effects());
     let tags = std::cell::OnceCell::new();
     tables.apply_polytone_block_tints(facts, root, &|tag, block| {
         tags.get_or_init(|| {
@@ -8287,7 +8291,9 @@ impl Game<'_> {
             }
             // The PvP & HUD effects widget takes the icons' place.
             if !self.pvp_effects_shown() {
-                horizon_client::hud::inset_overlay(&mut batch, margins, |b| self.draw_effect_icons(b));
+                horizon_client::hud::inset_overlay(&mut batch, margins, |b| {
+                    self.draw_effect_icons(b)
+                });
             }
             // Hud: the action bar and titles draw over the hotbar (nextStratum).
             horizon_client::hud::inset_overlay(&mut batch, margins, |b| self.draw_boss_bars(b));

@@ -229,7 +229,7 @@ fn music_note_color(tick: i32) -> u32 {
         if dye == 0 {
             return [0xE6; 3];
         }
-        let src = crate::mobs::render::DYE[dye];
+        let src = crate::mobs::render::dye_rgb(dye);
         [16, 8, 0].map(|shift| (((src >> shift & 255) as f32 * 1.25).floor() as i32).clamp(0, 255))
     };
     let value = (tick / 30) as usize;

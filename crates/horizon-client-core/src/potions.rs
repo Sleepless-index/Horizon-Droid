@@ -1,7 +1,10 @@
 //! The `MobEffects` and `Potions` registries (code in vanilla, ported as
 //! tables): each effect's colour and category, each potion's effects, and the
 //! potion colour mix. horizon-client re-exports them from `brewing`.
-use std::{collections::HashMap, sync::OnceLock};
+use std::{
+    collections::HashMap,
+    sync::{OnceLock, RwLock},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Category {
@@ -111,8 +114,33 @@ pub fn mod_effects() -> &'static [EffectDef] {
 pub fn all_effects() -> impl Iterator<Item = &'static EffectDef> {
     EFFECTS.iter().chain(mod_effects())
 }
+static PACK_EFFECTS: RwLock<Vec<&'static EffectDef>> = RwLock::new(Vec::new());
+/// Replaces the colours a resource pack gives vanilla effects, by id without namespace.
+/// Each call leaks one definition per recoloured effect; packs reload rarely.
+pub fn set_pack_effect_colors(colors: &[(String, u32)]) {
+    let defs: Vec<&'static EffectDef> = colors
+        .iter()
+        .filter_map(|(id, color)| {
+            let base = EFFECTS.iter().find(|e| e.id == id.as_str())?;
+            Some(&*Box::leak(Box::new(EffectDef {
+                color: *color & 0xFF_FFFF,
+                ..*base
+            })))
+        })
+        .collect();
+    if let Ok(mut guard) = PACK_EFFECTS.write() {
+        *guard = defs;
+    }
+}
 pub fn effect(id: &str) -> Option<&'static EffectDef> {
     let short = id.trim_start_matches("minecraft:");
+    if let Some(def) = PACK_EFFECTS
+        .read()
+        .ok()
+        .and_then(|defs| defs.iter().find(|e| e.id == short).copied())
+    {
+        return Some(def);
+    }
     match EFFECTS.iter().find(|e| e.id == short) {
         Some(e) => Some(e),
         None => mod_effect(id),

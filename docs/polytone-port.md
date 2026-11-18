@@ -40,11 +40,12 @@ Work only in this repository.
   `width_inc`, `height_inc`. Not applied: `x_inc`, `y_inc`, `overlays`, and `color` together with `new_texture`.
 - `colors.json` / `color.properties` custom colours: `environment.*` (`powder_snow_fog`, `blindness_fog_distance`,
   `darkness_fog_distance`, `boss_fog_distance`, `water_fog_brightening`) in `FogTables`, and `redstone.<power>` for the
-  wire's tint. Not applied: `horizon_height`, `water_fog_brightening_time`, redstone dust particles, `effect.*`,
-  `dye.*`, `sheep.*`, `particle.*`.
+  wire's tint, `effect.*` (mob effect colours in the effect table), `dye.*` diffuse colours (mobs, shulker/banner
+  blocks) and `sheep.*` wool colours. Not applied: `dye.*.text` and `.firework`, `horizon_height`,
+  `water_fog_brightening_time`, redstone dust particles, `particle.*`.
 - Read but not applied: the other block fields (`map_color`, `can_occlude`, particles), item modifier
   tooltips, arm pose and armor/scope textures, flowing-water-only tints, `fog_fade`, `sprites` offsets and overlays,
-  `particles`, `pack` config, `colors.json` custom colours.
+  `particles`, `pack` config, `colors.json` particle colours.
 
 ## Next, in rough order
 
@@ -53,7 +54,7 @@ Work only in this repository.
 3. Position-dependent colormaps for fluid tints (blocks and items already read the position).
 4. Refused colormap features: `color_modifier`, `biome_id`, `legacy_temperature`, `grid`, `damage`.
 5. Biome layers: `blend_to_gray`, `REMOVE`, colormap and expression arguments, other attributes; weather groups and the other dimension attributes; fog distances and cloud colour.
-6. Wire `sprites`, `particles`, `colors.json` custom colours.
+6. Wire `particles`, `colors.json` particle colours.
 
 ## Rules
 

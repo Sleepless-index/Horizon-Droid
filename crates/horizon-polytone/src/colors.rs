@@ -238,6 +238,14 @@ impl PackColors {
         self.color(&format!("sheep.{name}"))
     }
 
+    /// Diffuse dye and sheep wool overrides in dye order, from the names in `names`.
+    pub fn dye_and_sheep(&self, names: &[&str; 16]) -> ([Option<u32>; 16], [Option<u32>; 16]) {
+        let pick = |f: &dyn Fn(&str) -> Option<u32>| {
+            std::array::from_fn(|i| f(names[i]).map(|c| c & 0xFF_FFFF))
+        };
+        (pick(&|n| self.dye(n, "diffuse")), pick(&|n| self.sheep(n)))
+    }
+
     /// `redstone.<power>`: the wire's and its dust particles' colour at that power (0 to 15).
     pub fn redstone(&self, power: u8) -> Option<u32> {
         self.color(&format!("redstone.{power}"))
@@ -526,5 +534,35 @@ mod tests {
         assert_eq!(color(json!("4259712")), Some(4_259_712));
         assert_eq!(color(json!(23223)), Some(23223));
         assert_eq!(color(json!("no")), None);
+    }
+}
+
+#[cfg(test)]
+mod dye_sheep_tests {
+    use super::*;
+
+    #[test]
+    fn dye_and_sheep_overrides_follow_dye_order() {
+        let mut colors = PackColors::default();
+        colors
+            .entries
+            .insert("dye.red".into(), Json::String("#102030".into()));
+        colors.entries.insert(
+            "dye.white.diffuse".into(),
+            Json::String("0xff112233".into()),
+        );
+        colors
+            .entries
+            .insert("sheep.orange".into(), Json::String("#445566".into()));
+        let mut names = [""; 16];
+        names[0] = "white";
+        names[1] = "orange";
+        names[14] = "red";
+        let (dye, sheep) = colors.dye_and_sheep(&names);
+        assert_eq!(dye[0], Some(0x112233));
+        assert_eq!(dye[14], Some(0x102030));
+        assert_eq!(dye[1], None);
+        assert_eq!(sheep[1], Some(0x445566));
+        assert_eq!(sheep[0], None);
     }
 }

@@ -153,6 +153,7 @@ pub use horizon_client_core::lang;
 pub use horizon_client_core::nbt_path;
 pub use horizon_client_core::scoreboard;
 pub use horizon_client_core::snbt;
+pub use horizon_client_core::pack_colors;
 pub use horizon_client_core::potions;
 pub use horizon_client_core::text;
 pub use horizon_client_input::clipboard;

@@ -92,6 +92,9 @@ pub const DYE: [u32; 16] = [
     0xF9FFFE, 0xF9801D, 0xC74EBD, 0x3AB3DA, 0xFED83D, 0x80C71F, 0xF38BAA, 0x474F52, 0x9D9D97,
     0x169C9C, 0x8932B8, 0x3C44AA, 0x835432, 0x5E7C16, 0xB02E26, 0x1D1D21,
 ];
+pub fn dye_rgb(index: usize) -> u32 {
+    horizon_client_core::pack_colors::dye(index, DYE[index & 15])
+}
 pub const DYE_NAMES: [&str; 16] = [
     "white",
     "orange",
@@ -132,10 +135,13 @@ pub fn armor_tint(undyed: Option<u32>, stack: Option<&crate::items::ItemStack>) 
 }
 /// ColorLerper.Type.SHEEP colour: white is 0xE6E6E6, others 75% of the dye.
 pub fn sheep_wool_rgb(color: u8) -> u32 {
+    if let Some(rgb) = horizon_client_core::pack_colors::sheep(color as usize) {
+        return rgb & 0xFF_FFFF;
+    }
     if color == 0 {
         return 0xE6E6E6;
     }
-    let src = DYE[color as usize & 15];
+    let src = dye_rgb(color as usize);
     let f = |c: u32| ((c as f32 * 0.75).floor() as u32).min(255);
     f(src >> 16 & 255) << 16 | f(src >> 8 & 255) << 8 | f(src & 255)
 }
@@ -511,7 +517,7 @@ pub fn body(m: &Mob) -> (String, String) {
 pub fn body_color(m: &Mob, alpha: f32) -> u32 {
     match m.species() {
         Species::Wolf => super::tame::tint(m, alpha),
-        Species::TropicalFish => abgr(DYE[m.extra.variant2 as usize & 15]),
+        Species::TropicalFish => abgr(dye_rgb(m.extra.variant2 as usize)),
         // LivingEntityRenderer.submit: a spectator is invisible
         // (Player.updateInvisibilityStatus) but not to another spectator or
         // itself, so its body is forced translucent (654311423, alpha 38).
@@ -573,7 +579,7 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
                 &mut v,
                 model,
                 texture,
-                abgr(DYE[m.extra.color as usize & 15]),
+                abgr(dye_rgb(m.extra.color as usize)),
                 false,
             );
         }
@@ -702,7 +708,7 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
                 &mut v,
                 model,
                 texture,
-                abgr(DYE[m.extra.color as usize & 15]),
+                abgr(dye_rgb(m.extra.color as usize)),
                 false,
             );
         }
@@ -848,7 +854,7 @@ pub fn layers(m: &Mob, age: f32) -> Vec<Layer> {
                 &mut v,
                 model,
                 &format!("entity/fish/tropical_{letter}_pattern_{n}"),
-                abgr(DYE[m.extra.variant3 as usize & 15]),
+                abgr(dye_rgb(m.extra.variant3 as usize)),
                 false,
             );
         }
