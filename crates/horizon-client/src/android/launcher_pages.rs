@@ -300,6 +300,8 @@ pub(super) enum Action {
     InstallModalProject,
     Import(horizon_client::content_files::Kind),
     OpenFolder(horizon_client::content_files::Kind),
+    PackSort(crate::browser::details::Sort),
+    PackCategory(&'static str),
     ToggleSection(usize),
     ToggleLocal(usize),
     DeleteLocal(usize),
@@ -1920,7 +1922,9 @@ impl Launcher {
             // Search bar + Search button + Open folder / Import file pills
             let search_y = 98.0 + slide_y;
             let search_btn_w = 98.0;
-            let field_w = (content_w - search_btn_w - 8.0).max(120.0);
+            let packs = page == Page::Packs;
+            let icon_w = if packs { 44.0 } else { 0.0 };
+            let field_w = (content_w - search_btn_w - icon_w - 8.0).max(120.0);
             let search_hint = if page == Page::Mods {
                 "Search mods or paste .hmod HTTPS link..."
             } else {
@@ -1957,38 +1961,94 @@ impl Launcher {
                 _ => horizon_client::content_files::Kind::Packs,
             };
             let sub_y = 140.0 + slide_y;
-            button(
-                &mut ui,
-                &mut self.targets,
-                [content_x, sub_y, 114.0, 29.0],
-                "Open folder",
-                Action::OpenFolder(kind),
-                false,
-            );
-            button(
-                &mut ui,
-                &mut self.targets,
-                [content_x + 122.0, sub_y, 114.0, 29.0],
-                "Import file",
-                Action::Import(kind),
-                false,
-            );
-            if !compact {
-                let status_line = self.error.as_deref().unwrap_or(&self.catalog.status);
-                let fitted_status = ui.fit_text(
-                    Face::Regular,
-                    12.5,
-                    status_line,
-                    (content_w - 248.0).max(60.0),
+            if packs {
+                let import = [content_x + field_w + search_btn_w + 16.0, search_y, 36.0, 36.0];
+                ui.rounded(import[0], import[1], import[2], import[3], 8.0, my3_surface_high());
+                ui.border(import[0], import[1], import[2], import[3], 8.0, my3_border());
+                ui.icon(Icon::Plus, import[0] + 8.0, import[1] + 8.0, 20.0, my3_text());
+                self.targets.push((import, Action::Import(kind)));
+
+                use crate::browser::details::Sort;
+                let active_sort = self.catalog.filters_sort();
+                let sorts = [
+                    (Sort::Relevance, "Relevance"),
+                    (Sort::Downloads, "Downloads"),
+                    (Sort::Newest, "Newest"),
+                    (Sort::Updated, "Updated"),
+                ];
+                let cats = [
+                    "vanilla-like",
+                    "realistic",
+                    "simplistic",
+                    "themed",
+                    "utility",
+                ];
+                let mut cx = content_x;
+                let limit = content_x + content_w;
+                for (sort, label) in sorts {
+                    let cw = ui.measure(Face::SemiBold, 11.5, label) + 26.0;
+                    if cx + cw > limit {
+                        break;
+                    }
+                    let rect = [cx, sub_y, cw, 30.0];
+                    ui.m3_filter_chip(rect, label, active_sort == sort, None);
+                    self.targets.push((rect, Action::PackSort(sort)));
+                    cx += cw + 6.0;
+                }
+                let note = self.error.as_deref().unwrap_or(&self.catalog.status);
+                let note = if note.starts_with("Searching") { "" } else { note };
+                if !note.is_empty() {
+                    let room = (limit - cx - 14.0).max(60.0);
+                    let fitted = ui.fit_text(Face::Regular, 12.5, note, room);
+                    ui.text(Face::Regular, 12.5, cx + 14.0, sub_y + 5.0, my3_muted(), &fitted);
+                } else if !compact {
+                    cx += 8.0;
+                    for cat in cats {
+                        let label = cat[..1].to_uppercase() + &cat[1..];
+                        let cw = ui.measure(Face::SemiBold, 11.5, &label) + 26.0;
+                        if cx + cw > limit {
+                            break;
+                        }
+                        let rect = [cx, sub_y, cw, 30.0];
+                        ui.m3_filter_chip(rect, &label, self.catalog.category == Some(cat), None);
+                        self.targets.push((rect, Action::PackCategory(cat)));
+                        cx += cw + 6.0;
+                    }
+                }
+            } else {
+                button(
+                    &mut ui,
+                    &mut self.targets,
+                    [content_x, sub_y, 114.0, 29.0],
+                    "Open folder",
+                    Action::OpenFolder(kind),
+                    false,
                 );
-                ui.text(
-                    Face::Regular,
-                    12.5,
-                    content_x + 246.0,
-                    sub_y + 5.0,
-                    my3_muted(),
-                    &fitted_status,
+                button(
+                    &mut ui,
+                    &mut self.targets,
+                    [content_x + 122.0, sub_y, 114.0, 29.0],
+                    "Import file",
+                    Action::Import(kind),
+                    false,
                 );
+                if !compact {
+                    let status_line = self.error.as_deref().unwrap_or(&self.catalog.status);
+                    let fitted_status = ui.fit_text(
+                        Face::Regular,
+                        12.5,
+                        status_line,
+                        (content_w - 248.0).max(60.0),
+                    );
+                    ui.text(
+                        Face::Regular,
+                        12.5,
+                        content_x + 246.0,
+                        sub_y + 5.0,
+                        my3_muted(),
+                        &fitted_status,
+                    );
+                }
             }
 
             let bundled: Vec<_> = if page == Page::Mods {
@@ -4640,10 +4700,18 @@ impl Launcher {
         let desc_lines =
             wrap_text_lines(ui, Face::Regular, 13.0, &modal.description, inner_w - 8.0);
         let desc_h = (desc_lines.len() as f32 * 18.5).max(24.0);
+        let shot_gap = 10.0;
+        let shot_count = modal.screenshots.len().min(3);
+        let shot_cols = shot_count.clamp(1, 2);
+        let shot_w =
+            ((inner_w - shot_gap * (shot_cols as f32 - 1.0)) / shot_cols as f32).min(420.0);
+        let shot_img_h = ((shot_w - 6.0) * 9.0 / 16.0).round();
+        let shot_h = shot_img_h + 28.0;
+        let shot_rows = shot_count.div_ceil(shot_cols);
         let gallery_h = if modal.screenshots.is_empty() {
             0.0
         } else {
-            118.0
+            22.0 + shot_rows as f32 * (shot_h + shot_gap) + 2.0
         };
         let versions_h = 28.0 + (modal.versions.len().min(6) as f32) * 38.0;
         let total_content_h = 24.0 + desc_h + gallery_h + versions_h + 16.0;
@@ -4692,38 +4760,36 @@ impl Launcher {
                 );
             }
             cy += 22.0;
-            let count = modal.screenshots.len().min(3) as f32;
-            let gap = 10.0;
-            let card_w = ((inner_w - gap * (count - 1.0)) / count).clamp(110.0, 200.0);
-            let card_h = 84.0;
-            if cy + card_h >= body_top && cy <= body_bottom {
-                for (idx, (caption, sw, sh, rgba)) in modal.screenshots.iter().take(3).enumerate() {
-                    let sx = inner_x + idx as f32 * (card_w + gap);
-                    ui.rounded(sx, cy, card_w, card_h, 12.0, my3_card_bg());
-                    ui.border(sx, cy, card_w, card_h, 12.0, my3_card_border());
-                    let key = format!("shot:{}:{idx}", modal.project.id);
-                    let _ = ui.image(
-                        &key,
-                        *sw,
-                        *sh,
-                        rgba,
-                        sx + 3.0,
-                        cy + 3.0,
-                        card_w - 6.0,
-                        card_h - 22.0,
-                    );
-                    let cap_fit = ui.fit_text(Face::Regular, 11.0, caption, card_w - 12.0);
-                    ui.text(
-                        Face::Regular,
-                        11.0,
-                        sx + 6.0,
-                        cy + card_h - 17.0,
-                        my3_muted(),
-                        &cap_fit,
-                    );
+            for (idx, (caption, sw, sh, rgba)) in modal.screenshots.iter().take(3).enumerate() {
+                let sx = inner_x + (idx % shot_cols) as f32 * (shot_w + shot_gap);
+                let sy = cy + (idx / shot_cols) as f32 * (shot_h + shot_gap);
+                if sy + shot_h < body_top || sy > body_bottom {
+                    continue;
                 }
+                ui.rounded(sx, sy, shot_w, shot_h, 12.0, my3_card_bg());
+                ui.border(sx, sy, shot_w, shot_h, 12.0, my3_card_border());
+                let key = format!("shot:{}:{idx}", modal.project.id);
+                let _ = ui.image(
+                    &key,
+                    *sw,
+                    *sh,
+                    rgba,
+                    sx + 3.0,
+                    sy + 3.0,
+                    shot_w - 6.0,
+                    shot_img_h,
+                );
+                let cap_fit = ui.fit_text(Face::Regular, 11.0, caption, shot_w - 12.0);
+                ui.text(
+                    Face::Regular,
+                    11.0,
+                    sx + 6.0,
+                    sy + shot_h - 19.0,
+                    my3_muted(),
+                    &cap_fit,
+                );
             }
-            cy += card_h + 12.0;
+            cy += shot_rows as f32 * (shot_h + shot_gap) + 2.0;
         }
 
         // Section 3: Selectable Versions to Download
@@ -7695,6 +7761,18 @@ impl Launcher {
             Some(Action::WardrobeHideCape) => self.wardrobe.hide_cape(),
             Some(Action::Search) => {
                 crate::platform::hide();
+                self.catalog.offset = 0;
+                self.catalog.scroll = 0.0;
+                self.catalog.search(&self.home);
+            }
+            Some(Action::PackSort(sort)) => {
+                self.catalog.sort = Some(sort);
+                self.catalog.offset = 0;
+                self.catalog.scroll = 0.0;
+                self.catalog.search(&self.home);
+            }
+            Some(Action::PackCategory(cat)) => {
+                self.catalog.category = (self.catalog.category != Some(cat)).then_some(cat);
                 self.catalog.offset = 0;
                 self.catalog.scroll = 0.0;
                 self.catalog.search(&self.home);

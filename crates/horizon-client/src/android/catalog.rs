@@ -710,6 +710,8 @@ pub struct Catalog {
     failed: Option<(browser::SourceId, String)>,
     pub page: Page,
     pub query: String,
+    pub sort: Option<browser::details::Sort>,
+    pub category: Option<&'static str>,
     pub results: Vec<Project>,
     pub icons: HashMap<String, (u32, u32, Vec<u8>)>,
     pub enriched_summaries: HashMap<String, String>,
@@ -735,7 +737,10 @@ pub struct Catalog {
     worker: Option<mpsc::Receiver<Result<Reply, String>>>,
     search_worker: Option<mpsc::Receiver<Result<Vec<Project>, String>>>,
     icon_worker: Option<mpsc::Receiver<IconData>>,
-    searches: crate::search_queue::Queue<(Page, browser::SourceId, String, usize), Vec<Project>>,
+    searches: crate::search_queue::Queue<
+        (Page, browser::SourceId, String, usize, browser::details::Filters),
+        Vec<Project>,
+    >,
 }
 #[derive(Clone)]
 pub struct LocalItem {
@@ -779,6 +784,8 @@ impl Catalog {
             failed: None,
             page: Page::Play,
             query: String::new(),
+            sort: None,
+            category: None,
             results: vec![],
             icons: HashMap::new(),
             enriched_summaries: HashMap::new(),
@@ -1930,7 +1937,7 @@ impl Catalog {
             }
 
             for (idx, img) in gallery.into_iter().take(3).enumerate() {
-                if let Ok(path) = browser::images::fetch(&home, &img.url, 240)
+                if let Ok(path) = browser::images::fetch(&home, &img.url, 640)
                     && let Ok((w, h, rgba)) = horizon_client::hud::decode(&path)
                 {
                     let label = if img.title.trim().is_empty() {
@@ -1978,7 +1985,13 @@ impl Catalog {
         } else {
             self.offset
         };
-        let key = (self.page, source, self.query.trim().to_owned(), query_offset);
+        let key = (
+            self.page,
+            source,
+            self.query.trim().to_owned(),
+            query_offset,
+            self.pack_filters(),
+        );
         if let Some(items) = self.searches.request(key, refresh) {
             self.show_results(items);
             self.fetch_icons(home);
@@ -1987,6 +2000,24 @@ impl Catalog {
             self.status = "Searching... You can switch tabs while results load.".into();
         }
         self.start_search();
+    }
+    pub fn filters_sort(&self) -> browser::details::Sort {
+        self.sort
+            .unwrap_or(if self.query.trim().is_empty() {
+                browser::details::Sort::Downloads
+            } else {
+                browser::details::Sort::Relevance
+            })
+    }
+    fn pack_filters(&self) -> browser::details::Filters {
+        if self.page != Page::Packs {
+            return Default::default();
+        }
+        browser::details::Filters {
+            sort: self.sort,
+            categories: self.category.map(|c| vec![c.to_owned()]).unwrap_or_default(),
+            ..Default::default()
+        }
     }
     fn show_results(&mut self, items: Vec<Project>) {
         self.status = if self.page == Page::Shaders
@@ -2015,7 +2046,7 @@ impl Catalog {
                 "{total} Horizon mods available (10 per page) — tap Install to enable"
             )
         } else {
-            format!("{} results — tap Install to download", items.len())
+            String::new()
         };
         self.results = items;
     }
@@ -2023,7 +2054,7 @@ impl Catalog {
         if self.busy() || self.search_worker.is_some() {
             return;
         }
-        let Some((page, source, text, offset)) = self.searches.take_next() else {
+        let Some((page, source, text, offset, filters)) = self.searches.take_next() else {
             return;
         };
         let (tx, rx) = mpsc::channel();
@@ -2036,6 +2067,7 @@ impl Catalog {
             };
             let mut query = Query::new(&text, kind);
             query.everything = true;
+            query.filters = filters;
             let result = if page == Page::Shaders && source == browser::SourceId::Modrinth {
                 query.offset = offset;
                 query.limit = CATALOG_PAGE_SIZE;
