@@ -45,7 +45,7 @@ Work only in this repository.
   wool colours, `particle.*` (a colour or expression, applied as a `color` modifier) and the redstone dust particle colour.
 - Particle modifiers (`particle_modifiers/`): `color`, `red/green/blue/alpha`, `size`, `life` and `speed` expressions run
   once when a particle is created, with `o`, `p`, `g` and `r` answered (no biome/light/colormap/config yet).
-  Not applied: `horizon_height`, `water_fog_brightening_time`.
+  `horizon_height` (the dark disc's height) and `water_fog_brightening_time` (ticks to full water vision) apply too.
 - Read but not applied: the other block fields (`map_color`, `can_occlude`, particles), item modifier
   tooltips, arm pose and armor/scope textures, flowing-water-only tints, `fog_fade`, `sprites` offsets and overlays,
   per-tick particle expressions, `pack` config.

@@ -36,7 +36,7 @@ pub struct FogData {
 pub struct FogTables {
     water_fog_end: Vec<f32>,
     fluid_fog: horizon_polytone::colors::FluidFogs,
-    env: horizon_polytone::colors::Environment,
+    pub env: horizon_polytone::colors::Environment,
 }
 impl FogTables {
     pub fn load(root: &Path, biomes: &Biomes) -> Self {
@@ -74,6 +74,8 @@ impl FogTables {
 pub struct FogState {
     /// `LocalPlayer.waterVisionTime` (0..600).
     pub water_vision_time: i32,
+    /// Ticks under water until full water vision; 0 means vanilla's 600.
+    pub water_vision_duration: i32,
     /// `AtmosphericFogEnvironment.rainFogMultiplier`.
     pub rain_fog_multiplier: f32,
     /// `LightmapRenderStateExtractor.blockLightFlicker`.
@@ -103,17 +105,24 @@ impl FogState {
     /// `LocalPlayer.aiStep`: water vision ramps up while the eye is in water.
     pub fn tick(&mut self, eye_in_water: bool) {
         self.water_vision_time = if eye_in_water {
-            (self.water_vision_time + 1).min(600)
+            (self.water_vision_time + 1).min(self.duration())
         } else {
             (self.water_vision_time - 10).max(0)
         };
     }
-    /// `LocalPlayer.getWaterVision`.
+    fn duration(&self) -> i32 {
+        if self.water_vision_duration > 0 {
+            self.water_vision_duration
+        } else {
+            600
+        }
+    }
+    /// `LocalPlayer.getWaterVision`, its 600 ticks stretched to the pack's duration.
     pub fn water_vision(&self, eye_in_water: bool) -> f32 {
         if !eye_in_water {
             return 0.0;
         }
-        let t = self.water_vision_time as f32;
+        let t = self.water_vision_time as f32 * 600.0 / self.duration() as f32;
         if t >= 600.0 {
             return 1.0;
         }
@@ -757,6 +766,22 @@ mod tests {
         }
         assert_eq!(s.water_vision(true), 1.0);
         assert_eq!(s.water_vision(false), 0.0);
+    }
+    #[test]
+    fn water_vision_follows_a_pack_duration() {
+        let mut s = FogState {
+            water_vision_duration: 300,
+            ..Default::default()
+        };
+        for _ in 0..25 {
+            s.tick(true);
+        }
+        assert!((s.water_vision(true) - 0.3).abs() < 1e-6);
+        for _ in 0..1000 {
+            s.tick(true);
+        }
+        assert_eq!(s.water_vision_time, 300);
+        assert_eq!(s.water_vision(true), 1.0);
     }
     #[test]
     fn clear_water_sees_as_far_as_after_thirty_seconds_under_water() {

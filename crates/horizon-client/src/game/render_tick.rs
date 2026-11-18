@@ -181,7 +181,7 @@ impl Game<'_> {
         let horizon = if self.level_flat() {
             f64::from(self.level_min_y())
         } else {
-            63.0
+            f64::from(self.res.fog().env.horizon_height)
         };
         self.dim == Dim::Overworld
             && camera.y < horizon
@@ -335,6 +335,7 @@ impl Game<'_> {
             // LocalPlayer water vision and AtmosphericFogEnvironment rain fog.
             let in_water =
                 fog_type(&self.world, self.res.facts(), e, self.forward()) == FogType::Water;
+            self.fog.water_vision_duration = self.res.fog().env.water_fog_brightening_time as i32;
             self.fog.tick(in_water);
             let b = [
                 e[0].floor() as i32,
