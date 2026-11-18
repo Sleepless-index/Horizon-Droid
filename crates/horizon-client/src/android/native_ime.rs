@@ -28,6 +28,7 @@ unsafe extern "C" {
 }
 enum Command {
     Show(String, bool),
+    SetText(String),
     Hide,
     Poll,
     Capture(bool),
@@ -525,6 +526,34 @@ impl Ui {
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = text;
                 self.ready.store(true, Ordering::Release);
             }
+            Command::SetText(text) => {
+                // Game-side change (history, Tab, a sent line): replace the box
+                // contents without re-requesting focus or the keyboard.
+                let s = JObject::from(env.new_string(&text)?);
+                env.call_method(
+                    &self.edit,
+                    "setText",
+                    "(Ljava/lang/CharSequence;)V",
+                    &[JValue::Object(&s)],
+                )?;
+                env.call_method(
+                    &self.edit,
+                    "setSelection",
+                    "(I)V",
+                    &[JValue::Int(text.encode_utf16().count() as i32)],
+                )?;
+                env.call_method(
+                    &self.input,
+                    "restartInput",
+                    "(Landroid/view/View;)V",
+                    &[JValue::Object(self.edit.as_obj())],
+                )?;
+                *self
+                    .text
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = text;
+                self.ready.store(true, Ordering::Release);
+            }
             Command::Hide => {
                 *self
                     .keyboard_request
@@ -771,6 +800,19 @@ fn show_mode(text: &str, secret: bool) -> bool {
     } else {
         false
     }
+}
+/// Replace the open editor's text with the game's, keeping the keyboard up.
+pub fn set_text(text: &str) -> bool {
+    let Some(ui) = UI
+        .get()
+        .filter(|ui| !ui.failed.load(Ordering::Acquire) && ui.active.load(Ordering::Acquire))
+    else {
+        return false;
+    };
+    // Do not diff the old box while SetText is queued on the UI thread.
+    ui.ready.store(false, Ordering::Release);
+    ui.enqueue(Command::SetText(text.into()));
+    true
 }
 pub fn hide() {
     winit::platform::android::set_native_text_input_active(false);

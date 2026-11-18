@@ -496,6 +496,20 @@ fn show_editor(text: &str, multiline: bool) {
         log::warn!("Android system keyboard is unavailable");
     }
 }
+/// Push game-side text into the open editor when the game changed it itself
+/// (history, Tab completion, a sent line), so the box and the game agree and
+/// the next keyboard edit diffs against the real text.
+pub fn sync_text(game_text: &str) {
+    EDIT.with(|edit| {
+        let mut edit = edit.borrow_mut();
+        let Some(old) = edit.as_mut() else {
+            return;
+        };
+        if old != game_text && crate::native_ime::set_text(game_text) {
+            *old = game_text.into();
+        }
+    });
+}
 pub fn hide() {
     EDIT.with(|e| *e.borrow_mut() = None);
     crate::native_ime::hide();
