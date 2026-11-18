@@ -365,7 +365,74 @@ impl HudAtlas {
             true,
         )?;
         atlas.text_shader = pack_text::load(root, defaults);
+        let modifiers = horizon_polytone::sprites::SpriteModifier::read_all(root);
+        if !modifiers.is_empty() {
+            atlas.apply_sprite_modifiers(&modifiers);
+        }
         Ok(atlas)
+    }
+    pub fn apply_sprite_modifiers(
+        &mut self,
+        modifiers: &[horizon_polytone::sprites::SpriteModifier],
+    ) {
+        let id = |name: &str| {
+            if name.contains(':') {
+                name.to_owned()
+            } else {
+                format!("minecraft:{name}")
+            }
+        };
+        let key = |id: &str| id.strip_prefix("minecraft:").unwrap_or(id).to_owned();
+        for modifier in modifiers {
+            let names: Vec<String> = self
+                .sprites
+                .keys()
+                .filter(|name| modifier.targets.matches(&id(name), |_| false))
+                .cloned()
+                .collect();
+            let change = &modifier.change;
+            for name in names {
+                let Some(mut rect) = self.sprites.get(&name).copied() else {
+                    continue;
+                };
+                if let Some(texture) = &change.texture
+                    && let Some(other) = self
+                        .sprites
+                        .get(&key(&horizon_polytone::sprites::sprite_id(texture)))
+                {
+                    rect = *other;
+                } else if let Some(color) = change.color {
+                    self.tint_region(rect, color);
+                }
+                let [u0, v0, u1, v1] = change.uv;
+                rect.u0 = u0.unwrap_or(rect.u0);
+                rect.v0 = v0.unwrap_or(rect.v0);
+                rect.u1 = u1.unwrap_or(rect.u1);
+                rect.v1 = v1.unwrap_or(rect.v1);
+                let [_, _, width, height] = change.offset;
+                rect.w = (rect.w as i32 + width).max(1) as u32;
+                rect.h = (rect.h as i32 + height).max(1) as u32;
+                self.sprites.insert(name, rect);
+            }
+        }
+    }
+    fn tint_region(&mut self, rect: Rect, argb: u32) {
+        let (texels_w, texels_h) = rect.texels((self.width, self.height));
+        let x0 = (rect.u0 * self.width as f32).round() as u32;
+        let y0 = (rect.v0 * self.height as f32).round() as u32;
+        let channel = |shift: u32| u32::from((argb >> shift) as u8);
+        let (a, r, g, b) = (channel(24), channel(16), channel(8), channel(0));
+        for y in y0..(y0 + texels_h).min(self.height) {
+            for x in x0..(x0 + texels_w).min(self.width) {
+                let at = ((y * self.width + x) * 4) as usize;
+                let Some(pixel) = self.pixels.get_mut(at..at + 4) else {
+                    continue;
+                };
+                for (value, by) in pixel.iter_mut().zip([r, g, b, a]) {
+                    *value = (u32::from(*value) * by / 255) as u8;
+                }
+            }
+        }
     }
     /// Empty slots written at run time: map textures (game/maps.rs), the
     /// minimap, downloaded skins, world and pack icons and the on-screen keyboard's text.
@@ -2291,6 +2358,40 @@ impl HudRenderer {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_sprite_modifier_recolours_swaps_and_resizes_atlas_sprites() {
+        use horizon_polytone::sprites::SpriteModifier;
+        let mut atlas = HudAtlas::boot();
+        let white = atlas.sprites["horizon/white"];
+        let other = Rect {
+            u0: 0.5,
+            v0: 0.5,
+            u1: 0.75,
+            v1: 0.75,
+            w: 8,
+            h: 8,
+        };
+        atlas.sprites.insert("hud/a".into(), white);
+        atlas.sprites.insert("hud/b".into(), white);
+        atlas.sprites.insert("hud/c".into(), other);
+        let modifiers: Vec<SpriteModifier> = [
+            serde_json::json!({"texture": "minecraft:hud/a", "color": "#FF8000", "width_inc": 2}),
+            serde_json::json!({"texture": "minecraft:hud/b", "new_texture": "hud/c", "u1": 0.9}),
+        ]
+        .iter()
+        .map(|json| SpriteModifier::parse(json).unwrap())
+        .collect();
+        atlas.apply_sprite_modifiers(&modifiers);
+        let at = ((white.v0 * atlas.height as f32) as usize * atlas.width as usize
+            + (white.u0 * atlas.width as f32) as usize)
+            * 4;
+        assert_eq!(atlas.pixels[at..at + 4], [255, 128, 0, 255]);
+        assert_eq!(atlas.sprites["hud/a"].w, white.w + 2);
+        let swapped = atlas.sprites["hud/b"];
+        assert_eq!((swapped.u0, swapped.u1, swapped.w), (0.5, 0.9, 8));
+        assert_eq!(atlas.sprites["hud/c"].u1, 0.75);
+    }
+
     use super::*;
     #[test]
     fn inset_only_moves_the_information_overlay_not_controls_or_viewport() {

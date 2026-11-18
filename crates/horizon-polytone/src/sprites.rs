@@ -29,6 +29,22 @@ pub struct SpriteModifier {
 }
 
 impl SpriteModifier {
+    pub fn read_all(root: &std::path::Path) -> Vec<Self> {
+        crate::files::scan(root, "overlay_modifiers")
+            .into_iter()
+            .filter_map(|entry| {
+                let json = entry.json?;
+                match Self::parse(&json) {
+                    Ok(m) => Some(m),
+                    Err(e) => {
+                        log::warn!("{}: {e}", entry.label);
+                        None
+                    }
+                }
+            })
+            .collect()
+    }
+
     pub fn parse(json: &Json) -> Result<Self, String> {
         if json.get("texture").is_none() {
             return Err("a screen sprite modifier needs a texture".into());
@@ -115,6 +131,26 @@ mod tests {
 
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn modifiers_are_read_from_the_overlay_modifiers_folder_and_bad_ones_skipped() {
+        use crate::files::testing::{put, scratch};
+        let root = scratch("sprites-read");
+        put(
+            &root,
+            "assets/foo/polytone/overlay_modifiers/bar.json",
+            r##"{"texture": "minecraft:hud/hotbar", "color": "#FF0000"}"##,
+        );
+        put(
+            &root,
+            "assets/foo/polytone/overlay_modifiers/bad.json",
+            r#"{"x_inc": 3}"#,
+        );
+        let all = SpriteModifier::read_all(&root);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].change.color, Some(0xFFFF_0000));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn a_modifier_reads_its_changes_and_overlays() {

@@ -35,8 +35,11 @@ Work only in this repository.
 - Creative tab modifiers (`Creative::load`): `removals`, `additions` (before or after a predicate match, new stacks as
   plain items) and `icon` change a category tab's stacks and icon; the search, inventory and hotbar tabs are left
   alone. A tab's `name` isn't applied.
+- Screen sprite modifiers (`overlay_modifiers`, applied once when the atlas builds, `HudAtlas::apply_sprite_modifiers`):
+  `color` (a multiply on the sprite's texels), `new_texture` (the sprite draws another's region), `u0` to `v1` and
+  `width_inc`, `height_inc`. Not applied: `x_inc`, `y_inc`, `overlays`, and `color` together with `new_texture`.
 - Read but not applied: the other block fields (`map_color`, `can_occlude`, particles), item modifier
-  tooltips, arm pose and armor/scope textures, flowing-water-only tints, `fog_fade`, `sprites`,
+  tooltips, arm pose and armor/scope textures, flowing-water-only tints, `fog_fade`, `sprites` offsets and overlays,
   `particles`, `pack` config, `colors.json` custom colours.
 
 ## Next, in rough order
