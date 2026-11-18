@@ -407,12 +407,52 @@ fn overlay_applies(entry: &serde_json::Value) -> bool {
         _ => false,
     }
 }
-fn overlays_of(meta: &serde_json::Value) -> Vec<String> {
+fn mentions_condition(bytes: &[u8]) -> bool {
+    const NEEDLE: &[u8] = b"polytone_condition";
+    bytes.windows(NEEDLE.len()).any(|w| w == NEEDLE)
+}
+fn is_config_entry(name: &str) -> bool {
+    name.starts_with("assets/")
+        && name.contains("/polytone/config_entries/")
+        && name.ends_with(".json")
+}
+/// The pack's `polytone` config entries, at the defaults or the player's choices.
+fn configs_of(source: &Source) -> horizon_polytone::pack::Configs {
+    use horizon_polytone::pack::Configs;
+    match source {
+        Source::Dir(d) => Configs::read(d),
+        Source::Zip(z) => match Zip::open(z) {
+            Ok(zip) => Configs::from_files(
+                zip.names()
+                    .filter(|n| is_config_entry(n))
+                    .filter_map(|n| Some((n.to_owned(), zip.read(n).ok()?)))
+                    .collect::<Vec<_>>(),
+            ),
+            Err(_) => Configs::default(),
+        },
+    }
+}
+/// The folders of `overlays.entries[]` that are active: their formats apply, and their
+/// `polytone_condition` holds when they have one. `configs` is only called when one does.
+fn overlays_of(
+    meta: &serde_json::Value,
+    configs: &dyn Fn() -> horizon_polytone::pack::Configs,
+) -> Vec<String> {
+    let loaded = std::cell::OnceCell::new();
     meta["overlays"]["entries"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|e| overlay_applies(e))
+        .filter(|e| {
+            if e.get("polytone_condition").is_none() {
+                return overlay_applies(e);
+            }
+            horizon_polytone::pack::overlay_active(
+                e,
+                loaded.get_or_init(configs),
+                overlay_applies(e),
+            )
+        })
         .filter_map(|e| e["directory"].as_str().map(str::to_owned))
         // OverlayMetadataSection's DIR_VALIDATOR: one folder of the pack, `[-_a-zA-Z0-9.]+`.
         .filter(|d| {
@@ -474,7 +514,7 @@ fn pack_for(id: String, title: Text, source: Source, format: (i64, i64)) -> Opti
         description_style,
         compatible: compatible(&meta),
         compatibility: compatibility_for(&meta, format),
-        overlays: overlays_of(&meta),
+        overlays: overlays_of(&meta, &|| configs_of(&source)),
         filter: filter_of(&meta),
         source,
     })
@@ -671,6 +711,7 @@ fn build_overlay_uncached(
         .collect();
     // Stacked files merge every layer, vanilla's first (unless filtered).
     let mut merged: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut pack_configs: BTreeMap<usize, horizon_polytone::pack::Configs> = BTreeMap::new();
     for (name, stack) in &stacks {
         let mut layers = Vec::new();
         dependencies.file(&vanilla.join(name));
@@ -686,6 +727,18 @@ fn build_overlay_uncached(
                     .get(*owner)
                     .and_then(Option::as_ref)
                     .and_then(|z| z.read(inner).ok()),
+            };
+            let bytes = match (bytes, merge_kind(name)) {
+                (Some(bytes), Some(Merge::Sounds)) if mentions_condition(&bytes) => {
+                    let configs = pack_configs
+                        .entry(*owner)
+                        .or_insert_with(|| configs_of(&packs[*owner].source));
+                    Some(
+                        horizon_polytone::pack::sounds_without_unmet(&bytes, configs)
+                            .unwrap_or(bytes),
+                    )
+                }
+                (bytes, _) => bytes,
             };
             layers.extend(bytes);
         }
@@ -1585,7 +1638,7 @@ mod tests {
             {"formats":{"min_inclusive":97,"max_inclusive":97},"directory":"new"},
             {"min_format":97,"max_format":[97,5],"directory":"also"},
             {"formats":50,"directory":"no"}]}}"#);
-        assert_eq!(overlays_of(&meta), ["new", "also"]);
+        assert_eq!(overlays_of(&meta, &Default::default), ["new", "also"]);
         // Only one plain folder of the pack, as vanilla's DIR_VALIDATOR has it.
         let meta = v(r#"{"overlays":{"entries":[
             {"formats":97,"directory":".."},
@@ -1594,7 +1647,7 @@ mod tests {
             {"formats":97,"directory":"a/b"},
             {"formats":97,"directory":"C:"},
             {"formats":97,"directory":"ok_1.21-x"}]}}"#);
-        assert_eq!(overlays_of(&meta), ["ok_1.21-x"]);
+        assert_eq!(overlays_of(&meta, &Default::default), ["ok_1.21-x"]);
         let base = std::env::temp_dir().join(format!("horizon-packs-ov-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         let vanilla = base.join("vanilla");
@@ -1639,6 +1692,69 @@ mod tests {
         assert!(
             !out.join("assets/minecraft/textures/block/dirt.png")
                 .exists()
+        );
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn polytone_conditions_pick_overlays_and_sound_events() {
+        let v = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
+        let mut configs = horizon_polytone::pack::Configs::default();
+        configs.add_entry(
+            "p:fancy".into(),
+            &v(r#"{"type": "boolean", "default_value": true}"#),
+        );
+        let meta = v(r#"{"overlays":{"entries":[
+            {"formats":97,"directory":"plain"},
+            {"formats":1,"directory":"forced","polytone_condition":{"override":true,"require_config":"p:fancy"}},
+            {"formats":97,"directory":"needs_off","polytone_condition":"!config('p:fancy')"},
+            {"formats":97,"directory":"needs_on","polytone_condition":"config('p:fancy')"}]}}"#);
+        assert_eq!(
+            overlays_of(&meta, &|| configs.clone()),
+            ["plain", "forced", "needs_on"]
+        );
+
+        let base = std::env::temp_dir().join(format!("horizon-packs-cond-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let vanilla = base.join("vanilla");
+        fs::create_dir_all(vanilla.join("assets/minecraft")).unwrap();
+        fs::write(
+            vanilla.join("assets/minecraft/sounds.json"),
+            br#"{"block.stone.break": {"sounds": ["v"]}}"#,
+        )
+        .unwrap();
+        let dir = base.join("packs/P");
+        fs::create_dir_all(dir.join("assets/p/polytone/config_entries")).unwrap();
+        fs::create_dir_all(dir.join("assets/minecraft")).unwrap();
+        fs::write(
+            dir.join("pack.mcmeta"),
+            br#"{"pack":{"description":"p","pack_format":97}}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("assets/p/polytone/config_entries/loud.json"),
+            br#"{"type": "boolean", "default_value": false}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("assets/minecraft/sounds.json"),
+            br#"{"block.stone.break": {"replace": true, "polytone_condition": "config('p:loud')", "sounds": ["mine"]},
+                 "block.stone.step": {"polytone_condition": "!config('p:loud')", "sounds": ["soft"]}}"#,
+        )
+        .unwrap();
+        let packs = discover(&vanilla, &base.join("packs"));
+        let out = base.join("overlay");
+        build_overlay(&vanilla, &packs, &out).unwrap();
+        let sounds: serde_json::Value =
+            serde_json::from_slice(&fs::read(out.join("assets/minecraft/sounds.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            sounds["block.stone.break"]["sounds"],
+            serde_json::json!(["v"])
+        );
+        assert_eq!(
+            sounds["block.stone.step"]["sounds"],
+            serde_json::json!(["soft"])
         );
         let _ = fs::remove_dir_all(base);
     }

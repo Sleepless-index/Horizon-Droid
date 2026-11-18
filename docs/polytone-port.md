@@ -44,14 +44,16 @@ Work only in this repository.
   blocks, dyed leather crafting), `dye.*.text` (sign text), `dye.*.firework` (stars, tooltips, raids) and `sheep.*`
   wool colours, `particle.*` (a colour or expression, applied as a `color` modifier) and the redstone dust particle colour.
 - Pack config: `config_entries/` are read at their defaults or the player's choices (`polytone-configs.json` beside
-  `options.txt`), `polytone_condition` filters any scanned file, and particle modifiers can call `config(id)`.
+  `options.txt`), `polytone_condition` filters any scanned file, particle modifiers can call `config(id)`, `overlays.entries[].polytone_condition` picks the pack's overlay
+  folders and `sounds.json` events with an unmet `polytone_condition` are dropped before the packs merge (the overlay
+  cache keys on the player's choices).
 - Particle modifiers (`particle_modifiers/`): `color`, `red/green/blue/alpha`, `size`, `life` and `speed` expressions run
   once when a particle is created, with `o`, `p`, `g` and `r` answered (no biome/light/colormap/config yet).
   `horizon_height` (the dark disc's height) and `water_fog_brightening_time` (ticks to full water vision) apply too.
 - Read but not applied: the other block fields (`map_color`, `can_occlude`, particles), item modifier
   tooltips, arm pose and armor/scope textures, flowing-water-only tints, `fog_fade`, `sprites` offsets and overlays,
   per-tick particle expressions, the config settings screen, `config(...)` in expressions other than particle modifiers
-  and conditions, `overlays`/`sounds.json` conditions.
+  and conditions.
 
 ## Next, in rough order
 

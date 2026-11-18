@@ -235,6 +235,10 @@ fn output_signature(out: &Path) -> io::Result<String> {
 fn pack_signature(packs: &[Pack]) -> io::Result<String> {
     let mut hash = Sha256::new();
     field(&mut hash, &[u8::from(cfg!(unix))]);
+    field(
+        &mut hash,
+        format!("{:?}", horizon_polytone::pack::chosen_values()).as_bytes(),
+    );
     for pack in packs {
         if matches!(pack.source, Source::Dir(_))
             && pack.overlays.iter().any(|overlay| {

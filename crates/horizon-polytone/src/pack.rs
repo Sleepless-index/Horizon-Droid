@@ -198,10 +198,31 @@ impl Configs {
             };
             configs.add_entry(id, &json);
         }
-        for (id, value) in chosen_values() {
-            configs.set(&id, value);
-        }
+        configs.apply_chosen();
         configs
+    }
+
+    /// The same from a pack's files given as `(path in the pack, bytes)`, for a pack that isn't
+    /// a folder (a zip).
+    pub fn from_files(files: impl IntoIterator<Item = (String, Vec<u8>)>) -> Self {
+        let mut configs = Self::default();
+        for (path, bytes) in files {
+            let Some(id) = crate::target::implicit_id(&path, "config_entries") else {
+                continue;
+            };
+            match serde_json::from_slice::<Json>(&bytes) {
+                Ok(json) => configs.add_entry(id, &json),
+                Err(e) => log::warn!("{path}: {e}"),
+            }
+        }
+        configs.apply_chosen();
+        configs
+    }
+
+    fn apply_chosen(&mut self) {
+        for (id, value) in chosen_values() {
+            self.set(&id, value);
+        }
     }
 
     /// A `config_entries/<name>.json` file: its value starts at its `default_value`.
@@ -736,5 +757,25 @@ mod read_tests {
         assert!(read_choices(&path).is_empty());
         assert!(read_choices(&dir.join("missing.json")).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn entries_read_from_a_list_of_files_match_a_folder() {
+        let configs = Configs::from_files([
+            (
+                "assets/mypack/polytone/config_entries/fancy.json".to_owned(),
+                br#"{"type": "boolean", "default_value": true}"#.to_vec(),
+            ),
+            (
+                "assets/mypack/polytone/other/skip.json".to_owned(),
+                b"{}".to_vec(),
+            ),
+            (
+                "assets/mypack/polytone/config_entries/bad.json".to_owned(),
+                b"{".to_vec(),
+            ),
+        ]);
+        assert_eq!(configs.entries().len(), 1);
+        assert_eq!(configs.get("mypack:fancy"), Some(&ConfigValue::Bool(true)));
     }
 }
