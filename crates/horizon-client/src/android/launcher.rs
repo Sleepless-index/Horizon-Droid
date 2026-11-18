@@ -415,6 +415,9 @@ impl Launcher {
             self.diagnostics_modal_open = false;
         } else if self.exit_confirmation {
             self.exit_confirmation = false;
+        } else if std::mem::take(&mut self.catalog.filters_open)
+            || self.catalog.pending_delete.take().is_some()
+        {
         } else if self.catalog.fm_modal.take().is_some() {
             self.catalog.editing = None;
         } else if self.catalog.project_modal.take().is_some() {

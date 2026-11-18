@@ -108,6 +108,16 @@ pub fn read_skin(bytes: &[u8]) -> Result<image::RgbaImage, String> {
     }
 }
 
+/// A 64×64 skin made for the slim arm leaves the outer two columns of both arms empty.
+pub fn looks_slim(skin: &image::RgbaImage) -> bool {
+    skin.height() == 64
+        && [(54, 20), (46, 52)]
+            .into_iter()
+            .all(|(x0, y0)| {
+                (x0..x0 + 2).all(|x| (y0..y0 + 12).all(|y| skin.get_pixel(x, y)[3] == 0))
+            })
+}
+
 /// A cape's picture, if it is one: 64×32 or 22×17.
 pub fn read_cape(bytes: &[u8]) -> Result<image::RgbaImage, String> {
     match dimensions(bytes)? {

@@ -1,6 +1,6 @@
 //! Frontend-independent, versioned local wardrobe. Selection is explicitly local:
 //! this module never calls an account service or changes a remote profile.
-use super::{Model, read_cape, read_file, read_skin};
+use super::{Model, looks_slim, read_cape, read_file, read_skin};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -133,6 +133,7 @@ impl Library {
             Kind::Skin => read_skin(bytes)?,
             Kind::Cape => read_cape(bytes)?,
         };
+        let slim = kind == Kind::Skin && looks_slim(&image);
         // Decode and re-encode so local metadata, trailing data and file names never persist.
         let mut output = std::io::Cursor::new(Vec::new());
         image
@@ -149,7 +150,7 @@ impl Library {
                 id: id.clone(),
                 title: title.chars().filter(|c| !c.is_control()).take(48).collect(),
                 kind,
-                slim: false,
+                slim,
             });
         }
         self.save(root)?;
@@ -332,6 +333,22 @@ mod tests {
             .write_to(&mut out, image::ImageFormat::Png)
             .unwrap();
         out.into_inner()
+    }
+
+    #[test]
+    fn importing_a_skin_picks_the_arm_model_from_its_texture() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-wardrobe-arm-{}", std::process::id()));
+        let mut library = Library::default();
+        let classic = library
+            .import(&root, "Classic", Kind::Skin, &png([9, 9, 9, 255]))
+            .unwrap();
+        let slim = library
+            .import(&root, "Slim", Kind::Skin, &png([9, 9, 9, 0]))
+            .unwrap();
+        assert_eq!(library.model_of(&classic), Model::Classic);
+        assert_eq!(library.model_of(&slim), Model::Slim);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

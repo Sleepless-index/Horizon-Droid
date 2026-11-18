@@ -302,6 +302,10 @@ pub(super) enum Action {
     OpenFolder(horizon_client::content_files::Kind),
     PackSort(crate::browser::details::Sort),
     PackCategory(&'static str),
+    OpenPackFilters,
+    ClosePackFilters,
+    ResetPackFilters,
+    CancelDeleteLocal,
     ToggleSection(usize),
     ToggleLocal(usize),
     DeleteLocal(usize),
@@ -474,6 +478,42 @@ pub(super) enum Action {
     CloseUpdateScreen,
     TriggerUpdateInstall,
     CheckForUpdates,
+}
+
+const PACK_SORTS: [(crate::browser::details::Sort, &str); 5] = [
+    (crate::browser::details::Sort::Relevance, "Relevance"),
+    (crate::browser::details::Sort::Downloads, "Downloads"),
+    (crate::browser::details::Sort::Follows, "Follows"),
+    (crate::browser::details::Sort::Newest, "Newest"),
+    (crate::browser::details::Sort::Updated, "Updated"),
+];
+
+const PACK_CATEGORIES: [&str; 10] = [
+    "vanilla-like",
+    "realistic",
+    "simplistic",
+    "themed",
+    "utility",
+    "tweaks",
+    "decoration",
+    "combat",
+    "modded",
+    "cursed",
+];
+
+fn wrap_chips(ui: &Ui, labels: &[String], width: f32) -> (Vec<[f32; 4]>, f32) {
+    let (mut x, mut y) = (0.0, 0.0);
+    let mut rects = Vec::with_capacity(labels.len());
+    for label in labels {
+        let cw = ui.measure(Face::SemiBold, 11.5, label) + 38.0;
+        if x > 0.0 && x + cw > width {
+            x = 0.0;
+            y += 36.0;
+        }
+        rects.push([x, y, cw, 30.0]);
+        x += cw + 6.0;
+    }
+    (rects, y + 30.0)
 }
 
 fn fm_icon_button(
@@ -1432,6 +1472,8 @@ impl Launcher {
         let target_nav_y = nav_start_y + selected_idx as f32 * nav_step;
         let has_any_modal = self.catalog.project_modal.is_some()
             || self.catalog.fm_modal.is_some()
+            || self.catalog.filters_open
+            || self.catalog.pending_delete.is_some()
             || self.chooser.is_some()
             || self.login.visible
             || self.exit_confirmation;
@@ -1968,52 +2010,73 @@ impl Launcher {
                 ui.icon(Icon::Plus, import[0] + 8.0, import[1] + 8.0, 20.0, my3_text());
                 self.targets.push((import, Action::Import(kind)));
 
-                use crate::browser::details::Sort;
-                let active_sort = self.catalog.filters_sort();
-                let sorts = [
-                    (Sort::Relevance, "Relevance"),
-                    (Sort::Downloads, "Downloads"),
-                    (Sort::Newest, "Newest"),
-                    (Sort::Updated, "Updated"),
-                ];
-                let cats = [
-                    "vanilla-like",
-                    "realistic",
-                    "simplistic",
-                    "themed",
-                    "utility",
-                ];
-                let mut cx = content_x;
-                let limit = content_x + content_w;
-                for (sort, label) in sorts {
-                    let cw = ui.measure(Face::SemiBold, 11.5, label) + 26.0;
-                    if cx + cw > limit {
-                        break;
-                    }
-                    let rect = [cx, sub_y, cw, 30.0];
-                    ui.m3_filter_chip(rect, label, active_sort == sort, None);
-                    self.targets.push((rect, Action::PackSort(sort)));
-                    cx += cw + 6.0;
-                }
+                let active = usize::from(self.catalog.sort.is_some())
+                    + usize::from(self.catalog.category.is_some());
+                let label = if active > 0 {
+                    format!("Filters · {active}")
+                } else {
+                    "Filters".to_owned()
+                };
+                let filter_w = ui.measure(Face::SemiBold, 12.0, &label) + 50.0;
+                let filter_r = [content_x, sub_y, filter_w, 30.0];
+                ui.rounded(
+                    filter_r[0],
+                    filter_r[1],
+                    filter_r[2],
+                    filter_r[3],
+                    8.0,
+                    if active > 0 {
+                        my3_accent_soft()
+                    } else {
+                        my3_surface_high()
+                    },
+                );
+                ui.border(
+                    filter_r[0],
+                    filter_r[1],
+                    filter_r[2],
+                    filter_r[3],
+                    8.0,
+                    if active > 0 {
+                        my3_accent()
+                    } else {
+                        my3_border()
+                    },
+                );
+                ui.icon(
+                    Icon::Settings,
+                    filter_r[0] + 10.0,
+                    filter_r[1] + 6.0,
+                    18.0,
+                    if active > 0 {
+                        my3_accent()
+                    } else {
+                        my3_text()
+                    },
+                );
+                ui.text(
+                    Face::SemiBold,
+                    12.0,
+                    filter_r[0] + 36.0,
+                    filter_r[1] + 7.0,
+                    my3_text(),
+                    &label,
+                );
+                self.targets.push((filter_r, Action::OpenPackFilters));
+
                 let note = self.error.as_deref().unwrap_or(&self.catalog.status);
                 let note = if note.starts_with("Searching") { "" } else { note };
                 if !note.is_empty() {
-                    let room = (limit - cx - 14.0).max(60.0);
+                    let room = (content_w - filter_w - 14.0).max(60.0);
                     let fitted = ui.fit_text(Face::Regular, 12.5, note, room);
-                    ui.text(Face::Regular, 12.5, cx + 14.0, sub_y + 5.0, my3_muted(), &fitted);
-                } else if !compact {
-                    cx += 8.0;
-                    for cat in cats {
-                        let label = cat[..1].to_uppercase() + &cat[1..];
-                        let cw = ui.measure(Face::SemiBold, 11.5, &label) + 26.0;
-                        if cx + cw > limit {
-                            break;
-                        }
-                        let rect = [cx, sub_y, cw, 30.0];
-                        ui.m3_filter_chip(rect, &label, self.catalog.category == Some(cat), None);
-                        self.targets.push((rect, Action::PackCategory(cat)));
-                        cx += cw + 6.0;
-                    }
+                    ui.text(
+                        Face::Regular,
+                        12.5,
+                        content_x + filter_w + 14.0,
+                        sub_y + 5.0,
+                        my3_muted(),
+                        &fitted,
+                    );
                 }
             } else {
                 button(
@@ -2492,6 +2555,12 @@ impl Launcher {
         }
         if self.catalog.fm_modal.is_some() {
             self.draw_fm_modal(&mut ui, w, h, ime_top_dp);
+        }
+        if self.catalog.filters_open {
+            self.draw_pack_filters(&mut ui, w, h);
+        }
+        if self.catalog.pending_delete.is_some() {
+            self.draw_delete_dialog(&mut ui, w, h);
         }
         if let Some((_, ref dup_name, _)) = self.catalog.duplicate_preset_confirm.clone() {
             self.targets.clear();
@@ -3283,9 +3352,9 @@ impl Launcher {
             for (row_idx, (orig_idx, item)) in filtered.into_iter().enumerate() {
                 let y = top + row_idx as f32 * row_h - self.catalog.scroll;
                 let card_h = 62.0;
-                let toggle_r = [content_x + content_w - 196.0, y + 12.0, 56.0, 38.0];
-                let export_r = [content_x + content_w - 132.0, y + 14.0, 58.0, 34.0];
-                let delete_r = [content_x + content_w - 68.0, y + 14.0, 58.0, 34.0];
+                let toggle_r = [content_x + content_w - 150.0, y + 12.0, 56.0, 38.0];
+                let export_r = [content_x + content_w - 90.0, y + 12.0, 38.0, 38.0];
+                let delete_r = [content_x + content_w - 48.0, y + 12.0, 38.0, 38.0];
                 self.list_targets
                     .push((toggle_r, Action::ToggleLocal(orig_idx)));
                 self.list_targets
@@ -3377,7 +3446,7 @@ impl Launcher {
                 let status_str = if item.enabled { "ACTIVE" } else { "OFF" };
                 let status_w = if item.enabled { 48.0 } else { 34.0 };
                 let text_x = content_x + 64.0;
-                let max_title_w = (content_w - 280.0 - status_w).max(60.0);
+                let max_title_w = (content_w - 246.0 - status_w).max(60.0);
                 let fitted_title = ui.fit_text(Face::SemiBold, 14.5, &item.title, max_title_w);
                 let title_w = ui.text(
                     Face::SemiBold,
@@ -3417,7 +3486,7 @@ impl Launcher {
                     11.5,
                     text_x,
                     y + 34.0,
-                    (content_w - 270.0).max(70.0),
+                    (content_w - 236.0).max(70.0),
                     my3_muted(),
                     &item.subtitle,
                 );
@@ -3430,22 +3499,15 @@ impl Launcher {
                 if let Some(c) = ui.clip_rect(toggle_r) {
                     self.targets.push((c, Action::ToggleLocal(orig_idx)));
                 }
-                button(
-                    ui,
-                    &mut self.targets,
-                    export_r,
-                    "Export",
-                    Action::ExportLocal(orig_idx),
-                    false,
-                );
-                button(
-                    ui,
-                    &mut self.targets,
-                    delete_r,
-                    "Delete",
-                    Action::DeleteLocal(orig_idx),
-                    false,
-                );
+                let danger = horizon_client::ui_theme::active_theme().danger;
+                for (r, icon, tint, action) in [
+                    (export_r, Icon::Share, my3_text(), Action::ExportLocal(orig_idx)),
+                    (delete_r, Icon::Trash, danger, Action::DeleteLocal(orig_idx)),
+                ] {
+                    ui.rounded(r[0], r[1], r[2], r[3], 10.0, my3_surface_high());
+                    ui.border(r[0], r[1], r[2], r[3], 10.0, my3_border());
+                    fm_icon_button(ui, &mut self.targets, r, icon, action, tint, true);
+                }
             }
             ui.set_clip(None);
             return;
@@ -3945,6 +4007,130 @@ impl Launcher {
             );
             self.targets.push((r, action));
         }
+    }
+
+    fn draw_delete_dialog(&mut self, ui: &mut Ui, w: f32, h: f32) {
+        let Some(item) = self.catalog.pending_delete.clone() else {
+            return;
+        };
+        self.targets.clear();
+        self.list_targets.clear();
+        self.list_view = None;
+        let modal_t = self.anim.modal_anim.clamp(0.2, 1.0);
+        ui.rounded(
+            0.0,
+            0.0,
+            w,
+            h,
+            0.0,
+            horizon_client::hud::rgba(6, 5, 12, (185.0 * modal_t) as u8),
+        );
+        let mw = (w - 32.0).min(400.0);
+        let mh = 170.0;
+        let mx = (w - mw) * 0.5;
+        let my = (h - mh) * 0.5;
+        ui.rounded(mx, my, mw, mh, 12.0, my3_surface());
+        ui.border(mx, my, mw, mh, 12.0, my3_border());
+        ui.icon(Icon::Trash, mx + 20.0, my + 20.0, 22.0, my3_accent());
+        ui.text(Face::SemiBold, 18.0, mx + 50.0, my + 18.0, my3_text(), "Remove add-on?");
+        ui.text_clipped(
+            Face::Medium,
+            12.5,
+            mx + 20.0,
+            my + 54.0,
+            mw - 40.0,
+            my3_accent(),
+            &item.title,
+        );
+        ui.hint_line(
+            mx + 20.0,
+            my + 78.0,
+            mw - 40.0,
+            "Deletes only this file from the profile. This cannot be undone.",
+            my3_muted(),
+        );
+        let bw = (mw - 52.0) * 0.5;
+        button(
+            ui,
+            &mut self.targets,
+            [mx + 20.0, my + mh - 54.0, bw, 38.0],
+            "Cancel",
+            Action::CancelDeleteLocal,
+            false,
+        );
+        button(
+            ui,
+            &mut self.targets,
+            [mx + 32.0 + bw, my + mh - 54.0, bw, 38.0],
+            "Remove",
+            Action::ConfirmDeleteLocal,
+            true,
+        );
+    }
+
+    fn draw_pack_filters(&mut self, ui: &mut Ui, w: f32, h: f32) {
+        self.targets.clear();
+        self.list_targets.clear();
+        self.list_view = None;
+        let modal_t = self.anim.modal_anim.clamp(0.2, 1.0);
+        ui.rounded(
+            0.0,
+            0.0,
+            w,
+            h,
+            0.0,
+            horizon_client::hud::rgba(6, 5, 12, (185.0 * modal_t) as u8),
+        );
+        let mw = (w - 32.0).min(460.0);
+        let inner = mw - 40.0;
+        let active_sort = self.catalog.filters_sort();
+        let sorts: Vec<String> = PACK_SORTS.iter().map(|(_, l)| (*l).to_owned()).collect();
+        let cats: Vec<String> = PACK_CATEGORIES
+            .iter()
+            .map(|c| c[..1].to_uppercase() + &c[1..])
+            .collect();
+        let (sort_rects, sort_h) = wrap_chips(ui, &sorts, inner);
+        let (cat_rects, cat_h) = wrap_chips(ui, &cats, inner);
+        let mh = (56.0 + 22.0 + sort_h + 16.0 + 22.0 + cat_h + 20.0 + 38.0 + 16.0).min(h - 12.0);
+        let mx = (w - mw) * 0.5;
+        let my = (h - mh) * 0.5;
+        ui.rounded(mx, my, mw, mh, 12.0, my3_surface());
+        ui.border(mx, my, mw, mh, 12.0, my3_border());
+        ui.text(Face::SemiBold, 18.0, mx + 20.0, my + 16.0, my3_text(), "Filters");
+
+        let sort_y = my + 56.0;
+        ui.text(Face::SemiBold, 12.0, mx + 20.0, sort_y, my3_muted(), "Sort by");
+        for (i, (sort, label)) in PACK_SORTS.iter().enumerate() {
+            let r = sort_rects[i];
+            let rect = [mx + 20.0 + r[0], sort_y + 22.0 + r[1], r[2], r[3]];
+            ui.m3_filter_chip(rect, label, active_sort == *sort, None);
+            self.targets.push((rect, Action::PackSort(*sort)));
+        }
+        let cat_y = sort_y + 22.0 + sort_h + 16.0;
+        ui.text(Face::SemiBold, 12.0, mx + 20.0, cat_y, my3_muted(), "Category");
+        for (i, cat) in PACK_CATEGORIES.iter().enumerate() {
+            let r = cat_rects[i];
+            let rect = [mx + 20.0 + r[0], cat_y + 22.0 + r[1], r[2], r[3]];
+            ui.m3_filter_chip(rect, &cats[i], self.catalog.category == Some(*cat), None);
+            self.targets.push((rect, Action::PackCategory(*cat)));
+        }
+        let bw = (inner - 12.0) * 0.5;
+        button(
+            ui,
+            &mut self.targets,
+            [mx + 20.0, my + mh - 54.0, bw, 38.0],
+            "Reset",
+            Action::ResetPackFilters,
+            false,
+        );
+        button(
+            ui,
+            &mut self.targets,
+            [mx + 32.0 + bw, my + mh - 54.0, bw, 38.0],
+            "Done",
+            Action::ClosePackFilters,
+            true,
+        );
     }
 
     /// Modal dialogs for the Integrated Mini File Manager:
@@ -7575,13 +7761,17 @@ impl Launcher {
             Some(Action::ToggleLocal(i)) => self.catalog.toggle_local(&self.home, i),
             Some(Action::DeleteLocal(i)) => {
                 self.catalog.pending_delete = self.catalog.local.get(i).cloned();
-                if let Some(item) = &self.catalog.pending_delete {
-                    self.chooser = Some(super::chooser::Chooser::confirm_delete(item.file.clone()));
-                }
             }
-            Some(Action::ConfirmDeleteLocal) => {
-                self.catalog.remove_local(&self.home);
-                self.chooser = None;
+            Some(Action::ConfirmDeleteLocal) => self.catalog.remove_local(&self.home),
+            Some(Action::CancelDeleteLocal) => self.catalog.pending_delete = None,
+            Some(Action::OpenPackFilters) => self.catalog.filters_open = true,
+            Some(Action::ClosePackFilters) => self.catalog.filters_open = false,
+            Some(Action::ResetPackFilters) => {
+                self.catalog.sort = None;
+                self.catalog.category = None;
+                self.catalog.offset = 0;
+                self.catalog.scroll = 0.0;
+                self.catalog.search(&self.home);
             }
             Some(Action::Account) => {
                 self.catalog.editing = None;
