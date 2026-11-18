@@ -606,6 +606,7 @@ fn noise(x: f64, y: f64) -> f64 {
 struct ModifierHost<'a> {
     state: &'a ParticleState,
     world: &'a ParticleWorld,
+    configs: &'a crate::pack::Configs,
     rng: &'a mut Rng,
 }
 
@@ -703,16 +704,29 @@ impl crate::expr::Host for ModifierHost<'_> {
     fn function(
         &mut self,
         name: &str,
-        _args: &[crate::expr::Value],
+        args: &[crate::expr::Value],
     ) -> Result<crate::expr::Value, String> {
-        Err(format!("a particle modifier has no function {name}"))
+        match (name, args) {
+            ("config", [crate::expr::Value::Str(id)]) => self
+                .configs
+                .get(id)
+                .map(crate::pack::ConfigValue::to_value)
+                .ok_or_else(|| format!("no config {id}")),
+            _ => Err(format!("a particle modifier has no function {name}")),
+        }
     }
 }
 
 impl ParticleModifier {
     /// Runs the expressions on a particle that was just made: colour first (`color`, then the
     /// channels), then `size`, `life` and `speed`, each seeing what the ones before set.
-    pub fn apply(&self, state: &mut ParticleState, world: &ParticleWorld, seed: u64) {
+    pub fn apply(
+        &self,
+        state: &mut ParticleState,
+        world: &ParticleWorld,
+        configs: &crate::pack::Configs,
+        seed: u64,
+    ) {
         let mut rng = Rng(seed | 1);
         for key in MODIFIER_FIELDS {
             let Some(program) = self.fields.get(key) else {
@@ -722,6 +736,7 @@ impl ParticleModifier {
                 let mut host = ModifierHost {
                     state,
                     world,
+                    configs,
                     rng: &mut rng,
                 };
                 match program.eval(&mut host) {
@@ -756,7 +771,7 @@ impl ParticleModifier {
 
 /// Every particle modifier of a pack.
 #[derive(Default)]
-pub struct ParticleModifiers(Vec<ParticleModifier>);
+pub struct ParticleModifiers(Vec<ParticleModifier>, crate::pack::Configs);
 
 impl ParticleModifiers {
     pub fn read(root: &std::path::Path) -> Self {
@@ -781,7 +796,7 @@ impl ParticleModifiers {
                 Err(e) => log::warn!("{}: {e}", entry.label),
             }
         }
-        Self(out)
+        Self(out, crate::pack::Configs::read(root))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -792,7 +807,7 @@ impl ParticleModifiers {
     pub fn apply(&self, id: &str, state: &mut ParticleState, world: &ParticleWorld, seed: u64) {
         for modifier in &self.0 {
             if modifier.targets.matches(id, |_| false) {
-                modifier.apply(state, world, seed);
+                modifier.apply(state, world, &self.1, seed);
             }
         }
     }
@@ -996,7 +1011,12 @@ mod tests {
             rgba: [0.0, 0.0, 0.0, 1.0],
             ..Default::default()
         };
-        modifier.apply(&mut state, &ParticleWorld::default(), 7);
+        modifier.apply(
+            &mut state,
+            &ParticleWorld::default(),
+            &Default::default(),
+            7,
+        );
         assert!((state.rgba[0] - 1.0).abs() < 1e-9);
         assert!((state.rgba[1] - 128.0 / 255.0).abs() < 1e-9);
         assert!((state.rgba[2] - 0.5).abs() < 1e-9);
@@ -1013,7 +1033,7 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-            ParticleModifiers(vec![m])
+            ParticleModifiers(vec![m], Default::default())
         };
         let fresh = || ParticleState {
             rgba: [1.0; 4],
@@ -1038,7 +1058,12 @@ mod tests {
             rgba: [1.0; 4],
             ..Default::default()
         };
-        modifier.apply(&mut state, &ParticleWorld::default(), 3);
+        modifier.apply(
+            &mut state,
+            &ParticleWorld::default(),
+            &Default::default(),
+            3,
+        );
         assert_eq!(state.rgba, [1.0; 4]);
     }
 

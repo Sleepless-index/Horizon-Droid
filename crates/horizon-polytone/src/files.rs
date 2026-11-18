@@ -99,6 +99,36 @@ fn walk(base: &Path, namespace: &str, kind: &str, root: &Path, out: &mut Vec<Ent
 }
 
 pub(crate) fn scan(root: &Path, kind: &str) -> Vec<Entry> {
+    let mut entries = scan_unconditional(root, kind);
+    let conditional = |e: &Entry| {
+        e.json
+            .as_ref()
+            .is_some_and(|j| j.get("polytone_condition").is_some())
+    };
+    if !entries.iter().any(conditional) {
+        return entries;
+    }
+    let configs = crate::pack::Configs::read(root);
+    entries.retain(|entry| {
+        let Some(condition) = entry
+            .json
+            .as_ref()
+            .and_then(|j| j.get("polytone_condition"))
+        else {
+            return true;
+        };
+        match crate::pack::Condition::parse(condition) {
+            Ok(condition) => condition.holds(&configs),
+            Err(e) => {
+                log::warn!("{}: polytone_condition: {e}", entry.label);
+                false
+            }
+        }
+    });
+    entries
+}
+
+pub(crate) fn scan_unconditional(root: &Path, kind: &str) -> Vec<Entry> {
     let mut namespaces = sorted(&root.join("assets"));
     namespaces.retain(|p| p.is_dir());
     let mut out = Vec::new();

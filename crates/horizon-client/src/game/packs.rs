@@ -453,6 +453,9 @@ pub(super) fn stage_pack(
     japanese: bool,
     progress: &super::Progress,
 ) -> horizon_client::Result<StagedPack> {
+    horizon_polytone::pack::set_chosen(horizon_polytone::pack::read_choices(
+        &super::Game::game_dir().join("polytone-configs.json"),
+    ));
     let root = startup_root(vanilla_root, selected, server)?;
     let root = super::mods::content_root(&root, mods_enabled, dev_mods);
     progress.set(1);

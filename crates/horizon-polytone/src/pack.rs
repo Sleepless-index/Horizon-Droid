@@ -4,6 +4,51 @@
 use crate::expr::{Host, Program, Root, Value};
 use serde_json::Value as Json;
 use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::RwLock;
+
+static CHOSEN: RwLock<BTreeMap<String, ConfigValue>> = RwLock::new(BTreeMap::new());
+
+/// The values a player chose for config entries, by id; every pack read after this takes them.
+pub fn set_chosen(values: BTreeMap<String, ConfigValue>) {
+    if let Ok(mut guard) = CHOSEN.write() {
+        *guard = values;
+    }
+}
+
+/// `polytone-configs.json`: the player's choices as a flat object of id to value. A missing or
+/// unreadable file means no choices; an entry that isn't a number, text or boolean is skipped.
+pub fn read_choices(path: &Path) -> BTreeMap<String, ConfigValue> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return BTreeMap::new();
+    };
+    let Ok(Json::Object(map)) = serde_json::from_str::<Json>(&text) else {
+        log::warn!("{}: not a JSON object", path.display());
+        return BTreeMap::new();
+    };
+    map.iter()
+        .filter_map(|(id, v)| Some((id.clone(), ConfigValue::parse(v)?)))
+        .collect()
+}
+
+pub fn write_choices(path: &Path, values: &BTreeMap<String, ConfigValue>) -> std::io::Result<()> {
+    let map: serde_json::Map<String, Json> = values
+        .iter()
+        .map(|(id, v)| {
+            let json = match v {
+                ConfigValue::Number(n) => Json::from(*n),
+                ConfigValue::Text(s) => Json::from(s.as_str()),
+                ConfigValue::Bool(b) => Json::from(*b),
+            };
+            (id.clone(), json)
+        })
+        .collect();
+    std::fs::write(path, serde_json::to_string_pretty(&Json::Object(map))?)
+}
+
+pub fn chosen_values() -> BTreeMap<String, ConfigValue> {
+    CHOSEN.read().map(|g| g.clone()).unwrap_or_default()
+}
 
 /// The Minecraft version Horizon plays, for `modOn('minecraft', range)`.
 pub const MINECRAFT_VERSION: &str = "26.3";
@@ -143,6 +188,22 @@ pub struct Configs {
 }
 
 impl Configs {
+    /// The entries of a pack's `config_entries/` folders, each at its default or at the value a
+    /// player chose ([`set_chosen`]).
+    pub fn read(root: &Path) -> Self {
+        let mut configs = Self::default();
+        for entry in crate::files::scan_unconditional(root, "config_entries") {
+            let (Some(id), Some(json)) = (entry.id, entry.json) else {
+                continue;
+            };
+            configs.add_entry(id, &json);
+        }
+        for (id, value) in chosen_values() {
+            configs.set(&id, value);
+        }
+        configs
+    }
+
     /// A `config_entries/<name>.json` file: its value starts at its `default_value`.
     pub fn add_entry(&mut self, id: String, json: &Json) {
         let Some(entry) = ConfigEntry::parse(json) else {
@@ -573,5 +634,107 @@ mod tests {
         assert_eq!(configs.presets(), ["performance", "pretty"]);
         configs.apply_preset("performance");
         assert_eq!(configs.get("p:fog"), Some(&ConfigValue::Number(0.0)));
+    }
+}
+
+#[cfg(test)]
+mod read_tests {
+    use super::*;
+
+    fn pack(files: &[(&str, &str)]) -> std::path::PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "polytone-configs-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        for (path, text) in files {
+            let full = dir.join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(full, text).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn entries_load_at_their_defaults_and_conditions_filter_files() {
+        let dir = pack(&[
+            (
+                "assets/mypack/polytone/config_entries/fancy.json",
+                r#"{"type": "boolean", "default_value": false}"#,
+            ),
+            (
+                "assets/minecraft/polytone/particle_modifiers/on.json",
+                r#"{"targets": "minecraft:smoke", "alpha": 0.5, "polytone_condition": "config('mypack:fancy')"}"#,
+            ),
+            (
+                "assets/minecraft/polytone/particle_modifiers/off.json",
+                r#"{"targets": "minecraft:flame", "alpha": 0.25, "polytone_condition": "!config('mypack:fancy')"}"#,
+            ),
+            (
+                "assets/minecraft/polytone/particle_modifiers/plain.json",
+                r#"{"targets": "minecraft:cloud", "alpha": 0.75}"#,
+            ),
+        ]);
+        let configs = Configs::read(&dir);
+        assert_eq!(configs.get("mypack:fancy"), Some(&ConfigValue::Bool(false)));
+        let loaded = |root: &Path| {
+            let mut names: Vec<String> = crate::files::scan(root, "particle_modifiers")
+                .into_iter()
+                .filter_map(|e| e.id)
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(loaded(&dir), ["minecraft:off", "minecraft:plain"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_players_choice_changes_which_files_load_and_what_config_answers() {
+        let dir = pack(&[
+            (
+                "assets/mypack/polytone/config_entries/glow.json",
+                r#"{"type": "boolean", "default_value": false}"#,
+            ),
+            (
+                "assets/minecraft/polytone/particle_modifiers/glow.json",
+                r#"{"targets": "minecraft:smoke", "alpha": "config('mypack:glow') ? 0.2 : 0.9", "polytone_condition": "config('mypack:glow')"}"#,
+            ),
+        ]);
+        let mut choice = BTreeMap::new();
+        choice.insert("mypack:glow".to_owned(), ConfigValue::Bool(true));
+        set_chosen(choice);
+        let modifiers = crate::particles::ParticleModifiers::read(&dir);
+        set_chosen(BTreeMap::new());
+        let mut state = crate::particles::ParticleState {
+            rgba: [1.0; 4],
+            ..Default::default()
+        };
+        modifiers.apply(
+            "minecraft:smoke",
+            &mut state,
+            &crate::particles::ParticleWorld::default(),
+            1,
+        );
+        assert_eq!(state.rgba[3], 0.2);
+        assert!(crate::particles::ParticleModifiers::read(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn choices_round_trip_through_their_file() {
+        let dir = pack(&[("keep.txt", "")]);
+        let path = dir.join("polytone-configs.json");
+        let mut values = BTreeMap::new();
+        values.insert("a:on".to_owned(), ConfigValue::Bool(true));
+        values.insert("a:size".to_owned(), ConfigValue::Number(2.5));
+        values.insert("a:mode".to_owned(), ConfigValue::Text("fancy".into()));
+        write_choices(&path, &values).unwrap();
+        assert_eq!(read_choices(&path), values);
+        std::fs::write(&path, "[1]").unwrap();
+        assert!(read_choices(&path).is_empty());
+        assert!(read_choices(&dir.join("missing.json")).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
