@@ -238,12 +238,17 @@ impl PackColors {
         self.color(&format!("sheep.{name}"))
     }
 
-    /// Diffuse dye and sheep wool overrides in dye order, from the names in `names`.
-    pub fn dye_and_sheep(&self, names: &[&str; 16]) -> ([Option<u32>; 16], [Option<u32>; 16]) {
+    /// Every dye override in dye order: diffuse, text, firework and sheep wool colours.
+    pub fn dye_overrides(&self, names: &[&str; 16]) -> [[Option<u32>; 16]; 4] {
         let pick = |f: &dyn Fn(&str) -> Option<u32>| {
             std::array::from_fn(|i| f(names[i]).map(|c| c & 0xFF_FFFF))
         };
-        (pick(&|n| self.dye(n, "diffuse")), pick(&|n| self.sheep(n)))
+        [
+            pick(&|n| self.dye(n, "diffuse")),
+            pick(&|n| self.dye(n, "text")),
+            pick(&|n| self.dye(n, "firework")),
+            pick(&|n| self.sheep(n)),
+        ]
     }
 
     /// `redstone.<power>`: the wire's and its dust particles' colour at that power (0 to 15).
@@ -542,26 +547,26 @@ mod dye_sheep_tests {
     use super::*;
 
     #[test]
-    fn dye_and_sheep_overrides_follow_dye_order() {
+    fn dye_overrides_follow_dye_order_per_kind() {
         let mut colors = PackColors::default();
-        colors
-            .entries
-            .insert("dye.red".into(), Json::String("#102030".into()));
-        colors.entries.insert(
-            "dye.white.diffuse".into(),
-            Json::String("0xff112233".into()),
-        );
-        colors
-            .entries
-            .insert("sheep.orange".into(), Json::String("#445566".into()));
+        let mut put = |k: &str, v: &str| colors.entries.insert(k.into(), Json::String(v.into()));
+        put("dye.red", "#102030");
+        put("dye.white.diffuse", "0xff112233");
+        put("dye.white.text", "#0a0b0c");
+        put("dye.orange.firework", "#010203");
+        put("sheep.orange", "#445566");
         let mut names = [""; 16];
         names[0] = "white";
         names[1] = "orange";
         names[14] = "red";
-        let (dye, sheep) = colors.dye_and_sheep(&names);
-        assert_eq!(dye[0], Some(0x112233));
-        assert_eq!(dye[14], Some(0x102030));
-        assert_eq!(dye[1], None);
+        let [diffuse, text, firework, sheep] = colors.dye_overrides(&names);
+        assert_eq!(diffuse[0], Some(0x112233));
+        assert_eq!(diffuse[14], Some(0x102030));
+        assert_eq!(diffuse[1], None);
+        assert_eq!(text[0], Some(0x0A0B0C));
+        assert_eq!(text[14], None);
+        assert_eq!(firework[1], Some(0x010203));
+        assert_eq!(firework[0], None);
         assert_eq!(sheep[1], Some(0x445566));
         assert_eq!(sheep[0], None);
     }

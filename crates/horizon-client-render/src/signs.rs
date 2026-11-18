@@ -76,7 +76,8 @@ impl SignText {
     }
     /// `DyeColor.getTextColor` of this side.
     pub fn text_color(&self) -> u32 {
-        DYE_TEXT[usize::from(self.color.min(15))].1
+        let index = usize::from(self.color.min(15));
+        horizon_client_core::pack_colors::text(index, DYE_TEXT[index].1)
     }
     /// `SignText.hasAnyClickCommands`: a line whose style has a `run_command`
     /// click event.

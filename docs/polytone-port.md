@@ -41,8 +41,8 @@ Work only in this repository.
 - `colors.json` / `color.properties` custom colours: `environment.*` (`powder_snow_fog`, `blindness_fog_distance`,
   `darkness_fog_distance`, `boss_fog_distance`, `water_fog_brightening`) in `FogTables`, and `redstone.<power>` for the
   wire's tint, `effect.*` (mob effect colours in the effect table), `dye.*` diffuse colours (mobs, shulker/banner
-  blocks) and `sheep.*` wool colours. Not applied: `dye.*.text` and `.firework`, `horizon_height`,
-  `water_fog_brightening_time`, redstone dust particles, `particle.*`.
+  blocks, dyed leather crafting), `dye.*.text` (sign text), `dye.*.firework` (stars, tooltips, raids) and `sheep.*`
+  wool colours. Not applied: `horizon_height`, `water_fog_brightening_time`, redstone dust particles, `particle.*`.
 - Read but not applied: the other block fields (`map_color`, `can_occlude`, particles), item modifier
   tooltips, arm pose and armor/scope textures, flowing-water-only tints, `fog_fade`, `sprites` offsets and overlays,
   `particles`, `pack` config, `colors.json` particle colours.

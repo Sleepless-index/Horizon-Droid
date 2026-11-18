@@ -26,6 +26,10 @@ use std::{
 pub use horizon_client_core::particle_type::ParticleType;
 pub use horizon_items::firework::{DYE_FIREWORK_COLORS, FireworkExplosion, FireworkShape};
 
+pub fn firework_color(index: usize) -> u32 {
+    horizon_client_core::pack_colors::firework(index, DYE_FIREWORK_COLORS[index & 15].1)
+}
+
 /// `ParticleOptions` with the parameters of the option classes used here.
 #[derive(Clone, Debug)]
 pub struct ParticleOptions {

@@ -46,8 +46,14 @@ fn polytone_block_tints(tables: &mut MeshTables, facts: &BlockFacts, root: &std:
     tables.apply_polytone_fluid_tints(root);
     tables.apply_polytone_colors(root);
     let colors = horizon_polytone::colors::PackColors::read(root);
-    let (dye, sheep) = colors.dye_and_sheep(&horizon_client::mobs::render::DYE_NAMES);
-    horizon_client::pack_colors::set(dye, sheep);
+    let [diffuse, text, firework, sheep] =
+        colors.dye_overrides(&horizon_client::mobs::render::DYE_NAMES);
+    horizon_client::pack_colors::set(horizon_client::pack_colors::DyeOverrides {
+        diffuse,
+        text,
+        firework,
+        sheep,
+    });
     horizon_client::potions::set_pack_effect_colors(&colors.effects());
     let tags = std::cell::OnceCell::new();
     tables.apply_polytone_block_tints(facts, root, &|tag, block| {

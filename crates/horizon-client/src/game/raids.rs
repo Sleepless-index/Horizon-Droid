@@ -1130,7 +1130,7 @@ impl Game<'_> {
             flight,
             vec![horizon_client::particles::FireworkExplosion {
                 shape: horizon_client::particles::FireworkShape::Burst,
-                colors: vec![horizon_client::particles::DYE_FIREWORK_COLORS[color & 15].1],
+                colors: vec![horizon_client::particles::firework_color(color)],
                 fade: Vec::new(),
                 trail: false,
                 twinkle: false,

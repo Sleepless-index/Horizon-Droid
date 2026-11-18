@@ -922,7 +922,9 @@ pub fn firework_lines(
             .map(|c| {
                 match crate::particles::DYE_FIREWORK_COLORS
                     .iter()
-                    .find(|(_, firework)| firework == c)
+                    .enumerate()
+                    .find(|(i, _)| crate::particles::firework_color(*i) == *c)
+                    .map(|(_, entry)| entry)
                 {
                     Some((name, _)) => text(&format!("item.minecraft.firework_star.{name}")),
                     None => text("item.minecraft.firework_star.custom_color"),

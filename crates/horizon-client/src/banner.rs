@@ -177,7 +177,9 @@ pub fn banner_color(item: &str) -> Option<&'static str> {
 }
 /// `DyeColor.getTextureDiffuseColor` (RGB) by dye name.
 pub fn dye_rgb(name: &str) -> u32 {
-    DYES.iter().find(|d| d.0 == name).map_or(0xFFFFFF, |d| d.1)
+    DYES.iter().position(|d| d.0 == name).map_or(0xFFFFFF, |i| {
+        horizon_client_core::pack_colors::dye(i, DYES[i].1)
+    })
 }
 /// The layers of a banner or shield stack.
 pub fn layers(stack: &ItemStack) -> &[BannerLayer] {

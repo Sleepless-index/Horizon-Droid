@@ -7,7 +7,7 @@ use crate::{
     Result,
     item_data::StackData,
     items::{ItemStack, Items},
-    particles::{DYE_FIREWORK_COLORS, FireworkExplosion, FireworkShape},
+    particles::{FireworkExplosion, FireworkShape, firework_color},
 };
 use horizon_world::loot::PackOverlay;
 use horizon_world::nbt::Tag;
@@ -418,10 +418,14 @@ impl Special {
                         let mut made = result.create();
                         made.item = Arc::from(targets[i % targets.len()].as_str());
                         let name = dyes[i / targets.len()].trim_start_matches("minecraft:");
-                        let color = crate::block_entity_render::DYES
+                        let index = crate::block_entity_render::DYES
                             .iter()
-                            .find(|(c, _)| name.strip_suffix("_dye") == Some(c))
-                            .map_or(crate::block_entity_render::DYES[0].1, |d| d.1);
+                            .position(|(c, _)| name.strip_suffix("_dye") == Some(c))
+                            .unwrap_or(0);
+                        let color = horizon_client_core::pack_colors::dye(
+                            index,
+                            crate::block_entity_render::DYES[index].1,
+                        );
                         made.data_mut().dyed_color = Some(color as i32);
                         made
                     })
@@ -1028,7 +1032,7 @@ impl Special {
                     } else if trail.test(s) {
                         has_trail = true;
                     } else if dye.test(s) {
-                        colors.push(DYE_FIREWORK_COLORS[ctx.dye(s).unwrap_or(0)].1);
+                        colors.push(firework_color(ctx.dye(s).unwrap_or(0)));
                     }
                 }
                 let mut out = result.create();
@@ -1050,7 +1054,7 @@ impl Special {
                 let mut target_stack = None;
                 for s in &stacks {
                     if dye.test(s) {
-                        colors.push(DYE_FIREWORK_COLORS[ctx.dye(s).unwrap_or(0)].1);
+                        colors.push(firework_color(ctx.dye(s).unwrap_or(0)));
                     } else if target.test(s) {
                         target_stack = Some(*s);
                     }
@@ -1142,7 +1146,10 @@ pub(crate) fn apply_dyes(current: Option<i32>, dyes: &[usize]) -> i32 {
         add(c as u32);
     }
     for d in dyes {
-        add(crate::block_entity_render::DYES[*d].1);
+        add(horizon_client_core::pack_colors::dye(
+            *d,
+            crate::block_entity_render::DYES[*d].1,
+        ));
     }
     let (red, green, blue) = (r / n, g / n, b / n);
     let average = intensity as f32 / n as f32;
