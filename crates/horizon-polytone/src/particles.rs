@@ -538,6 +538,254 @@ impl ParticleModifier {
     }
 }
 
+/// A particle's state as modifiers read and write it: colour channels 0 to 1, `size` the quad
+/// scale, `life` the lifetime in ticks, `xd`/`yd`/`zd` its motion.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ParticleState {
+    pub age: f64,
+    pub life: f64,
+    pub position: [f64; 3],
+    pub motion: [f64; 3],
+    pub size: f64,
+    pub roll: f64,
+    pub rgba: [f64; 4],
+    pub custom: f64,
+    pub temperature: f64,
+    pub downfall: f64,
+    pub sky_light: f64,
+    pub block_light: f64,
+}
+
+/// What a modifier reads of the world around the particle.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ParticleWorld {
+    pub player: [f64; 3],
+    pub player_speed_sq: f64,
+    pub time: f64,
+    pub day_time: f64,
+    pub rain: f64,
+    pub render_distance: f64,
+}
+
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> f64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    fn gaussian(&mut self) -> f64 {
+        let (a, b) = (self.next().max(f64::MIN_POSITIVE), self.next());
+        (-2.0 * a.ln()).sqrt() * (std::f64::consts::TAU * b).cos()
+    }
+}
+
+fn lattice(x: i64, y: i64) -> f64 {
+    let mut h = (x as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ (y as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+    h ^= h >> 29;
+    h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    h ^= h >> 32;
+    (h >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+}
+
+fn noise(x: f64, y: f64) -> f64 {
+    let (x0, y0) = (x.floor(), y.floor());
+    let (fx, fy) = (x - x0, y - y0);
+    let smooth = |t: f64| t * t * (3.0 - 2.0 * t);
+    let (u, v) = (smooth(fx), smooth(fy));
+    let (xi, yi) = (x0 as i64, y0 as i64);
+    let top = lattice(xi, yi) + (lattice(xi + 1, yi) - lattice(xi, yi)) * u;
+    let bottom = lattice(xi, yi + 1) + (lattice(xi + 1, yi + 1) - lattice(xi, yi + 1)) * u;
+    top + (bottom - top) * v
+}
+
+struct ModifierHost<'a> {
+    state: &'a ParticleState,
+    world: &'a ParticleWorld,
+    rng: &'a mut Rng,
+}
+
+impl ModifierHost<'_> {
+    fn packed(&self) -> f64 {
+        let channel = |c: f64| (c.clamp(0.0, 1.0) * 255.0).round() as u32;
+        let [r, g, b, _] = self.state.rgba;
+        f64::from(channel(r) << 16 | channel(g) << 8 | channel(b))
+    }
+
+    fn position(&self, root: crate::expr::Root, axis: usize) -> f64 {
+        use crate::expr::Root;
+        match root {
+            Root::Object => self.state.position[axis],
+            _ => self.world.player[axis],
+        }
+    }
+}
+
+impl crate::expr::Host for ModifierHost<'_> {
+    fn root(&mut self, root: crate::expr::Root) -> crate::expr::Value {
+        use crate::expr::{Root, Value};
+        match root {
+            Root::Value => Value::Num(0.0),
+            other => Value::Object(other as u32),
+        }
+    }
+
+    fn method(
+        &mut self,
+        target: &crate::expr::Value,
+        name: &str,
+        args: &[crate::expr::Value],
+    ) -> Result<crate::expr::Value, String> {
+        use crate::expr::{Root, Value};
+        let Value::Object(id) = target else {
+            return Err(format!("{name} needs a context object"));
+        };
+        let root = [
+            Root::Object,
+            Root::Player,
+            Root::Camera,
+            Root::Global,
+            Root::Random,
+        ]
+        .into_iter()
+        .find(|r| *r as u32 == *id)
+        .ok_or_else(|| format!("no object {id}"))?;
+        let s = self.state;
+        let number = match (root, name) {
+            (Root::Object, "age") => s.age,
+            (Root::Object, "life") => s.life,
+            (Root::Object, "size") => s.size,
+            (Root::Object, "roll") => s.roll,
+            (Root::Object, "custom") => s.custom,
+            (Root::Object, "xd") => s.motion[0],
+            (Root::Object, "yd") => s.motion[1],
+            (Root::Object, "zd") => s.motion[2],
+            (Root::Object, "red") => s.rgba[0],
+            (Root::Object, "green") => s.rgba[1],
+            (Root::Object, "blue") => s.rgba[2],
+            (Root::Object, "alpha") => s.rgba[3],
+            (Root::Object, "color") => self.packed(),
+            (Root::Object, "temperature") => s.temperature,
+            (Root::Object, "downfall") => s.downfall,
+            (Root::Object, "skyLight") => s.sky_light,
+            (Root::Object, "blockLight") => s.block_light,
+            (Root::Object, "distSq") => {
+                let other = match args.first() {
+                    Some(Value::Object(o)) if *o == Root::Object as u32 => s.position,
+                    _ => self.world.player,
+                };
+                (0..3).map(|i| (s.position[i] - other[i]).powi(2)).sum()
+            }
+            (Root::Object | Root::Player | Root::Camera, "x") => self.position(root, 0),
+            (Root::Object | Root::Player | Root::Camera, "y") => self.position(root, 1),
+            (Root::Object | Root::Player | Root::Camera, "z") => self.position(root, 2),
+            (Root::Player, "speedSq") => self.world.player_speed_sq,
+            (Root::Global, "time") => self.world.time,
+            (Root::Global, "dayTime") => self.world.day_time,
+            (Root::Global, "rain") => self.world.rain,
+            (Root::Global, "seasonNumber") => 0.0,
+            (Root::Global, "renderDistance") => self.world.render_distance,
+            (Root::Random, "rand") => self.rng.next(),
+            (Root::Random, "gaussian") => self.rng.gaussian(),
+            (Root::Random, "noise") => {
+                let at = |i: usize| args.get(i).map_or(0.0, Value::num);
+                noise(at(0), at(1))
+            }
+            _ => return Err(format!("a particle modifier has no {name}")),
+        };
+        Ok(Value::Num(number))
+    }
+
+    fn function(
+        &mut self,
+        name: &str,
+        _args: &[crate::expr::Value],
+    ) -> Result<crate::expr::Value, String> {
+        Err(format!("a particle modifier has no function {name}"))
+    }
+}
+
+impl ParticleModifier {
+    /// Runs the expressions on a particle that was just made: colour first (`color`, then the
+    /// channels), then `size`, `life` and `speed`, each seeing what the ones before set.
+    pub fn apply(&self, state: &mut ParticleState, world: &ParticleWorld, seed: u64) {
+        let mut rng = Rng(seed | 1);
+        for key in MODIFIER_FIELDS {
+            let Some(program) = self.fields.get(key) else {
+                continue;
+            };
+            let value = {
+                let mut host = ModifierHost {
+                    state,
+                    world,
+                    rng: &mut rng,
+                };
+                match program.eval(&mut host) {
+                    Ok(v) => v.num(),
+                    Err(e) => {
+                        log::warn!("particle modifier {key}: {e}");
+                        continue;
+                    }
+                }
+            };
+            if !value.is_finite() {
+                continue;
+            }
+            match key {
+                "color" => {
+                    let packed = value as i64 as u32;
+                    for (i, shift) in [16, 8, 0].into_iter().enumerate() {
+                        state.rgba[i] = f64::from(packed >> shift & 255) / 255.0;
+                    }
+                }
+                "red" => state.rgba[0] = value.clamp(0.0, 1.0),
+                "green" => state.rgba[1] = value.clamp(0.0, 1.0),
+                "blue" => state.rgba[2] = value.clamp(0.0, 1.0),
+                "alpha" => state.rgba[3] = value.clamp(0.0, 1.0),
+                "size" => state.size *= value.max(0.0),
+                "life" => state.life = value.max(1.0).round(),
+                _ => state.motion = state.motion.map(|m| m * value),
+            }
+        }
+    }
+}
+
+/// Every particle modifier of a pack.
+#[derive(Default)]
+pub struct ParticleModifiers(Vec<ParticleModifier>);
+
+impl ParticleModifiers {
+    pub fn read(root: &std::path::Path) -> Self {
+        let mut out = Vec::new();
+        for entry in crate::files::scan(root, "particle_modifiers") {
+            let Some(json) = &entry.json else { continue };
+            match ParticleModifier::parse(json, entry.id.as_deref()) {
+                Ok(Some(m)) => out.push(m),
+                Ok(None) => {}
+                Err(e) => log::warn!("{}: {e}", entry.label),
+            }
+        }
+        Self(out)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Applies every modifier that targets the particle type `id` (`namespace:path`).
+    pub fn apply(&self, id: &str, state: &mut ParticleState, world: &ParticleWorld, seed: u64) {
+        for modifier in &self.0 {
+            if modifier.targets.matches(id, |_| false) {
+                modifier.apply(state, world, seed);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,5 +960,73 @@ mod tests {
             .unwrap()
             .is_none()
         );
+    }
+
+    #[test]
+    fn a_modifier_recolours_resizes_and_slows_a_new_particle() {
+        let modifier = ParticleModifier::parse(
+            &json!({
+                "targets": ["minecraft:smoke"],
+                "color": "0xFF8000",
+                "blue": "o.red() * 0.5",
+                "size": 2,
+                "life": "o.life() + 10",
+                "speed": 0.5
+            }),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        let mut state = ParticleState {
+            life: 20.0,
+            size: 0.1,
+            motion: [0.2, 0.4, -0.2],
+            rgba: [0.0, 0.0, 0.0, 1.0],
+            ..Default::default()
+        };
+        modifier.apply(&mut state, &ParticleWorld::default(), 7);
+        assert!((state.rgba[0] - 1.0).abs() < 1e-9);
+        assert!((state.rgba[1] - 128.0 / 255.0).abs() < 1e-9);
+        assert!((state.rgba[2] - 0.5).abs() < 1e-9);
+        assert_eq!((state.size, state.life), (0.2, 30.0));
+        assert_eq!(state.motion, [0.1, 0.2, -0.1]);
+    }
+
+    #[test]
+    fn modifiers_only_touch_the_particles_they_target() {
+        let modifiers = {
+            let m = ParticleModifier::parse(
+                &json!({"targets": "minecraft:flame", "alpha": 0.25}),
+                None,
+            )
+            .unwrap()
+            .unwrap();
+            ParticleModifiers(vec![m])
+        };
+        let fresh = || ParticleState {
+            rgba: [1.0; 4],
+            ..Default::default()
+        };
+        let (mut flame, mut smoke) = (fresh(), fresh());
+        modifiers.apply("minecraft:flame", &mut flame, &ParticleWorld::default(), 1);
+        modifiers.apply("minecraft:smoke", &mut smoke, &ParticleWorld::default(), 1);
+        assert_eq!(flame.rgba[3], 0.25);
+        assert_eq!(smoke.rgba[3], 1.0);
+    }
+
+    #[test]
+    fn a_failing_expression_leaves_the_particle_unchanged() {
+        let modifier = ParticleModifier::parse(
+            &json!({"targets": "minecraft:smoke", "alpha": "o.nonsense()"}),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        let mut state = ParticleState {
+            rgba: [1.0; 4],
+            ..Default::default()
+        };
+        modifier.apply(&mut state, &ParticleWorld::default(), 3);
+        assert_eq!(state.rgba, [1.0; 4]);
     }
 }

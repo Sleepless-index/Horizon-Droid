@@ -1090,6 +1090,9 @@ pub struct ParticleEngine {
     /// The item particles' sprites (`BreakingItemParticle`'s slime ball, snowball
     /// and cobweb models, resolved for the ground), one per model layer.
     pub item_sprites: HashMap<ParticleType, Vec<String>>,
+    modifiers: horizon_polytone::particles::ParticleModifiers,
+    modifier_seeds: u64,
+    ticks: u64,
 }
 /// `ParticleGroup.MAX_PARTICLES` (per render group; one group here).
 const MAX_PARTICLES: usize = 16384;
@@ -1119,6 +1122,9 @@ impl ParticleEngine {
             sounds: Vec::new(),
             made: Default::default(),
             item_sprites: HashMap::new(),
+            modifiers: Default::default(),
+            modifier_seeds: 0x706d_6f64,
+            ticks: 0,
         };
         engine.reload(root, atlas, translucent);
         engine
@@ -1146,6 +1152,46 @@ impl ParticleEngine {
         self.set_sprites.clear();
         self.item_sprites.clear();
         self.load_sprites(root);
+        self.modifiers = horizon_polytone::particles::ParticleModifiers::read(root);
+    }
+    fn apply_modifiers(&mut self, options: &ParticleOptions, particle: &mut Particle) {
+        if self.modifiers.is_empty() {
+            return;
+        }
+        let id = match &options.mod_particle {
+            Some(name) => name.clone(),
+            None => format!("minecraft:{}", options.ty.name()),
+        };
+        let mut state = horizon_polytone::particles::ParticleState {
+            age: f64::from(particle.age),
+            life: f64::from(particle.lifetime),
+            position: particle.position,
+            motion: particle.velocity,
+            size: f64::from(particle.size),
+            roll: f64::from(particle.roll),
+            rgba: particle.rgba.map(f64::from),
+            temperature: 0.8,
+            downfall: 0.4,
+            sky_light: 15.0,
+            ..Default::default()
+        };
+        let world = horizon_polytone::particles::ParticleWorld {
+            player: self.camera,
+            time: self.ticks as f64,
+            day_time: self.ticks as f64,
+            render_distance: 12.0,
+            ..Default::default()
+        };
+        self.modifier_seeds = self
+            .modifier_seeds
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        self.modifiers
+            .apply(&id, &mut state, &world, self.modifier_seeds);
+        particle.lifetime = state.life as i32;
+        particle.velocity = state.motion;
+        particle.size = state.size as f32;
+        particle.rgba = state.rgba.map(|c| c as f32);
     }
     /// The sprite sets of every `particles/*.json` under `root`: vanilla's own
     /// and a native mod's (`assets/<namespace>/particles/<name>.json`).
@@ -1567,7 +1613,8 @@ impl ParticleEngine {
     /// drops a spore blossom air particle once `ParticleLimit.SPORE_BLOSSOM` is full.
     pub fn create(&mut self, options: &ParticleOptions, p: [f64; 3], v: [f64; 3]) {
         let seed = self.seeds.next_long();
-        if let Some(particle) = self.make(options, p, v, seed) {
+        if let Some(mut particle) = self.make(options, p, v, seed) {
+            self.apply_modifiers(options, &mut particle);
             *self.made.entry(options.ty.name()).or_default() += 1;
             // The provider has drawn, so rejecting here keeps vanilla's RNG order.
             // shortcut: counts live plus queued particles by scanning instead of
@@ -3312,6 +3359,7 @@ impl ParticleEngine {
         }
     }
     pub fn tick(&mut self, level: &ParticleLevel) {
+        self.ticks += 1;
         self.tick_starters();
         for (options, feet, width, height, life) in std::mem::take(&mut self.emitters) {
             self.emit(&options, feet, width, height);
@@ -4502,6 +4550,44 @@ mod tests {
         });
         assert_eq!(tall.len(), 64);
         assert!(tall.iter().all(|p| p[1] < 1.0));
+    }
+    #[test]
+    fn a_pack_particle_modifier_changes_only_the_particles_it_targets() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-particle-mods-{}", std::process::id()));
+        let modifiers = dir.join("assets/minecraft/polytone/particle_modifiers");
+        std::fs::create_dir_all(&modifiers).unwrap();
+        std::fs::write(
+            modifiers.join("smoke.json"),
+            br#"{"targets": "minecraft:smoke", "color": "0x00FF00", "alpha": 0.5, "life": 77}"#,
+        )
+        .unwrap();
+        let mut engine = ParticleEngine::new(&dir, &HashMap::new(), &HashSet::new());
+        engine.create(
+            &ParticleOptions::simple(ParticleType::Smoke),
+            [0.0; 3],
+            [0.0; 3],
+        );
+        engine.create(
+            &ParticleOptions::simple(ParticleType::Flame),
+            [0.0; 3],
+            [0.0; 3],
+        );
+        let smoke = engine
+            .pending
+            .iter()
+            .find(|p| p.ty == ParticleType::Smoke)
+            .unwrap();
+        let flame = engine
+            .pending
+            .iter()
+            .find(|p| p.ty == ParticleType::Flame)
+            .unwrap();
+        assert_eq!(smoke.lifetime, 77);
+        assert_eq!(smoke.rgba, [0.0, 1.0, 0.0, 0.5]);
+        assert_ne!(flame.lifetime, 77);
+        assert_ne!(flame.rgba, [0.0, 1.0, 0.0, 0.5]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]
     fn spore_blossom_air_stops_at_its_particle_limit() {
