@@ -761,6 +761,18 @@ pub struct ParticleModifiers(Vec<ParticleModifier>);
 impl ParticleModifiers {
     pub fn read(root: &std::path::Path) -> Self {
         let mut out = Vec::new();
+        for (id, color) in crate::colors::PackColors::read(root).particles() {
+            let color = match color.strip_prefix('#') {
+                Some(hex) => format!("0x{hex}"),
+                None => color,
+            };
+            let json = serde_json::json!({"targets": id, "color": color});
+            match ParticleModifier::parse(&json, None) {
+                Ok(Some(m)) => out.push(m),
+                Ok(None) => {}
+                Err(e) => log::warn!("colors.json particle.{id}: {e}"),
+            }
+        }
         for entry in crate::files::scan(root, "particle_modifiers") {
             let Some(json) = &entry.json else { continue };
             match ParticleModifier::parse(json, entry.id.as_deref()) {
@@ -1028,5 +1040,33 @@ mod tests {
         };
         modifier.apply(&mut state, &ParticleWorld::default(), 3);
         assert_eq!(state.rgba, [1.0; 4]);
+    }
+
+    #[test]
+    fn colors_json_particle_entries_become_color_modifiers() {
+        let dir =
+            std::env::temp_dir().join(format!("polytone-particle-colors-{}", std::process::id()));
+        let polytone = dir.join("assets/minecraft/polytone");
+        std::fs::create_dir_all(&polytone).unwrap();
+        std::fs::write(
+            polytone.join("colors.json"),
+            br##"{"particle.flame": "#336699", "particle.minecraft:smoke": "0x102030"}"##,
+        )
+        .unwrap();
+        let modifiers = ParticleModifiers::read(&dir);
+        let (mut flame, mut smoke, mut other) = (
+            ParticleState::default(),
+            ParticleState::default(),
+            ParticleState::default(),
+        );
+        let world = ParticleWorld::default();
+        modifiers.apply("minecraft:flame", &mut flame, &world, 1);
+        modifiers.apply("minecraft:smoke", &mut smoke, &world, 1);
+        modifiers.apply("minecraft:cloud", &mut other, &world, 1);
+        let byte = |c: f64| (c * 255.0).round() as u8;
+        assert_eq!(flame.rgba.map(byte)[..3], [0x33, 0x66, 0x99]);
+        assert_eq!(smoke.rgba.map(byte)[..3], [0x10, 0x20, 0x30]);
+        assert_eq!(other.rgba, [0.0; 4]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

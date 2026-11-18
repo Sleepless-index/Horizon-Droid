@@ -42,13 +42,13 @@ Work only in this repository.
   `darkness_fog_distance`, `boss_fog_distance`, `water_fog_brightening`) in `FogTables`, and `redstone.<power>` for the
   wire's tint, `effect.*` (mob effect colours in the effect table), `dye.*` diffuse colours (mobs, shulker/banner
   blocks, dyed leather crafting), `dye.*.text` (sign text), `dye.*.firework` (stars, tooltips, raids) and `sheep.*`
-  wool colours.
+  wool colours, `particle.*` (a colour or expression, applied as a `color` modifier) and the redstone dust particle colour.
 - Particle modifiers (`particle_modifiers/`): `color`, `red/green/blue/alpha`, `size`, `life` and `speed` expressions run
   once when a particle is created, with `o`, `p`, `g` and `r` answered (no biome/light/colormap/config yet).
-  Not applied: `horizon_height`, `water_fog_brightening_time`, redstone dust particles, `particle.*`.
+  Not applied: `horizon_height`, `water_fog_brightening_time`.
 - Read but not applied: the other block fields (`map_color`, `can_occlude`, particles), item modifier
   tooltips, arm pose and armor/scope textures, flowing-water-only tints, `fog_fade`, `sprites` offsets and overlays,
-  per-tick particle expressions, `pack` config, `colors.json` particle colours.
+  per-tick particle expressions, `pack` config.
 
 ## Next, in rough order
 
@@ -57,7 +57,7 @@ Work only in this repository.
 3. Position-dependent colormaps for fluid tints (blocks and items already read the position).
 4. Refused colormap features: `color_modifier`, `biome_id`, `legacy_temperature`, `grid`, `damage`.
 5. Biome layers: `blend_to_gray`, `REMOVE`, colormap and expression arguments, other attributes; weather groups and the other dimension attributes; fog distances and cloud colour.
-6. Per-tick particle expressions, `colors.json` particle colours.
+6. Per-tick particle expressions.
 
 ## Rules
 

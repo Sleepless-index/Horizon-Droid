@@ -278,6 +278,9 @@ fn concrete_powder_color(dye: &str) -> u32 {
 }
 /// `RedstoneWireBlock.COLORS`.
 fn redstone_color(power: u8) -> [f32; 3] {
+    if let Some(rgb) = crate::pack_colors::redstone(power) {
+        return [16, 8, 0].map(|shift| ((rgb >> shift) & 255) as f32 / 255.0);
+    }
     let f = f32::from(power) / 15.0;
     let r = f * 0.6 + if f > 0.0 { 0.4 } else { 0.3 };
     let g = (f * f * 0.7 - 0.5).clamp(0.0, 1.0);

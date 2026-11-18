@@ -6,6 +6,7 @@ pub struct DyeOverrides {
     pub text: [Option<u32>; 16],
     pub firework: [Option<u32>; 16],
     pub sheep: [Option<u32>; 16],
+    pub redstone: [Option<u32>; 16],
 }
 
 static OVERRIDES: RwLock<DyeOverrides> = RwLock::new(DyeOverrides {
@@ -13,6 +14,7 @@ static OVERRIDES: RwLock<DyeOverrides> = RwLock::new(DyeOverrides {
     text: [None; 16],
     firework: [None; 16],
     sheep: [None; 16],
+    redstone: [None; 16],
 });
 
 fn read() -> DyeOverrides {
@@ -37,6 +39,10 @@ pub fn firework(index: usize, vanilla: u32) -> u32 {
     read().firework[index & 15].unwrap_or(vanilla)
 }
 
+pub fn redstone(power: u8) -> Option<u32> {
+    read().redstone[usize::from(power & 15)]
+}
+
 pub fn sheep(index: usize) -> Option<u32> {
     read().sheep[index & 15]
 }
@@ -53,6 +59,7 @@ mod tests {
         o.sheep[3] = Some(0xABCDEF);
         o.text[0] = Some(0x010203);
         o.firework[5] = Some(0x0A0B0C);
+        o.redstone[15] = Some(0x00FFFF);
         set(o);
         assert_eq!(dye(14, 0xB02E26), 0x123456);
         assert_eq!(dye(1, 0xF9801D), 0xF9801D);
@@ -61,6 +68,8 @@ mod tests {
         assert_eq!(text(0, 0xFFFFFF), 0x010203);
         assert_eq!(text(1, 0xFF681F), 0xFF681F);
         assert_eq!(firework(5, 0x41CD34), 0x0A0B0C);
+        assert_eq!(redstone(15), Some(0x00FFFF));
+        assert_eq!(redstone(14), None);
         assert_eq!(firework(6, 0xD88198), 0xD88198);
         set(DyeOverrides::default());
         assert_eq!(dye(14, 0xB02E26), 0xB02E26);

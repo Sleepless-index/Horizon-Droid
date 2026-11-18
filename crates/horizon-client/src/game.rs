@@ -53,6 +53,7 @@ fn polytone_block_tints(tables: &mut MeshTables, facts: &BlockFacts, root: &std:
         text,
         firework,
         sheep,
+        redstone: std::array::from_fn(|power| colors.redstone(power as u8).map(|c| c & 0xFF_FFFF)),
     });
     horizon_client::potions::set_pack_effect_colors(&colors.effects());
     let tags = std::cell::OnceCell::new();
