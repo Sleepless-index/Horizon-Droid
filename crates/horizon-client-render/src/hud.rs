@@ -375,19 +375,25 @@ impl HudAtlas {
         &mut self,
         modifiers: &[horizon_polytone::sprites::SpriteModifier],
     ) {
+        const GUI: &str = "gui/sprites/";
         let id = |name: &str| {
-            if name.contains(':') {
-                name.to_owned()
+            let (namespace, rest) = name.split_once(':').unwrap_or(("minecraft", name));
+            rest.strip_prefix(GUI)
+                .map(|path| format!("{namespace}:{path}"))
+        };
+        let key = |id: &str| {
+            let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
+            if namespace == "minecraft" {
+                format!("{GUI}{path}")
             } else {
-                format!("minecraft:{name}")
+                format!("{namespace}:{GUI}{path}")
             }
         };
-        let key = |id: &str| id.strip_prefix("minecraft:").unwrap_or(id).to_owned();
         for modifier in modifiers {
             let names: Vec<String> = self
                 .sprites
                 .keys()
-                .filter(|name| modifier.targets.matches(&id(name), |_| false))
+                .filter(|name| id(name).is_some_and(|id| modifier.targets.matches(&id, |_| false)))
                 .cloned()
                 .collect();
             let change = &modifier.change;
@@ -2371,9 +2377,9 @@ mod tests {
             w: 8,
             h: 8,
         };
-        atlas.sprites.insert("hud/a".into(), white);
-        atlas.sprites.insert("hud/b".into(), white);
-        atlas.sprites.insert("hud/c".into(), other);
+        atlas.sprites.insert("gui/sprites/hud/a".into(), white);
+        atlas.sprites.insert("gui/sprites/hud/b".into(), white);
+        atlas.sprites.insert("gui/sprites/hud/c".into(), other);
         let modifiers: Vec<SpriteModifier> = [
             serde_json::json!({"texture": "minecraft:hud/a", "color": "#FF8000", "width_inc": 2}),
             serde_json::json!({"texture": "minecraft:hud/b", "new_texture": "hud/c", "u1": 0.9}),
@@ -2386,10 +2392,10 @@ mod tests {
             + (white.u0 * atlas.width as f32) as usize)
             * 4;
         assert_eq!(atlas.pixels[at..at + 4], [255, 128, 0, 255]);
-        assert_eq!(atlas.sprites["hud/a"].w, white.w + 2);
-        let swapped = atlas.sprites["hud/b"];
+        assert_eq!(atlas.sprites["gui/sprites/hud/a"].w, white.w + 2);
+        let swapped = atlas.sprites["gui/sprites/hud/b"];
         assert_eq!((swapped.u0, swapped.u1, swapped.w), (0.5, 0.9, 8));
-        assert_eq!(atlas.sprites["hud/c"].u1, 0.75);
+        assert_eq!(atlas.sprites["gui/sprites/hud/c"].u1, 0.75);
     }
 
     use super::*;
