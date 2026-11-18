@@ -1301,6 +1301,19 @@ impl Game<'_> {
                 self.android_show_keyboard();
             }
         }
+        // Chat: the game may change its own text (Up/Down history, Tab). Mirror
+        // it back so the native box never goes stale.
+        if self.screen == Screen::Chat
+            && self.title.is_none()
+            && crate::platform::active()
+            && let Some(text) = self
+                .ui
+                .chat_screen
+                .as_ref()
+                .map(|s| s.value().to_owned())
+        {
+            crate::platform::sync_text(&text);
+        }
         // Title screens also use Playing: their focused text fields must keep
         // the IME until the user confirms or closes the editor.
         if !self.pad_in_menu()
