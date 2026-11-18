@@ -38,6 +38,10 @@ Work only in this repository.
 - Screen sprite modifiers (`overlay_modifiers`, applied once when the atlas builds, `HudAtlas::apply_sprite_modifiers`):
   `color` (a multiply on the sprite's texels), `new_texture` (the sprite draws another's region), `u0` to `v1` and
   `width_inc`, `height_inc`. Not applied: `x_inc`, `y_inc`, `overlays`, and `color` together with `new_texture`.
+- `colors.json` / `color.properties` custom colours: `environment.*` (`powder_snow_fog`, `blindness_fog_distance`,
+  `darkness_fog_distance`, `boss_fog_distance`, `water_fog_brightening`) in `FogTables`, and `redstone.<power>` for the
+  wire's tint. Not applied: `horizon_height`, `water_fog_brightening_time`, redstone dust particles, `effect.*`,
+  `dye.*`, `sheep.*`, `particle.*`.
 - Read but not applied: the other block fields (`map_color`, `can_occlude`, particles), item modifier
   tooltips, arm pose and armor/scope textures, flowing-water-only tints, `fog_fade`, `sprites` offsets and overlays,
   `particles`, `pack` config, `colors.json` custom colours.

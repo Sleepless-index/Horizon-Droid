@@ -36,6 +36,7 @@ pub struct FogData {
 pub struct FogTables {
     water_fog_end: Vec<f32>,
     fluid_fog: horizon_polytone::colors::FluidFogs,
+    env: horizon_polytone::colors::Environment,
 }
 impl FogTables {
     pub fn load(root: &Path, biomes: &Biomes) -> Self {
@@ -59,9 +60,11 @@ impl FogTables {
                 *slot = f as f32;
             }
         }
+        let colors = horizon_polytone::colors::PackColors::read(root);
         Self {
             water_fog_end,
-            fluid_fog: horizon_polytone::colors::FluidFogs::read(root),
+            fluid_fog: colors.fluid_fog,
+            env: colors.env,
         }
     }
 }
@@ -236,7 +239,7 @@ pub fn setup_fog(tables: &FogTables, state: &FogState, input: &FogInputs) -> Fog
             .lava
             .and_then(|f| f.color)
             .unwrap_or(0x99_1A00)),
-        FogType::PowderSnow => rgb(0x9F_BACC),
+        FogType::PowderSnow => rgb(tables.env.powder_snow_fog.unwrap_or(0x9F_BACC)),
         FogType::Water => match tables.fluid_fog.water.and_then(|f| f.color) {
             Some(color) => rgb(color),
             None => input.water_fog_color,
@@ -304,6 +307,11 @@ pub fn setup_fog(tables: &FogTables, state: &FogState, input: &FogInputs) -> Fog
     };
     if color.iter().all(|&c| c != 0.0) {
         let scale = 1.0 / color[0].max(color[1]).max(color[2]);
+        let brighten = if eye_in_water {
+            brighten * tables.env.water_fog_brightening
+        } else {
+            brighten
+        };
         color = color.map(|c| c + (c * scale - c) * brighten);
     }
     let mut fog = FogData {
@@ -344,10 +352,11 @@ pub fn setup_fog(tables: &FogTables, state: &FogState, input: &FogInputs) -> Fog
         }
         _ if input.blindness.is_some() => {
             let (duration, infinite) = input.blindness.unwrap_or((0, true));
+            let end = tables.env.blindness_fog_distance;
             let distance = if infinite {
-                5.0
+                end
             } else {
-                rd + (5.0 - rd) * (duration as f32 / 20.0).min(1.0)
+                rd + (end - rd) * (duration as f32 / 20.0).min(1.0)
             };
             fog.environmental_start = distance * 0.25;
             fog.environmental_end = distance;
@@ -357,7 +366,7 @@ pub fn setup_fog(tables: &FogTables, state: &FogState, input: &FogInputs) -> Fog
         _ if input.darkness.is_some() => {
             // DarknessFogEnvironment.setupFog: closing in to 15 blocks.
             let blend = input.darkness.unwrap_or(0.0);
-            let distance = rd + (15.0 - rd) * blend;
+            let distance = rd + (tables.env.darkness_fog_distance - rd) * blend;
             fog.environmental_start = distance * 0.75;
             fog.environmental_end = distance;
             fog.sky_end = distance;
@@ -383,7 +392,7 @@ pub fn setup_fog(tables: &FogTables, state: &FogState, input: &FogInputs) -> Fog
             fog.cloud_end = ((input.cloud_range_chunks * 16) as f32).min(sky.cloud_fog_end);
             if input.boss_world_fog {
                 fog.environmental_start = fog.environmental_start.min(10.0);
-                fog.environmental_end = fog.environmental_end.min(96.0);
+                fog.environmental_end = fog.environmental_end.min(tables.env.boss_fog_distance);
                 fog.sky_end = fog.environmental_end;
                 fog.cloud_end = fog.environmental_end;
             }
@@ -482,6 +491,7 @@ mod tests {
         let tables = FogTables {
             water_fog_end: vec![1.0],
             fluid_fog: Default::default(),
+            env: Default::default(),
         };
         let mut input = inputs(&sky);
         input.boss_world_fog = true;
@@ -508,6 +518,7 @@ mod tests {
         let tables = FogTables {
             water_fog_end: vec![1.0],
             fluid_fog: Default::default(),
+            env: Default::default(),
         };
         let mut input = inputs(&nether);
         input.skybox = false;
@@ -526,6 +537,7 @@ mod tests {
         let tables = FogTables {
             water_fog_end: vec![1.0],
             fluid_fog: Default::default(),
+            env: Default::default(),
         };
         let kept = |input: &FogInputs| {
             let mut fog = setup_fog(&tables, &FogState::default(), input);
@@ -559,6 +571,7 @@ mod tests {
         let tables = FogTables {
             water_fog_end: vec![1.0],
             fluid_fog: Default::default(),
+            env: Default::default(),
         };
         let mut input = inputs(&sky);
         input.skybox = false;
@@ -579,6 +592,7 @@ mod tests {
         let tables = FogTables {
             water_fog_end: vec![1.0],
             fluid_fog: Default::default(),
+            env: Default::default(),
         };
         let mut input = inputs(&sky);
         // The End's floor is y 0: y 16 is halfway into the darkness.
@@ -603,6 +617,7 @@ mod tests {
         let tables = FogTables {
             water_fog_end: vec![1.0],
             fluid_fog: Default::default(),
+            env: Default::default(),
         };
         let fog = setup_fog(&tables, &FogState::default(), &inputs(&sky));
         // 12 chunks = 192 blocks, span clamp(19.2, 4, 64).
@@ -619,6 +634,7 @@ mod tests {
         let tables = FogTables {
             water_fog_end: vec![1.],
             fluid_fog: Default::default(),
+            env: Default::default(),
         };
         let mut input = inputs(&sky);
         input.render_distance_chunks = 1024;
@@ -653,6 +669,7 @@ mod tests {
         let tables = FogTables {
             water_fog_end: vec![1.0],
             fluid_fog: Default::default(),
+            env: Default::default(),
         };
         let mut input = inputs(&sky);
         input.render_distance_chunks = 2;
@@ -700,6 +717,35 @@ mod tests {
     }
 
     #[test]
+    fn a_packs_environment_colours_set_the_fog_vanilla_hardcodes() {
+        use horizon_polytone::colors::Environment;
+        let sky = Sky::default();
+        let mut input = inputs(&sky);
+        let tables = FogTables {
+            env: Environment {
+                powder_snow_fog: Some(0x102030),
+                blindness_fog_distance: 8.0,
+                darkness_fog_distance: 30.0,
+                ..Environment::default()
+            },
+            ..Default::default()
+        };
+        input.fog_type = FogType::PowderSnow;
+        let snow = setup_fog(&tables, &FogState::default(), &input);
+        assert_eq!(snow.color[..3], [16.0 / 255.0, 32.0 / 255.0, 48.0 / 255.0]);
+        input.fog_type = FogType::Atmospheric;
+        input.blindness = Some((0, true));
+        let blind = setup_fog(&tables, &FogState::default(), &input);
+        assert_eq!(blind.environmental_end, 8.0);
+        input.blindness = None;
+        input.darkness = Some(1.0);
+        let dark = setup_fog(&tables, &FogState::default(), &input);
+        assert_eq!(dark.environmental_end, 30.0);
+        let vanilla = setup_fog(&FogTables::default(), &FogState::default(), &input);
+        assert_eq!(vanilla.environmental_end, 15.0);
+    }
+
+    #[test]
     fn water_vision_ramps() {
         let mut s = FogState::default();
         for _ in 0..100 {
@@ -718,6 +764,7 @@ mod tests {
         let tables = FogTables {
             water_fog_end: vec![1.0],
             fluid_fog: Default::default(),
+            env: Default::default(),
         };
         let mut input = inputs(&sky);
         input.fog_type = FogType::Water;
@@ -747,6 +794,7 @@ mod tests {
         let tables = FogTables {
             water_fog_end: vec![1.0],
             fluid_fog: Default::default(),
+            env: Default::default(),
         };
         let state = FogState {
             rain_fog_multiplier: 1.0,

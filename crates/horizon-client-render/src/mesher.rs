@@ -461,6 +461,23 @@ mod custom_tint_tests {
     }
 
     #[test]
+    fn redstone_wire_takes_a_packs_colour_per_power_and_vanillas_elsewhere() {
+        let root = pack("redstone");
+        std::fs::write(
+            root.join("assets/foo/polytone/colors.json"),
+            r##"{"redstone": {"15": "#00FF00", "0": "0x112233"}}"##,
+        )
+        .unwrap();
+        let mut custom = CustomTints::default();
+        let colors = horizon_polytone::colors::PackColors::read(&root);
+        custom.redstone = std::array::from_fn(|power| colors.redstone(power as u8));
+        assert_eq!(custom.redstone(15), 0x00FF00);
+        assert_eq!(custom.redstone(0), 0x112233);
+        assert_eq!(custom.redstone(7), redstone_color(7));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn a_slot_whose_colormap_reads_the_position_changes_along_the_world() {
         let root = pack("position");
         let dir = root.join("assets/foo/polytone/block_modifiers");
@@ -475,6 +492,7 @@ mod custom_tint_tests {
             maps: Colormaps::read(&root),
             set,
             slots: vec![(entry, 0)],
+            ..Default::default()
         };
         let at = |x| SampleContext {
             x,
@@ -494,6 +512,7 @@ mod custom_tint_tests {
             maps: Colormaps::read(&root),
             set,
             slots: vec![(entry, 0)],
+            ..Default::default()
         };
         assert_eq!(custom.len(), 1);
         let climate = |temperature, downfall| SampleContext {
@@ -615,8 +634,16 @@ struct CustomTints {
     maps: Colormaps,
     set: Modifiers<BlockModifier>,
     slots: Vec<(usize, i32)>,
+    redstone: [Option<u32>; 16],
 }
 impl CustomTints {
+    fn redstone(&self, power: u8) -> u32 {
+        self.redstone
+            .get(usize::from(power))
+            .copied()
+            .flatten()
+            .map_or_else(|| redstone_color(power), |color| color & 0xFF_FFFF)
+    }
     fn len(&self) -> usize {
         self.slots.len()
     }
@@ -666,6 +693,10 @@ fn redstone_color(power: u8) -> u32 {
     ((r * 255.0) as u32) << 16 | ((g * 255.0) as u32) << 8 | (b * 255.0) as u32
 }
 impl MeshTables {
+    pub fn apply_polytone_colors(&mut self, root: &std::path::Path) {
+        let colors = horizon_polytone::colors::PackColors::read(root);
+        self.custom.redstone = std::array::from_fn(|power| colors.redstone(power as u8));
+    }
     pub fn apply_polytone_fluid_tints(&mut self, root: &std::path::Path) {
         let [still, flowing] = horizon_polytone::fluid_modifiers::lava_colors(root);
         self.lava_tint = [still.unwrap_or(0xFF_FFFF), flowing.unwrap_or(0xFF_FFFF)];
@@ -745,7 +776,12 @@ impl MeshTables {
                 info.tint_count = info.tint_count.max(index as u8 + 1);
             }
         }
-        self.custom = CustomTints { maps, set, slots };
+        self.custom = CustomTints {
+            maps,
+            set,
+            slots,
+            redstone: self.custom.redstone,
+        };
     }
     pub fn new(
         assets: &Assets,
@@ -936,7 +972,7 @@ impl MeshTables {
             Tint::DryFoliage => 0x5C_3C32,
             Tint::LilyPad => 0x71_C35C,
             Tint::Constant(c) => c,
-            Tint::Redstone(p) => redstone_color(p),
+            Tint::Redstone(p) => self.custom.redstone(p),
             Tint::Stem(age) => stem_color(age),
             Tint::Custom(slot) => self.custom.default_color(slot),
         })
@@ -1567,7 +1603,7 @@ impl Mesher<'_> {
             Tint::Water => tints.get(Resolver::Water, x, y, z),
             Tint::Constant(c) => c,
             Tint::LilyPad => 0x20_8030,
-            Tint::Redstone(p) => redstone_color(p),
+            Tint::Redstone(p) => tints.custom.redstone(p),
             Tint::Stem(age) => stem_color(age),
             Tint::Custom(slot) => tints.get(Resolver::Custom(slot), x, y, z),
         })
