@@ -1024,29 +1024,47 @@ impl Cache {
         if w == 0 || h == 0 || rgba.len() != (w * h * 4) as usize {
             return None;
         }
-        // Fit project icons (<= 48x48) and wide gallery screenshots (<= 96x54) into the dedicated
-        // bottom image band (`y: 320..512`) so they never overflow the atlas shelf.
-        let (max_w, max_h) = if w > h * 4 / 3 { (96u32, 54u32) } else { (48u32, 48u32) };
+        // Icons (<= 48x48) and wide gallery screenshots (<= 384x216) go into the bottom image band.
+        let wide = w > h * 4 / 3;
+        let (max_w, max_h) = if wide { (384u32, 216u32) } else { (48u32, 48u32) };
         let (tw, th, mut masked) = if w > max_w || h > max_h {
             let scale = (max_w as f32 / w as f32).min(max_h as f32 / h as f32);
             let nw = ((w as f32 * scale).round() as u32).clamp(1, max_w);
             let nh = ((h as f32 * scale).round() as u32).clamp(1, max_h);
             let mut out = vec![0u8; (nw * nh * 4) as usize];
             for ny in 0..nh {
-                let sy = ((ny as u64 * h as u64) / nh as u64).min((h - 1) as u64) as u32;
+                let y0 = (ny as u64 * h as u64 / nh as u64) as u32;
+                let y1 = ((ny as u64 + 1) * h as u64).div_ceil(nh as u64) as u32;
+                let y1 = y1.clamp(y0 + 1, h);
                 for nx in 0..nw {
-                    let sx = ((nx as u64 * w as u64) / nw as u64).min((w - 1) as u64) as u32;
-                    let src_i = ((sy * w + sx) * 4) as usize;
-                    let dst_i = ((ny * nw + nx) * 4) as usize;
-                    out[dst_i..dst_i + 4].copy_from_slice(&rgba[src_i..src_i + 4]);
+                    let x0 = (nx as u64 * w as u64 / nw as u64) as u32;
+                    let x1 = ((nx as u64 + 1) * w as u64).div_ceil(nw as u64) as u32;
+                    let x1 = x1.clamp(x0 + 1, w);
+                    let mut sum = [0u32; 4];
+                    for sy in y0..y1 {
+                        for sx in x0..x1 {
+                            let i = ((sy * w + sx) * 4) as usize;
+                            for c in 0..4 {
+                                sum[c] += u32::from(rgba[i + c]);
+                            }
+                        }
+                    }
+                    let n = (y1 - y0) * (x1 - x0);
+                    let dst = ((ny * nw + nx) * 4) as usize;
+                    for c in 0..4 {
+                        out[dst + c] = (sum[c] / n) as u8;
+                    }
                 }
             }
             (nw, nh, out)
         } else {
             (w, h, rgba.to_vec())
         };
-        // Apply a soft rounded-corner mask to project icons so they sit cleanly in cards.
-        let r = (tw.min(th) as f32 * 0.22).max(2.0);
+        let r = if wide {
+            (th as f32 * 0.05).max(2.0)
+        } else {
+            (tw.min(th) as f32 * 0.22).max(2.0)
+        };
         let (wf, hf) = (tw as f32, th as f32);
         for y in 0..th {
             for x in 0..tw {

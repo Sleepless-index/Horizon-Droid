@@ -337,10 +337,7 @@ impl Wardrobe {
             Model::Slim => Model::Classic,
         };
         self.note = match self.library.set_model(&self.root, id, next) {
-            Ok(()) => match next {
-                Model::Slim => "This skin now uses slim arms.".into(),
-                Model::Classic => "This skin now uses classic arms.".into(),
-            },
+            Ok(()) => String::new(),
             Err(error) => error,
         };
         self.preview();
@@ -792,14 +789,6 @@ impl Wardrobe {
         );
         ui.stroke_rounded(px, preview_y, preview_w, preview_h, 10.0, 1.2, theme.border);
 
-        // Studio floor pedestal oval beneath the character
-        let ped_w = (preview_w * 0.46).clamp(72.0, 124.0);
-        let ped_h = 12.0;
-        let ped_x = px + (preview_w - ped_w) * 0.5;
-        let ped_y = preview_y + preview_h - 48.0;
-        ui.rounded(ped_x, ped_y, ped_w, ped_h, 6.0, theme.accent_soft);
-        ui.stroke_rounded(ped_x, ped_y, ped_w, ped_h, 6.0, 1.0, theme.border);
-
         // Top-left status badge inside studio card
         let badge_txt = if self.capes {
             if selection.hide_cape {
@@ -1103,13 +1092,15 @@ impl Wardrobe {
             }
         };
 
+        let targets_from = targets.len();
+        ui.set_clip(Some([lx, list_start, lw, (bottom - list_start).max(1.0)]));
         let mut shown_items = 0usize;
 
         // Cloud Capes (when on Capes tab and signed into an account)
         if self.capes && self.provider.is_some() {
             for (index, cape) in self.cache.snapshot.capes.iter().enumerate() {
                 shown_items += 1;
-                if row >= list_start - 4.0 && row + card_h <= bottom + 4.0 {
+                if row + card_h >= list_start && row <= bottom {
                     let is_active = cape.active && selected_id.is_none() && !selection.hide_cape;
                     draw_gallery_item(
                         ui,
@@ -1147,7 +1138,7 @@ impl Wardrobe {
             for (n, (index, entry)) in local.iter().enumerate() {
                 let r =
                     changer::tile_rect(n, columns, [tile_w, tile_h], gap, [lx, list_start], scroll);
-                if r[1] < list_start - 4.0 || r[1] + tile_h > bottom + 4.0 {
+                if r[1] + tile_h < list_start || r[1] > bottom {
                     continue;
                 }
                 let is_sel = selected_id == Some(entry.id.as_str());
@@ -1253,7 +1244,7 @@ impl Wardrobe {
 
         // Empty State Card when gallery has no items for this tab
         if shown_items == 0 {
-            if row >= list_start - 4.0 && row + 64.0 <= bottom + 8.0 {
+            if row + 64.0 >= list_start && row <= bottom {
                 ui.rounded(lx, row, lw, 60.0, 12.0, theme.surface_dim);
                 ui.border(lx, row, lw, 60.0, 12.0, theme.border);
                 ui.text(
@@ -1292,7 +1283,7 @@ impl Wardrobe {
 
         // Account & Reset Action Buttons
         if self.provider.is_none() {
-            if row >= list_start - 4.0 && row + 34.0 <= bottom + 4.0 {
+            if row + 34.0 >= list_start && row <= bottom {
                 button(
                     ui,
                     targets,
@@ -1309,7 +1300,7 @@ impl Wardrobe {
             row += 42.0;
         } else {
             let half_w = (lw - 8.0) * 0.5;
-            if row >= list_start - 4.0 && row + 34.0 <= bottom + 4.0 {
+            if row + 34.0 >= list_start && row <= bottom {
                 button(
                     ui,
                     targets,
@@ -1333,7 +1324,7 @@ impl Wardrobe {
             }
             row += 42.0;
             if !self.capes {
-                if row >= list_start - 4.0 && row + 34.0 <= bottom + 4.0 {
+                if row + 34.0 >= list_start && row <= bottom {
                     button(
                         ui,
                         targets,
@@ -1348,6 +1339,19 @@ impl Wardrobe {
                     );
                 }
                 row += 42.0;
+            }
+        }
+
+        ui.set_clip(None);
+        let mut i = targets_from;
+        while i < targets.len() {
+            let [tx, ty, tw, th] = targets[i].0;
+            let (y0, y1) = (ty.max(list_start), (ty + th).min(bottom));
+            if y1 > y0 {
+                targets[i].0 = [tx, y0, tw, y1 - y0];
+                i += 1;
+            } else {
+                targets.remove(i);
             }
         }
 
