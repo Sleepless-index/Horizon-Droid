@@ -10,6 +10,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 horizon-client-render = { path = "../horizon-client-render" }
+horizon-polytone = { path = "../horizon-polytone" }
 horizon-chat-filter = { path = "../horizon-chat-filter" }
 horizon-narrator = { path = "../horizon-narrator" }
 horizon-client-input = { path = "../horizon-client-input" }
