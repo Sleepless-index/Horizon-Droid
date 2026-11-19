@@ -823,6 +823,10 @@ pub fn border_warning(
 
 /// `Hud.extractSpyglassOverlay`.
 pub fn spyglass(w: i32, h: i32, scale: f32) -> Vec<GuiDraw> {
+    spyglass_with(w, h, scale, Cow::Borrowed("misc/spyglass_scope"))
+}
+
+pub fn spyglass_with(w: i32, h: i32, scale: f32, texture: Cow<'static, str>) -> Vec<GuiDraw> {
     let src = w.min(h) as f32;
     let ratio = (w as f32 / src).min(h as f32 / src) * scale;
     let width = crate::hud_layout::floor(src * ratio);
@@ -832,7 +836,7 @@ pub fn spyglass(w: i32, h: i32, scale: f32) -> Vec<GuiDraw> {
     let (right, bottom) = (left + width, top + height);
     vec![
         GuiDraw::Blit {
-            texture: Cow::Borrowed("misc/spyglass_scope"),
+            texture,
             blend: Blend::Textured,
             x: left,
             y: top,

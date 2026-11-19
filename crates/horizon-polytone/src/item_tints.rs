@@ -116,6 +116,8 @@ impl ItemTints {
                         || m.arm_pose.is_some()
                         || m.bob_as_entity.is_some()
                         || m.spread_as_entity.is_some()
+                        || m.armor_texture.is_some()
+                        || m.scope_overlay.is_some()
                 })
             {
                 by_item.insert(item, index);
@@ -159,6 +161,23 @@ impl ItemTints {
                 (m.bob_as_entity.is_some() || m.spread_as_entity.is_some())
                     .then(|| (item.clone(), m.bob_as_entity, m.spread_as_entity))
             })
+            .collect()
+    }
+
+    /// The items whose modifier names an armour texture: `(item, texture id)`.
+    pub fn armor_textures(&self) -> Vec<(String, String)> {
+        self.texts(|m| m.armor_texture.clone())
+    }
+
+    /// The items whose modifier names a spyglass scope texture: `(item, texture id)`.
+    pub fn scope_overlays(&self) -> Vec<(String, String)> {
+        self.texts(|m| m.scope_overlay.clone())
+    }
+
+    fn texts(&self, pick: impl Fn(&ItemModifier) -> Option<String>) -> Vec<(String, String)> {
+        self.by_item
+            .iter()
+            .filter_map(|(item, index)| Some((item.clone(), pick(self.set.get(*index)?)?)))
             .collect()
     }
 
@@ -298,6 +317,36 @@ mod tests {
         assert_eq!(
             items.entity_motion(),
             vec![("foo:gem".to_owned(), Some(false), Some(true))]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn armor_and_scope_textures_are_listed_for_their_items() {
+        let root = scratch("item-textures");
+        put(
+            &root,
+            "assets/foo/polytone/item_modifiers/helm.json",
+            r#"{"armor_texture": "foo:ruby", "scope_overlay": "foo:misc/lens"}"#,
+        );
+        put(
+            &root,
+            "assets/foo/polytone/item_modifiers/stick.json",
+            r##"{"rarity": "rare"}"##,
+        );
+        let items = ItemTints::read(
+            &root,
+            ["foo:helm".to_owned(), "foo:stick".to_owned()].into_iter(),
+            &none,
+        )
+        .unwrap();
+        assert_eq!(
+            items.armor_textures(),
+            vec![("foo:helm".to_owned(), "foo:ruby".to_owned())]
+        );
+        assert_eq!(
+            items.scope_overlays(),
+            vec![("foo:helm".to_owned(), "foo:misc/lens".to_owned())]
         );
         let _ = std::fs::remove_dir_all(&root);
     }

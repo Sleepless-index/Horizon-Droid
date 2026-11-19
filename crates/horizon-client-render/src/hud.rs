@@ -746,6 +746,19 @@ impl HudAtlas {
             }
         }
         let assets = root.join("assets");
+        if let Ok(namespaces) = fs::read_dir(&assets) {
+            for ns in namespaces.flatten() {
+                if ns.file_name() == "minecraft" {
+                    continue;
+                }
+                if folders.contains(&"entity") {
+                    walk(&ns.path().join("textures/entity/equipment"), &mut files);
+                }
+                if full {
+                    walk(&ns.path().join("textures/misc"), &mut files);
+                }
+            }
+        }
         // A native mod's particle type names its textures `<ns>:particle/<path>`
         // and needn't ship content, so every namespace's folder is packed.
         if folders.contains(&"particle")
@@ -765,6 +778,8 @@ impl HudAtlas {
                 }
             }
         }
+        let mut seen = std::collections::HashSet::new();
+        files.retain(|p| seen.insert(p.clone()));
         files.retain(|p| {
             let s = p.to_string_lossy();
             !s.contains("title/background") && !s.contains("realms") && !s.contains("presets")
@@ -2512,6 +2527,31 @@ mod tests {
         let py = (rect.v0 * atlas.height as f32).round() as u32 + y;
         let at = ((py * atlas.width + px) * 4) as usize;
         atlas.pixels[at..at + 4].try_into().unwrap()
+    }
+    #[test]
+    fn a_packs_equipment_and_scope_textures_reach_the_atlas_without_content() {
+        let root = std::env::temp_dir().join(format!("horizon-atlas-pack-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let equipment = root.join("assets/skin/textures/entity/equipment/humanoid");
+        fs::create_dir_all(&equipment).unwrap();
+        write_strip(
+            &equipment.join("ruby.png"),
+            64,
+            32,
+            &[[200, 0, 0, 255]],
+            None,
+        );
+        let misc = root.join("assets/skin/textures/misc");
+        fs::create_dir_all(&misc).unwrap();
+        write_strip(&misc.join("lens.png"), 16, 16, &[[0, 0, 0, 255]], None);
+        let atlas = HudAtlas::build(&root).unwrap();
+        assert!(
+            atlas
+                .sprites
+                .contains_key("skin:entity/equipment/humanoid/ruby")
+        );
+        assert!(atlas.sprites.contains_key("skin:misc/lens"));
+        fs::remove_dir_all(&root).unwrap();
     }
     #[test]
     fn content_mod_entity_textures_pack_under_their_namespace() {

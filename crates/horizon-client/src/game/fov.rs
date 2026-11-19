@@ -210,8 +210,21 @@ impl Game<'_> {
             self.scope_scale = 0.5;
             return;
         }
-        let draws =
-            hud_overlays::spyglass(batch.width as i32, batch.height as i32, self.scope_scale);
+        let texture = self
+            .using
+            .and_then(|(slot, _)| self.stack_in(slot))
+            .and_then(|s| horizon_client::item_render::pack_scope_sprite(&s.item))
+            .filter(|sprite| self.gui.atlas.sprites.contains_key(sprite.as_str()))
+            .map_or(
+                std::borrow::Cow::Borrowed("misc/spyglass_scope"),
+                std::borrow::Cow::Owned,
+            );
+        let draws = hud_overlays::spyglass_with(
+            batch.width as i32,
+            batch.height as i32,
+            self.scope_scale,
+            texture,
+        );
         hud_layout::paint(batch, &self.gui.atlas, &draws);
     }
 }

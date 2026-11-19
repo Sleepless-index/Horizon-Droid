@@ -956,7 +956,11 @@ fn humanoid_armor(m: &Mob, v: &mut Vec<Layer>) {
         };
         v.push(Layer {
             model: model.clone(),
-            texture: format!("entity/equipment/{folder}/{asset}"),
+            texture: crate::item_render::pack_armor_sprite(
+                item.as_deref().unwrap_or_default(),
+                folder,
+            )
+            .unwrap_or_else(|| format!("entity/equipment/{folder}/{asset}")),
             color: tint,
             full_bright: false,
             scroll: 0.0,

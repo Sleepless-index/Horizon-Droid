@@ -601,6 +601,12 @@ impl ItemRenderer {
                 .unwrap_or_default()
             },
         );
+        set_pack_textures(
+            polytone
+                .as_ref()
+                .map(|p| (p.armor_textures(), p.scope_overlays()))
+                .unwrap_or_default(),
+        );
         set_pack_entity_motion(
             polytone
                 .as_ref()
@@ -984,6 +990,43 @@ pub fn rendered_amount(count: u32) -> u32 {
 }
 /// `ItemEntityRenderer.submitMultipleFromCount`: the poses of each copy of
 /// a stack (`seed` is `ItemClusterRenderState.getSeedForItemStack`).
+type PackTextures = (Vec<(String, String)>, Vec<(String, String)>);
+
+static PACK_TEXTURES: std::sync::RwLock<PackTextures> =
+    std::sync::RwLock::new((Vec::new(), Vec::new()));
+
+pub fn set_pack_textures(textures: PackTextures) {
+    if let Ok(mut guard) = PACK_TEXTURES.write() {
+        *guard = textures;
+    }
+}
+
+pub fn sprite_for_texture(id: &str, folder: &str) -> String {
+    let (namespace, path) = id.split_once(':').unwrap_or(("minecraft", id));
+    let path = if folder.is_empty() || path.starts_with("entity/") {
+        path.to_owned()
+    } else {
+        format!("{folder}/{path}")
+    };
+    if namespace == "minecraft" {
+        path
+    } else {
+        format!("{namespace}:{path}")
+    }
+}
+
+pub fn pack_armor_sprite(item: &str, kind: &str) -> Option<String> {
+    let guard = PACK_TEXTURES.read().ok()?;
+    let id = &guard.0.iter().find(|(i, _)| i == item)?.1;
+    Some(sprite_for_texture(id, &format!("entity/equipment/{kind}")))
+}
+
+pub fn pack_scope_sprite(item: &str) -> Option<String> {
+    let guard = PACK_TEXTURES.read().ok()?;
+    let id = &guard.1.iter().find(|(i, _)| i == item)?.1;
+    Some(sprite_for_texture(id, ""))
+}
+
 static PACK_ENTITY_MOTION: std::sync::RwLock<Vec<(String, Option<bool>, Option<bool>)>> =
     std::sync::RwLock::new(Vec::new());
 
@@ -1012,6 +1055,32 @@ pub fn item_entity_bobs(item: &str) -> bool {
 
 pub fn item_entity_spreads(item: &str) -> bool {
     pack_entity_motion(item).1
+}
+
+#[cfg(test)]
+mod pack_texture_tests {
+    use super::*;
+
+    #[test]
+    fn pack_texture_ids_become_atlas_sprite_names() {
+        assert_eq!(
+            sprite_for_texture("foo:ruby", "entity/equipment/humanoid"),
+            "foo:entity/equipment/humanoid/ruby"
+        );
+        assert_eq!(
+            sprite_for_texture("minecraft:ruby", "entity/equipment/humanoid_leggings"),
+            "entity/equipment/humanoid_leggings/ruby"
+        );
+        assert_eq!(
+            sprite_for_texture(
+                "foo:entity/equipment/humanoid/ruby",
+                "entity/equipment/humanoid"
+            ),
+            "foo:entity/equipment/humanoid/ruby"
+        );
+        assert_eq!(sprite_for_texture("foo:misc/lens", ""), "foo:misc/lens");
+        assert_eq!(sprite_for_texture("misc/lens", ""), "misc/lens");
+    }
 }
 
 pub fn cluster_poses(state: &ItemRenderState, pose: Mat4, amount: u32, seed: i64) -> Vec<Mat4> {

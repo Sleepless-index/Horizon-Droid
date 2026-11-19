@@ -234,8 +234,13 @@ impl Game<'_> {
             };
             // Every layer of the asset, the leather overlay too, then the
             // trim layer over the armour.
+            let pack_texture = horizon_client::item_render::pack_armor_sprite(item, kind);
             for (i, (texture, undyed)) in layers.iter().enumerate() {
-                let Some(r) = self.gui.atlas.sprites.get(texture.as_str()) else {
+                let texture = pack_texture
+                    .as_deref()
+                    .filter(|_| i == 0)
+                    .unwrap_or(texture.as_str());
+                let Some(r) = self.gui.atlas.sprites.get(texture) else {
                     continue;
                 };
                 let color = layer_color(*undyed, stack);
