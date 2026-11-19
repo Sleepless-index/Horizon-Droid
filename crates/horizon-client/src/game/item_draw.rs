@@ -451,7 +451,11 @@ impl Game<'_> {
             let age = item.age as f32 + partial;
             let (lo, _) = state.bounding_box();
             let min_offset_y = -lo.y + 0.0625;
-            let bob = (age / 10.0 + item.bob_offset).sin() * 0.1 + 0.1;
+            let bob = if item_render::item_entity_bobs(&item.stack.item) {
+                (age / 10.0 + item.bob_offset).sin() * 0.1 + 0.1
+            } else {
+                0.1
+            };
             let spin = item_render::item_spin(age, item.bob_offset);
             let pose = glam::Mat4::from_translation(pos.as_vec3())
                 * glam::Mat4::from_translation(glam::Vec3::new(0.0, bob + min_offset_y, 0.0))
@@ -466,7 +470,11 @@ impl Game<'_> {
             for copy in item_render::cluster_poses(
                 &state,
                 pose,
-                item_render::rendered_amount(item.stack.count),
+                if item_render::item_entity_spreads(&item.stack.item) {
+                    item_render::rendered_amount(item.stack.count)
+                } else {
+                    item_render::rendered_amount(item.stack.count).min(1)
+                },
                 seed,
             ) {
                 self.submit_item_world(&state, copy, vertex_light(packed), out);

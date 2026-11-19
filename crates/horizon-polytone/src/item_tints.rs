@@ -114,6 +114,8 @@ impl ItemTints {
                         || !m.tooltips.is_empty()
                         || !m.removed_tooltips.is_empty()
                         || m.arm_pose.is_some()
+                        || m.bob_as_entity.is_some()
+                        || m.spread_as_entity.is_some()
                 })
             {
                 by_item.insert(item, index);
@@ -145,6 +147,18 @@ impl ItemTints {
         self.by_item
             .iter()
             .filter_map(|(item, index)| Some((item.clone(), self.set.get(*index)?.arm_pose?)))
+            .collect()
+    }
+
+    /// The items whose modifier sets how a dropped copy bobs or spreads: `(item, bob, spread)`.
+    pub fn entity_motion(&self) -> Vec<(String, Option<bool>, Option<bool>)> {
+        self.by_item
+            .iter()
+            .filter_map(|(item, index)| {
+                let m = self.set.get(*index)?;
+                (m.bob_as_entity.is_some() || m.spread_as_entity.is_some())
+                    .then(|| (item.clone(), m.bob_as_entity, m.spread_as_entity))
+            })
             .collect()
     }
 
@@ -259,6 +273,32 @@ mod tests {
         assert_eq!(items.bar_color("foo:axe"), None);
         assert_eq!(items.rarity("foo:axe"), None);
         assert_eq!(items.bar_color("foo:none"), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn entity_motion_is_listed_for_the_items_that_set_it() {
+        let root = scratch("item-entity-motion");
+        put(
+            &root,
+            "assets/foo/polytone/item_modifiers/gem.json",
+            r#"{"bob_as_entity": false, "spread_as_entity": true}"#,
+        );
+        put(
+            &root,
+            "assets/foo/polytone/item_modifiers/stick.json",
+            r##"{"rarity": "rare"}"##,
+        );
+        let items = ItemTints::read(
+            &root,
+            ["foo:gem".to_owned(), "foo:stick".to_owned()].into_iter(),
+            &none,
+        )
+        .unwrap();
+        assert_eq!(
+            items.entity_motion(),
+            vec![("foo:gem".to_owned(), Some(false), Some(true))]
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

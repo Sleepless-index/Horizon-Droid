@@ -48,6 +48,8 @@ Work only in this repository.
   that match the pattern themselves.
 - Item `arm_pose`: a held item's pose replaces vanilla's choice for player models in third person (`spear` only for
   items that have kinetic data, `spyglass` shows as a plain held item); first-person arms are unchanged.
+- Item `bob_as_entity: false` keeps a dropped item at rest height (it still spins); `spread_as_entity: false` draws a
+  dropped stack as one copy.
 - Pack config: Horizon > Pack Config... lists the selected packs' entries (toggle, step or cycle; Shift-click resets one,
   Reset all, and a Preset button when entries have presets); leaving the page with changes saves and reloads the packs.
   `config_entries/` are read at their defaults or the player's choices (`polytone-configs.json` beside

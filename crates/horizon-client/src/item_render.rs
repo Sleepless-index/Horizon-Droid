@@ -601,6 +601,12 @@ impl ItemRenderer {
                 .unwrap_or_default()
             },
         );
+        set_pack_entity_motion(
+            polytone
+                .as_ref()
+                .map(|p| p.entity_motion())
+                .unwrap_or_default(),
+        );
         crate::mobs::anim::set_pack_arm_poses(
             polytone.as_ref().map(|p| p.arm_poses()).unwrap_or_default(),
         );
@@ -978,6 +984,36 @@ pub fn rendered_amount(count: u32) -> u32 {
 }
 /// `ItemEntityRenderer.submitMultipleFromCount`: the poses of each copy of
 /// a stack (`seed` is `ItemClusterRenderState.getSeedForItemStack`).
+static PACK_ENTITY_MOTION: std::sync::RwLock<Vec<(String, Option<bool>, Option<bool>)>> =
+    std::sync::RwLock::new(Vec::new());
+
+pub fn set_pack_entity_motion(motion: Vec<(String, Option<bool>, Option<bool>)>) {
+    if let Ok(mut guard) = PACK_ENTITY_MOTION.write() {
+        *guard = motion;
+    }
+}
+
+fn pack_entity_motion(item: &str) -> (bool, bool) {
+    PACK_ENTITY_MOTION
+        .read()
+        .ok()
+        .and_then(|guard| {
+            guard
+                .iter()
+                .find(|(id, _, _)| id == item)
+                .map(|(_, bob, spread)| (bob.unwrap_or(true), spread.unwrap_or(true)))
+        })
+        .unwrap_or((true, true))
+}
+
+pub fn item_entity_bobs(item: &str) -> bool {
+    pack_entity_motion(item).0
+}
+
+pub fn item_entity_spreads(item: &str) -> bool {
+    pack_entity_motion(item).1
+}
+
 pub fn cluster_poses(state: &ItemRenderState, pose: Mat4, amount: u32, seed: i64) -> Vec<Mat4> {
     use horizon_core::random::{LegacyRandom, RandomSource};
     let mut out = Vec::new();
