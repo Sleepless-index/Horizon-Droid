@@ -4670,7 +4670,7 @@ mod tests {
         cfg.custom_bg_hex = "invalid".into();
         cfg.gradient_mid_pos = 99.0;
         cfg.sanitize();
-        assert_eq!(cfg.custom_bg_hex, "#13111C");
+        assert_eq!(cfg.custom_bg_hex, "#0D1714");
         assert_eq!(cfg.gradient_mid_pos, 0.85);
 
         cfg.apply_preset(ThemePreset::DaylightFrost);

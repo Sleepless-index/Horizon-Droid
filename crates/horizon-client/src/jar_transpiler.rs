@@ -3055,8 +3055,10 @@ mod tests {
 
     #[test]
     fn transpiles_fabric_jar_into_valid_hnmod_and_hmod() {
-        let dir = tempfile::tempdir().unwrap();
-        let jar_path = dir.path().join("appleskin-fabric-mc1.21-3.0.6.jar");
+        let dir = std::env::temp_dir().join(format!("hz-jar-transpile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let jar_path = dir.join("appleskin-fabric-mc1.21-3.0.6.jar");
         {
             let file = File::create(&jar_path).unwrap();
             let mut zip = ZipWriter::new(file);
@@ -3079,7 +3081,7 @@ mod tests {
             zip.finish().unwrap();
         }
 
-        let info = transpile_jar_to_horizon_mods(&jar_path, dir.path()).unwrap();
+        let info = transpile_jar_to_horizon_mods(&jar_path, &dir).unwrap();
         assert_eq!(info.id, "appleskin");
         assert_eq!(info.title, "AppleSkin");
         assert_eq!(info.version, "3.0.6");
@@ -3092,9 +3094,10 @@ mod tests {
         assert_eq!(bundle.manifest.id, "appleskin");
 
         // Verify horizon_mods::Package::read and Content::read accept the generated .hmod
-        let pkg = horizon_mods::Package::read(&info.hmod_path, ).unwrap();
+        let pkg = horizon_mods::Package::read(&info.hmod_path).unwrap();
         assert_eq!(pkg.manifest.id, "appleskin");
         let content = horizon_mods::Content::read(&info.hmod_path, &pkg.manifest).unwrap();
         assert_eq!(content.items.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
