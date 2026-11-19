@@ -74,13 +74,17 @@ Work only in this repository.
   fluid tints yet.
 - Particle modifiers re-run colour and `size` (as a multiple of the spawn size) every tick on the particles they target;
   `life` and `speed` stay spawn-only.
-- Read but not applied: the other block fields (`can_occlude`, break particles), flowing-water-only tints,
+- Block `can_occlude` (client side, as Polytone sets it on every state and rebuilds the cache): `false` shows the faces of
+  neighbours behind the block and stops it being a solid render, `true` restores the shape's own occlusion. The client light
+  engine's dampening is unchanged. `spawn_particles_on_break: false` removes a block's terrain particles (breaking, mining,
+  landing) and `tinted_breaking_particles: false` leaves them untinted. Tag targets never match, as for block tints.
+- Read but not applied: flowing-water-only tints,
   `sprites` offsets and overlays,
   `config(...)` in expressions other than particle modifiers and conditions.
 
 ## Next, in rough order
 
-1. Custom `offset_type` objects; `can_occlude`.
+1. Custom `offset_type` objects.
 3. Position-dependent colormaps for fluid tints (blocks and items already read the position).
 4. Colormap `state_prop`, `biome_id` in biome and fluid tables.
 5. Biome layers: `blend_to_gray`, `REMOVE`, colormap and expression arguments, other attributes; weather groups and the other dimension attributes; fog distances and cloud colour.

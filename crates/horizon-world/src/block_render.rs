@@ -32,6 +32,7 @@ pub struct RenderDefinition {
 struct State {
     block: BlockStateId,
     faces: [u32; 6],
+    occluding: [u32; 6],
     definition: RenderDefinition,
     connections: u8,
     connection_properties: u8,
@@ -80,7 +81,7 @@ impl FaceVisibility {
             let shape = occlusion
                 .cached_shape(id)?
                 .ok_or_else(|| invalid("missing occlusion geometry"))?;
-            let face_ids = if !definition.can_occlude || shape.is_empty() {
+            let occluding = if shape.is_empty() {
                 [0; 6]
             } else if let Some(ids) = shape_faces.get(&std::ptr::from_ref(shape)) {
                 *ids
@@ -132,7 +133,12 @@ impl FaceVisibility {
                 block: registry
                     .default_state(&state.name)
                     .ok_or_else(|| invalid("missing render block identity"))?,
-                faces: face_ids,
+                faces: if definition.can_occlude {
+                    occluding
+                } else {
+                    [0; 6]
+                },
+                occluding,
                 definition,
                 connections,
                 connection_properties,
@@ -145,6 +151,24 @@ impl FaceVisibility {
             cache: HashMap::new(),
         })
     }
+    /// Switches `state` between occluding its neighbours and not, as `BlockState.canOcclude` and
+    /// `initCache` do: the faces come back from its shape, or are all empty.
+    pub fn set_can_occlude(&mut self, state: BlockStateId, can_occlude: bool) -> bool {
+        let Some(entry) = self.states.get_mut(state.0 as usize) else {
+            return false;
+        };
+        entry.definition.can_occlude = can_occlude;
+        entry.faces = if can_occlude { entry.occluding } else { [0; 6] };
+        true
+    }
+
+    /// `isSolidRender`: the state occludes and its shape is the full block on every side.
+    pub fn is_solid_render(&self, state: BlockStateId) -> bool {
+        self.states
+            .get(state.0 as usize)
+            .is_some_and(|s| s.definition.can_occlude && s.occluding == [1; 6])
+    }
+
     fn state(&self, id: BlockStateId) -> io::Result<State> {
         self.states
             .get(id.0 as usize)
@@ -250,5 +274,63 @@ mod tests {
                 .should_render_face(stone, stone, Direction::Up, true)
                 .is_err()
         );
+    }
+
+    fn visibility_of(shapes: &[[u32; 6]], can_occlude: bool) -> FaceVisibility {
+        FaceVisibility {
+            states: shapes
+                .iter()
+                .enumerate()
+                .map(|(i, occluding)| State {
+                    block: BlockStateId(i as u32),
+                    faces: if can_occlude { *occluding } else { [0; 6] },
+                    occluding: *occluding,
+                    definition: RenderDefinition {
+                        skip: SkipRendering::Never,
+                        can_occlude,
+                        bars_tag: false,
+                    },
+                    connections: 0,
+                    connection_properties: 0,
+                    fluid: FluidKind::Empty,
+                })
+                .collect(),
+            faces: vec![VoxelShape::empty(), VoxelShape::block()],
+            cache: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn a_can_occlude_override_hides_or_restores_the_neighbours_faces() {
+        let (stone, glass) = (BlockStateId(0), BlockStateId(1));
+        let mut visibility = visibility_of(&[[1; 6], [1; 6]], true);
+        assert!(visibility.is_solid_render(stone));
+        assert!(
+            !visibility
+                .should_render_face(stone, glass, Direction::Up, true)
+                .unwrap()
+        );
+        assert!(visibility.set_can_occlude(glass, false));
+        assert!(!visibility.is_solid_render(glass));
+        assert!(
+            visibility
+                .should_render_face(stone, glass, Direction::Up, true)
+                .unwrap()
+        );
+        assert!(visibility.set_can_occlude(glass, true));
+        assert!(visibility.is_solid_render(glass));
+        assert!(
+            !visibility
+                .should_render_face(stone, glass, Direction::Up, true)
+                .unwrap()
+        );
+        assert!(!visibility.set_can_occlude(BlockStateId(9), true));
+    }
+
+    #[test]
+    fn a_partial_shape_that_occludes_is_not_solid_render() {
+        let mut visibility = visibility_of(&[[0, 2, 2, 2, 2, 2]], false);
+        visibility.set_can_occlude(BlockStateId(0), true);
+        assert!(!visibility.is_solid_render(BlockStateId(0)));
     }
 }

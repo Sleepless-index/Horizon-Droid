@@ -614,6 +614,8 @@ struct Info {
     offset: Option<(f32, f32)>,
     /// A Polytone block modifier's render type, over the model's own layer.
     render_type: Option<BlockRenderType>,
+    /// A Polytone block modifier's break particles: bit 0 turns them off, bit 1 leaves them untinted.
+    break_particles: u8,
     /// `isSolid()` (legacy), for fluid corner heights.
     legacy_solid: bool,
     /// `HalfTransparentBlock`/`LeavesBlock`: water sides show the overlay sprite.
@@ -721,6 +723,15 @@ fn redstone_color(power: u8) -> u32 {
     ((r * 255.0) as u32) << 16 | ((g * 255.0) as u32) << 8 | (b * 255.0) as u32
 }
 impl MeshTables {
+    /// Whether `state`'s terrain particles spawn (`spawn_particles_on_break`) and take its tint
+    /// (`tinted_breaking_particles`), as a Polytone block modifier set them.
+    pub fn break_particles(&self, state: BlockStateId) -> (bool, bool) {
+        let flags = self
+            .info
+            .get(state.0 as usize)
+            .map_or(0, |info| info.break_particles);
+        (flags & 1 == 0, flags & 2 == 0)
+    }
     pub fn apply_polytone_colors(&mut self, root: &std::path::Path) {
         let colors = horizon_polytone::colors::PackColors::read(root);
         self.custom.redstone = std::array::from_fn(|power| colors.redstone(power as u8));
@@ -773,6 +784,26 @@ impl MeshTables {
             let Some(info) = self.info.get_mut(id) else {
                 continue;
             };
+            if let Some(can_occlude) = modifier.can_occlude {
+                let state_id = BlockStateId(id as u32);
+                if self.visibility.set_can_occlude(state_id, can_occlude) {
+                    info.solid = self.visibility.is_solid_render(state_id);
+                    info.permeable = !info.solid || state.dampening == 0;
+                    for d in Direction::ALL {
+                        if let Some((face_id, shape)) = self.visibility.occlusion_face(state_id, d)
+                        {
+                            info.face[d as usize] = face_id.min(2) as u8;
+                            info.cover[d as usize] = fluid::coverage(shape, d);
+                        }
+                    }
+                }
+            }
+            if modifier.spawn_particles_on_break == Some(false) {
+                info.break_particles |= 1;
+            }
+            if modifier.tinted_breaking_particles == Some(false) {
+                info.break_particles |= 2;
+            }
             if let Some(render_type) = modifier.render_type {
                 info.render_type = Some(render_type);
             }
@@ -951,6 +982,7 @@ impl MeshTables {
                 tint_count,
                 offset,
                 render_type: None,
+                break_particles: 0,
                 legacy_solid: s.legacy_solid,
                 overlay: s.has_class("HalfTransparentBlock") || s.has_class("LeavesBlock"),
                 leaves: s.has_class("LeavesBlock"),

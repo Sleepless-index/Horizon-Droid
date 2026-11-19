@@ -86,6 +86,7 @@ fn info(solid: bool) -> Info {
         tint_count: 0,
         offset: None,
         render_type: None,
+        break_particles: 0,
         legacy_solid: false,
         overlay: false,
         leaves: false,
@@ -293,4 +294,26 @@ fn visibility_benchmark() {
             before / after
         );
     }
+}
+
+#[test]
+fn break_particle_flags_turn_a_states_particles_off_or_untinted() {
+    let mut tables = MeshTables {
+        info: vec![info(false), info(false), info(false)],
+        visibility: FaceVisibility::empty(),
+        water_still: 0,
+        water_flow: 0,
+        water_overlay: 0,
+        lava_still: 0,
+        lava_flow: 0,
+        animated_layers: Vec::new(),
+        custom: CustomTints::default(),
+        lava_tint: [0xFF_FFFF; 2],
+    };
+    tables.info[1].break_particles = 1;
+    tables.info[2].break_particles = 2;
+    assert_eq!(tables.break_particles(BlockStateId(0)), (true, true));
+    assert_eq!(tables.break_particles(BlockStateId(1)), (false, true));
+    assert_eq!(tables.break_particles(BlockStateId(2)), (true, false));
+    assert_eq!(tables.break_particles(BlockStateId(9)), (true, true));
 }

@@ -3561,7 +3561,14 @@ impl Game<'_> {
         }
     }
     fn particle_sprite(&self, state: BlockStateId, pos: [i32; 3]) -> Option<(String, u32)> {
+        let (spawns, tinted) = self.pack.context.tables.break_particles(state);
+        if !spawns {
+            return None;
+        }
         let sprite = Self::block_particle_sprite(&self.pack, state)?;
+        if !tinted {
+            return Some((sprite, 0xFFFFFF));
+        }
         let chunks = &self.world.chunks;
         let (cx, cz) = (pos[0] >> 4, pos[2] >> 4);
         let region: [[Option<&horizon_client::chunk::Chunk>; 3]; 3] = std::array::from_fn(|dz| {
