@@ -86,6 +86,27 @@ pub fn startup_root(
     enabled.extend_from_slice(server);
     packs::resource_root(vanilla, &enabled, &cache_dir())
 }
+pub(super) fn selected_configs(
+    vanilla: &Path,
+    selected: &[String],
+    server: &[Pack],
+) -> horizon_polytone::pack::Configs {
+    let all = packs::discover(vanilla, &packs_dir());
+    let mut enabled = packs::enabled(&all, selected);
+    enabled.extend_from_slice(server);
+    packs::configs_of_packs(&enabled)
+}
+pub(super) fn polytone_configs_path() -> PathBuf {
+    super::Game::game_dir().join("polytone-configs.json")
+}
+pub(super) fn save_polytone_choices(
+    choices: std::collections::BTreeMap<String, horizon_polytone::pack::ConfigValue>,
+) {
+    if let Err(e) = horizon_polytone::pack::write_choices(&polytone_configs_path(), &choices) {
+        log::warn!("could not save the pack config: {e}");
+    }
+    horizon_polytone::pack::set_chosen(choices);
+}
 fn info(p: &Pack) -> PackInfo {
     let built_in = !p.id.starts_with("file/");
     PackInfo {
@@ -454,7 +475,7 @@ pub(super) fn stage_pack(
     progress: &super::Progress,
 ) -> horizon_client::Result<StagedPack> {
     horizon_polytone::pack::set_chosen(horizon_polytone::pack::read_choices(
-        &super::Game::game_dir().join("polytone-configs.json"),
+        &polytone_configs_path(),
     ));
     let root = startup_root(vanilla_root, selected, server)?;
     let root = super::mods::content_root(&root, mods_enabled, dev_mods);

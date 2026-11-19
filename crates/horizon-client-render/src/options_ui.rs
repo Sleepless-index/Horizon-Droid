@@ -1471,6 +1471,8 @@ pub enum Page {
     NativePackOptions(usize, u8),
     /// The picked `shaders/` pack's options (`shader_options`), one of its screens at a time.
     ShaderOptions,
+    /// The Polytone config entries of the selected resource packs (`polytone_config`).
+    PolytoneConfig,
     /// Horizon's graphics settings (`graphics_ui`).
     Graphics,
     GraphicsAdvanced,
@@ -1523,6 +1525,10 @@ enum Act {
     OpenShaderPackFolder,
     /// Open the picked pack's Shader Options page.
     ShaderOptions,
+    /// The Pack Config page: the entry `.0` takes its next value (the previous with Shift held).
+    PolytoneStep(String),
+    PolytonePreset,
+    PolytoneReset,
     /// Open the options page of the Horizon pack `s.shader_packs[.0]`.
     NativePackOptions(usize),
     /// Option `.1` of that pack: its next value.
@@ -1673,6 +1679,10 @@ pub enum Event {
     OpenShaderOptions,
     /// The Shader Options page closed with changes: save them and load the pack again.
     ShaderOptions,
+    /// The Pack Config page opened: read the selected packs' config entries into `polytone_config`.
+    OpenPolytoneConfig,
+    /// The Pack Config page closed with changes: save the choices and reload the packs.
+    PolytoneConfig,
     /// The options of `shader_packs[.0]`, a Horizon pack, changed: save them (the pack reloads
     /// with them).
     NativePackOptions(usize),
@@ -2003,6 +2013,43 @@ fn native_pack_option_rows(s: &Settings, i: usize, at: u8) -> Vec<Row> {
             .chunks(columns)
             .map(|row| Row::Buttons(widget(&row[0]), row.get(1).map(widget))),
     );
+    rows
+}
+fn polytone_config_rows(s: &Settings) -> Vec<Row> {
+    let Some(config) = &s.polytone_config else {
+        return vec![Row::Header("horizon.polytone_config.loading")];
+    };
+    if config.is_empty() {
+        return vec![Row::Header("horizon.polytone_config.none")];
+    }
+    let mut widgets: Vec<Widget> = Vec::new();
+    if config.has_presets() {
+        widgets.push(button(
+            0.0,
+            0.0,
+            310.0,
+            Text::literal(config.preset_label()),
+            Act::PolytonePreset,
+        ));
+    }
+    let mut rows: Vec<Row> = widgets.drain(..).map(|w| Row::Buttons(w, None)).collect();
+    let buttons: Vec<Widget> = config
+        .ids()
+        .iter()
+        .map(|id| {
+            button(
+                0.0,
+                0.0,
+                150.0,
+                Text::literal(config.button_label(id)),
+                Act::PolytoneStep(id.clone()),
+            )
+        })
+        .collect();
+    let mut buttons = buttons.into_iter();
+    while let Some(a) = buttons.next() {
+        rows.push(Row::Buttons(a, buttons.next()));
+    }
     rows
 }
 fn shader_option_rows(s: &Settings) -> Vec<Row> {
@@ -2492,6 +2539,7 @@ impl OptionsUi {
             Page::NativeMod(_) => "Mod Settings",
             Page::ShaderPacks => "horizon.pages.shader_packs",
             Page::ShaderOptions | Page::NativePackOptions(..) => "horizon.pages.shader_options",
+            Page::PolytoneConfig => "horizon.pages.polytone_config",
             Page::Graphics | Page::GraphicsAdvanced | Page::GraphicsHdr | Page::HdrCalibration => {
                 "options.videoTitle"
             }
@@ -2697,6 +2745,10 @@ impl OptionsUi {
                     Row::Buttons(
                         open("horizon.pages.open.pvp", Page::Pvp),
                         Some(open("horizon.pages.open.mods", Page::Mods)),
+                    ),
+                    Row::Buttons(
+                        open("horizon.pages.open.polytone_config", Page::PolytoneConfig),
+                        None,
                     ),
                     // No AI hides the AI Agent page and everything AI.
                     if s.extras.no_ai {
@@ -3066,6 +3118,7 @@ impl OptionsUi {
                     .collect()
             }
             Page::ShaderOptions => shader_option_rows(s),
+            Page::PolytoneConfig => polytone_config_rows(s),
             Page::NativePackOptions(i, at) => native_pack_option_rows(s, i, at),
             _ => {
                 let _ = s;
@@ -3665,6 +3718,7 @@ impl OptionsUi {
                     Page::Mods => Some(("horizon.mods.open_folder", Act::OpenModFolder)),
                     Page::ShaderPacks => Some(("pack.openFolder", Act::OpenShaderPackFolder)),
                     Page::ShaderOptions => Some(("controls.reset", Act::ShaderReset)),
+                    Page::PolytoneConfig => Some(("controls.reset", Act::PolytoneReset)),
                     Page::NativePackOptions(i, _) => {
                         Some(("controls.reset", Act::NativePackReset(i)))
                     }
@@ -4406,6 +4460,10 @@ impl OptionsUi {
                             if p == Page::ShaderPacks {
                                 events.push(Event::ListShaderPacks);
                             }
+                            if p == Page::PolytoneConfig {
+                                s.polytone_config = None;
+                                events.push(Event::OpenPolytoneConfig);
+                            }
                             self.push(p)
                         }
                         Act::Done => events.extend(self.back(s)),
@@ -4492,6 +4550,25 @@ impl OptionsUi {
                             s.shader_options = None;
                             self.push(Page::ShaderOptions);
                             events.push(Event::OpenShaderOptions);
+                        }
+                        Act::PolytoneStep(id) => {
+                            if let Some(config) = &mut s.polytone_config {
+                                if self.shift {
+                                    config.reset(&id);
+                                } else {
+                                    config.step(&id, false);
+                                }
+                            }
+                        }
+                        Act::PolytonePreset => {
+                            if let Some(config) = &mut s.polytone_config {
+                                config.next_preset();
+                            }
+                        }
+                        Act::PolytoneReset => {
+                            if let Some(config) = &mut s.polytone_config {
+                                config.reset_all();
+                            }
                         }
                         Act::ShaderOption(name) => {
                             if let Some(options) = &mut s.shader_options {
@@ -4919,6 +4996,13 @@ impl OptionsUi {
         self.language_search.focused = false;
         self.can_change_value = false;
         match page {
+            Page::PolytoneConfig => {
+                if s.polytone_config.as_ref().is_some_and(|c| c.changed) {
+                    events.push(Event::PolytoneConfig);
+                } else {
+                    s.polytone_config = None;
+                }
+            }
             Page::ShaderOptions => {
                 if s.shader_options.as_ref().is_some_and(|o| o.changed) {
                     events.push(Event::ShaderOptions);
@@ -5378,6 +5462,10 @@ impl OptionsUi {
                             if p == Page::ShaderPacks {
                                 events.push(Event::ListShaderPacks);
                             }
+                            if p == Page::PolytoneConfig {
+                                s.polytone_config = None;
+                                events.push(Event::OpenPolytoneConfig);
+                            }
                             self.push(p);
                         }
                         Act::Done => {
@@ -5454,6 +5542,25 @@ impl OptionsUi {
                             s.shader_options = None;
                             self.push(Page::ShaderOptions);
                             events.push(Event::OpenShaderOptions);
+                        }
+                        Act::PolytoneStep(id) => {
+                            if let Some(config) = &mut s.polytone_config {
+                                if shift {
+                                    config.reset(&id);
+                                } else {
+                                    config.step(&id, false);
+                                }
+                            }
+                        }
+                        Act::PolytonePreset => {
+                            if let Some(config) = &mut s.polytone_config {
+                                config.next_preset();
+                            }
+                        }
+                        Act::PolytoneReset => {
+                            if let Some(config) = &mut s.polytone_config {
+                                config.reset_all();
+                            }
                         }
                         Act::ShaderOption(name) => {
                             if let Some(options) = &mut s.shader_options {
@@ -5880,6 +5987,40 @@ mod tests {
         assert_eq!(s.shader_packs[0].values, [1.0]);
         ui.back(&mut s);
         assert_eq!(ui.page(), Page::NativePackOptions(0, 0));
+    }
+
+    #[test]
+    fn the_pack_config_page_steps_entries_and_asks_to_save_on_leaving() {
+        let atlas = atlas();
+        let size = (960.0, 540.0);
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        ui.show(Page::PolytoneConfig);
+        let mut configs = horizon_polytone::pack::Configs::default();
+        configs.add_entry(
+            "p:fancy".into(),
+            &serde_json::json!({"type": "boolean", "default_value": false}),
+        );
+        s.polytone_config = Some(crate::polytone_config::PolytoneConfig::new(configs));
+        let find = |ui: &mut OptionsUi, s: &Settings, want: &Act| {
+            let (widgets, ..) = ui.layout(s, size.0, size.1);
+            let w = widgets
+                .into_iter()
+                .find(|w| matches!(&w.kind, WKind::Button { act, .. } if act == want))
+                .expect("button");
+            (w.x + w.w / 2.0, w.y + w.h / 2.0)
+        };
+        let step = Act::PolytoneStep("p:fancy".into());
+        let (x, y) = find(&mut ui, &s, &step);
+        ui.click(&mut s, &atlas, x, y, size, [854, 480], false, false);
+        let config = s.polytone_config.as_ref().unwrap();
+        assert_eq!(
+            config.value("p:fancy"),
+            Some(&horizon_polytone::pack::ConfigValue::Bool(true))
+        );
+        assert!(config.changed);
+        let events = ui.back(&mut s);
+        assert!(events.contains(&Event::PolytoneConfig));
     }
 
     #[test]
@@ -7467,6 +7608,7 @@ mod tests {
                 Page::Extras,
                 Page::Pvp,
                 Page::Mods,
+                Page::PolytoneConfig,
                 Page::Agent,
             ]
         );

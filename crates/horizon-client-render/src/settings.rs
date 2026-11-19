@@ -206,6 +206,8 @@ pub struct Settings {
     pub shader_packs: Vec<crate::shader_pack_list::Entry>,
     /// The picked pack's options while its Shader Options page is open.
     pub shader_options: Option<crate::shader_options::ShaderOptions>,
+    /// The selected packs' Polytone config entries while the Pack Config page is open.
+    pub polytone_config: Option<crate::polytone_config::PolytoneConfig>,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -292,6 +294,7 @@ impl Default for Settings {
             mods: Default::default(),
             shader_packs: Vec::new(),
             shader_options: None,
+            polytone_config: None,
         }
     }
 }
@@ -488,6 +491,7 @@ impl Settings {
             mods: Default::default(),
             shader_packs: Vec::new(),
             shader_options: None,
+            polytone_config: None,
             auto_jump: f.bool("autoJump"),
             language: f.string("lang"),
             force_unicode: f.bool("forceUnicodeFont"),

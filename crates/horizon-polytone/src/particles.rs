@@ -1094,4 +1094,44 @@ mod tests {
         assert_eq!(other.rgba, [0.0; 4]);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn config_values_drive_size_and_colour_through_conditionals_and_text_compares() {
+        let modifier = ParticleModifier::parse(
+            &json!({
+                "targets": "minecraft:flame",
+                "size": "config('p:size')",
+                "color": "config('p:on') ? 0xFF00FF : (config('p:mode') == 'green' ? 0x00FF00 : 0x00FFFF)"
+            }),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        let mut configs = crate::pack::Configs::default();
+        configs.add_entry(
+            "p:size".into(),
+            &json!({"default_value": 3, "min": 1, "max": 4, "step": 1}),
+        );
+        configs.add_entry("p:on".into(), &json!({"default_value": false}));
+        configs.add_entry(
+            "p:mode".into(),
+            &json!({"default_value": "green", "allowed_values": ["cyan", "green"]}),
+        );
+        let run = |configs: &crate::pack::Configs| {
+            let mut state = ParticleState {
+                size: 1.0,
+                ..Default::default()
+            };
+            modifier.apply(&mut state, &ParticleWorld::default(), configs, 1);
+            state
+        };
+        let state = run(&configs);
+        assert_eq!(state.size, 3.0);
+        assert_eq!(state.rgba[..3], [0.0, 1.0, 0.0]);
+        configs.set("p:on", crate::pack::ConfigValue::Bool(true));
+        assert_eq!(run(&configs).rgba[..3], [1.0, 0.0, 1.0]);
+        configs.set("p:on", crate::pack::ConfigValue::Bool(false));
+        configs.set("p:mode", crate::pack::ConfigValue::Text("cyan".into()));
+        assert_eq!(run(&configs).rgba[..3], [0.0, 1.0, 1.0]);
+    }
 }

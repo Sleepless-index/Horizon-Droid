@@ -67,6 +67,7 @@ pub mod overlay;
 pub mod pack_browser;
 pub mod pack_screen;
 pub mod packs;
+pub mod polytone_config;
 pub mod par;
 pub mod particles;
 pub mod poi_sections;

@@ -457,6 +457,22 @@ impl Game<'_> {
                 }
                 // Saved; the next frame's `shader_pack_inputs` loads the pick.
                 Event::ShaderPack => self.settings.save(&Self::options_path()),
+                Event::OpenPolytoneConfig => {
+                    let configs = super::packs::selected_configs(
+                        &self.vanilla_root(),
+                        &self.settings.resource_packs,
+                        &self.server_packs.active,
+                    );
+                    self.settings.polytone_config = Some(
+                        horizon_client::polytone_config::PolytoneConfig::new(configs),
+                    );
+                }
+                Event::PolytoneConfig => {
+                    if let Some(config) = self.settings.polytone_config.take() {
+                        super::packs::save_polytone_choices(config.chosen());
+                        self.reload_packs();
+                    }
+                }
                 Event::OpenShaderOptions => self.open_shader_options(),
                 Event::ShaderOptions => self.save_shader_options(),
                 Event::NativePackOptions(i) => {

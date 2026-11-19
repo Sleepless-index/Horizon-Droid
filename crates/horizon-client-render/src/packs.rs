@@ -432,6 +432,14 @@ fn configs_of(source: &Source) -> horizon_polytone::pack::Configs {
         },
     }
 }
+/// The config entries of `packs`, a later pack's over an earlier one's of the same id.
+pub fn configs_of_packs(packs: &[Pack]) -> horizon_polytone::pack::Configs {
+    let mut all = horizon_polytone::pack::Configs::default();
+    for pack in packs {
+        all.merge(&configs_of(&pack.source));
+    }
+    all
+}
 /// The folders of `overlays.entries[]` that are active: their formats apply, and their
 /// `polytone_condition` holds when they have one. `configs` is only called when one does.
 fn overlays_of(

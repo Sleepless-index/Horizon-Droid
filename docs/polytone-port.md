@@ -43,7 +43,9 @@ Work only in this repository.
   wire's tint, `effect.*` (mob effect colours in the effect table), `dye.*` diffuse colours (mobs, shulker/banner
   blocks, dyed leather crafting), `dye.*.text` (sign text), `dye.*.firework` (stars, tooltips, raids) and `sheep.*`
   wool colours, `particle.*` (a colour or expression, applied as a `color` modifier) and the redstone dust particle colour.
-- Pack config: `config_entries/` are read at their defaults or the player's choices (`polytone-configs.json` beside
+- Pack config: Horizon > Pack Config... lists the selected packs' entries (toggle, step or cycle; Shift-click resets one,
+  Reset all, and a Preset button when entries have presets); leaving the page with changes saves and reloads the packs.
+  `config_entries/` are read at their defaults or the player's choices (`polytone-configs.json` beside
   `options.txt`), `polytone_condition` filters any scanned file, particle modifiers can call `config(id)`, `overlays.entries[].polytone_condition` picks the pack's overlay
   folders and `sounds.json` events with an unmet `polytone_condition` are dropped before the packs merge (the overlay
   cache keys on the player's choices).
@@ -52,7 +54,7 @@ Work only in this repository.
   `horizon_height` (the dark disc's height) and `water_fog_brightening_time` (ticks to full water vision) apply too.
 - Read but not applied: the other block fields (`map_color`, `can_occlude`, particles), item modifier
   tooltips, arm pose and armor/scope textures, flowing-water-only tints, `fog_fade`, `sprites` offsets and overlays,
-  per-tick particle expressions, the config settings screen, `config(...)` in expressions other than particle modifiers
+  per-tick particle expressions, `config(...)` in expressions other than particle modifiers
   and conditions.
 
 ## Next, in rough order

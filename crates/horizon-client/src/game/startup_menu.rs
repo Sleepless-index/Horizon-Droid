@@ -669,6 +669,22 @@ impl Loading {
                         horizon_client::shader_pack_list::scan(&Game::shader_packs_dir());
                 }
                 Event::ShaderPack => self.save_menu_settings(),
+                Event::OpenPolytoneConfig => {
+                    let configs = packs::selected_configs(
+                        &self.menu.root,
+                        &self.settings.resource_packs,
+                        &[],
+                    );
+                    self.settings.polytone_config = Some(
+                        horizon_client::polytone_config::PolytoneConfig::new(configs),
+                    );
+                }
+                Event::PolytoneConfig => {
+                    if let Some(config) = self.settings.polytone_config.take() {
+                        packs::save_polytone_choices(config.chosen());
+                        self.menu.reload_packs = true;
+                    }
+                }
                 Event::OpenShaderOptions => {
                     self.settings.shader_options = super::shader_packs::read_shader_options(
                         &self.settings.horizon.shader_pack,
