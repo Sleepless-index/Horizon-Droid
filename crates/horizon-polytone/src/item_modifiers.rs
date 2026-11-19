@@ -132,7 +132,10 @@ impl ItemModifier {
                 )?)));
             }
             if !bar_textures.is_empty() {
-                modifier.unread.push("bar_color".to_owned());
+                modifier.bar = Some(Tint::All(ColorSource::Inline(Colormap::new(
+                    None,
+                    bar_textures,
+                )?)));
             }
             return Ok(Some(modifier));
         };
@@ -239,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn a_png_alone_is_the_tint_and_a_bar_png_is_reported_unread() {
+    fn a_png_alone_is_the_tint_and_a_bar_png_is_the_bar_colour() {
         let root = scratch("item-png");
         put(&root, &format!("{DIR}/quiver.png"), pixel(1, 2, 3));
         put(&root, &format!("{DIR}/quiver_bar.png"), pixel(4, 5, 6));
@@ -251,10 +254,24 @@ mod tests {
             tint.biome_color(0, &Colormaps::default(), 0.5, 0.5),
             Some(0x010203)
         );
-        assert_eq!(quiver.unread, ["bar_color"]);
+        assert_eq!(
+            quiver
+                .bar
+                .as_ref()
+                .unwrap()
+                .biome_color(0, &Colormaps::default(), 0.5, 0.5),
+            Some(0x040506)
+        );
         let sack = set.resolve("foo:sack", &nothing).unwrap();
         assert!(sack.tint.is_none());
-        assert_eq!(sack.unread, ["bar_color"]);
+        assert_eq!(
+            sack.bar
+                .as_ref()
+                .unwrap()
+                .biome_color(0, &Colormaps::default(), 0.5, 0.5),
+            Some(0x040506)
+        );
+        assert!(sack.unread.is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 

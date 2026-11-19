@@ -59,18 +59,20 @@ Work only in this repository.
   `options.txt`), `polytone_condition` filters any scanned file, particle modifiers can call `config(id)`, `overlays.entries[].polytone_condition` picks the pack's overlay
   folders and `sounds.json` events with an unmet `polytone_condition` are dropped before the packs merge (the overlay
   cache keys on the player's choices).
+- Textured `bar_color`: a `<item>_bar.png` alone colours the durability bar like the `.png` colours the tint.
+- `fog_fade` (water and lava fog): the fog starts at `end - (end - start) * fade`, so 1 is vanilla and 0 is a hard edge.
+  Block `map_color` (a `MapColor` name, with or without `map.`) recolours that block on filled maps.
 - Particle modifiers (`particle_modifiers/`): `color`, `red/green/blue/alpha`, `size`, `life` and `speed` expressions run
   once when a particle is created, with `o`, `p`, `g` and `r` answered (no biome/light/colormap/config yet).
   `horizon_height` (the dark disc's height) and `water_fog_brightening_time` (ticks to full water vision) apply too.
-- Read but not applied: the other block fields (`map_color`, `can_occlude`, particles), item modifier
-  (nothing left), flowing-water-only tints, `fog_fade`, `sprites` offsets and overlays,
+- Read but not applied: the other block fields (`can_occlude`, break particles), flowing-water-only tints,
+  `sprites` offsets and overlays,
   per-tick particle expressions, `config(...)` in expressions other than particle modifiers
   and conditions.
 
 ## Next, in rough order
 
 1. Custom `offset_type` objects; `can_occlude`.
-2. Textured `bar_color`.
 3. Position-dependent colormaps for fluid tints (blocks and items already read the position).
 4. Refused colormap features: `color_modifier`, `biome_id`, `legacy_temperature`, `grid`, `damage`.
 5. Biome layers: `blend_to_gray`, `REMOVE`, colormap and expression arguments, other attributes; weather groups and the other dimension attributes; fog distances and cloud colour.

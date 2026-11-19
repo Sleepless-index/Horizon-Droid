@@ -714,11 +714,13 @@ impl MeshTables {
         root: &std::path::Path,
         block_in_tag: &dyn Fn(&str, &str) -> bool,
     ) {
+        horizon_client_core::pack_colors::set_map_colors(Default::default());
         let set = BlockModifier::read(root);
         if set.is_empty() {
             return;
         }
         let maps = Colormaps::read(root);
+        let mut map_colors = std::collections::HashMap::new();
         let mut slots: Vec<(usize, i32)> = Vec::new();
         let mut warned = std::collections::HashSet::new();
         for (id, state) in facts.states.iter().enumerate() {
@@ -733,6 +735,13 @@ impl MeshTables {
             let Some(modifier) = set.get(entry) else {
                 continue;
             };
+            if let Some(color) = modifier
+                .map_color
+                .as_deref()
+                .and_then(horizon_client_core::pack_colors::map_color_id)
+            {
+                map_colors.insert(id as u32, color);
+            }
             let Some(info) = self.info.get_mut(id) else {
                 continue;
             };
@@ -776,6 +785,7 @@ impl MeshTables {
                 info.tint_count = info.tint_count.max(index as u8 + 1);
             }
         }
+        horizon_client_core::pack_colors::set_map_colors(map_colors);
         self.custom = CustomTints {
             maps,
             set,

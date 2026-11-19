@@ -1524,8 +1524,11 @@ impl Game<'_> {
                             } else {
                                 loop {
                                     y -= 1;
-                                    color =
-                                        self.res.facts().get(self.world.block(x, y, z)).map_color;
+                                    let state = self.world.block(x, y, z);
+                                    color = horizon_client::pack_colors::map_color(
+                                        state.0,
+                                        self.res.facts().get(state).map_color,
+                                    );
                                     if color != 0 || y <= min_y {
                                         break;
                                     }

@@ -232,6 +232,10 @@ pub struct FogInputs<'a> {
 }
 
 /// `FogRenderer.setupFog` + `computeFogColor`.
+fn faded_start(start: f32, end: f32, fade: f32) -> f32 {
+    end - (end - start) * fade
+}
+
 pub fn setup_fog(tables: &FogTables, state: &FogState, input: &FogInputs) -> FogData {
     let rd = input.render_distance_chunks as f32 * 16.0;
     let sky = input.sky;
@@ -345,6 +349,8 @@ pub fn setup_fog(tables: &FogTables, state: &FogState, input: &FogInputs) -> Fog
             if let Some(fluid) = tables.fluid_fog.lava {
                 fog.environmental_start *= fluid.radius;
                 fog.environmental_end *= fluid.radius;
+                fog.environmental_start =
+                    faded_start(fog.environmental_start, fog.environmental_end, fluid.fade);
             }
             fog.sky_end = fog.environmental_end;
             fog.cloud_end = fog.environmental_end;
@@ -390,6 +396,10 @@ pub fn setup_fog(tables: &FogTables, state: &FogState, input: &FogInputs) -> Fog
                 .unwrap_or(1.0);
             let radius = tables.fluid_fog.water.map_or(1.0, |f| f.radius);
             fog.environmental_end = 96.0 * factor * radius * water_vision.max(0.25);
+            if let Some(fluid) = tables.fluid_fog.water {
+                fog.environmental_start =
+                    faded_start(fog.environmental_start, fog.environmental_end, fluid.fade);
+            }
             fog.sky_end = fog.environmental_end;
             fog.cloud_end = fog.environmental_end;
         }
@@ -693,6 +703,29 @@ mod tests {
             2048.0
         );
     }
+    #[test]
+    fn fog_fade_scales_how_far_the_fog_takes_to_thicken() {
+        use horizon_polytone::colors::{FluidFog, FluidFogs};
+        let sky = Sky::default();
+        let mut input = inputs(&sky);
+        input.fog_type = FogType::Lava;
+        let plain = setup_fog(&FogTables::default(), &FogState::default(), &input);
+        let tables = FogTables {
+            fluid_fog: FluidFogs {
+                lava: Some(FluidFog {
+                    color: None,
+                    radius: 1.0,
+                    fade: 0.5,
+                }),
+                water: None,
+            },
+            ..Default::default()
+        };
+        let lava = setup_fog(&tables, &FogState::default(), &input);
+        assert_eq!(lava.environmental_end, plain.environmental_end);
+        assert_eq!(lava.environmental_start, 0.625);
+    }
+
     #[test]
     fn fluid_modifier_fog_recolours_and_scales_the_fluid_fog() {
         use horizon_polytone::colors::{FluidFog, FluidFogs};

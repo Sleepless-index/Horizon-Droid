@@ -1,4 +1,94 @@
+use std::collections::HashMap;
 use std::sync::RwLock;
+
+pub const MAP_COLOR_NAMES: [&str; 62] = [
+    "none",
+    "grass",
+    "sand",
+    "wool",
+    "fire",
+    "ice",
+    "metal",
+    "plant",
+    "snow",
+    "clay",
+    "dirt",
+    "stone",
+    "water",
+    "wood",
+    "quartz",
+    "color_orange",
+    "color_magenta",
+    "color_light_blue",
+    "color_yellow",
+    "color_light_green",
+    "color_pink",
+    "color_gray",
+    "color_light_gray",
+    "color_cyan",
+    "color_purple",
+    "color_blue",
+    "color_brown",
+    "color_green",
+    "color_red",
+    "color_black",
+    "gold",
+    "diamond",
+    "lapis",
+    "emerald",
+    "podzol",
+    "nether",
+    "terracotta_white",
+    "terracotta_orange",
+    "terracotta_magenta",
+    "terracotta_light_blue",
+    "terracotta_yellow",
+    "terracotta_light_green",
+    "terracotta_pink",
+    "terracotta_gray",
+    "terracotta_light_gray",
+    "terracotta_cyan",
+    "terracotta_purple",
+    "terracotta_blue",
+    "terracotta_brown",
+    "terracotta_green",
+    "terracotta_red",
+    "terracotta_black",
+    "crimson_nylium",
+    "crimson_stem",
+    "crimson_hyphae",
+    "warped_nylium",
+    "warped_stem",
+    "warped_hyphae",
+    "warped_wart_block",
+    "deepslate",
+    "raw_iron",
+    "glow_lichen",
+];
+
+static MAP_COLORS: RwLock<Option<HashMap<u32, u8>>> = RwLock::new(None);
+
+pub fn map_color_id(name: &str) -> Option<u8> {
+    let name = name.trim().trim_start_matches("map.").to_ascii_lowercase();
+    MAP_COLOR_NAMES
+        .iter()
+        .position(|n| *n == name)
+        .map(|i| i as u8)
+}
+
+pub fn set_map_colors(colors: HashMap<u32, u8>) {
+    if let Ok(mut guard) = MAP_COLORS.write() {
+        *guard = (!colors.is_empty()).then_some(colors);
+    }
+}
+
+pub fn map_color(state: u32, vanilla: u8) -> u8 {
+    MAP_COLORS
+        .read()
+        .ok()
+        .and_then(|guard| guard.as_ref().and_then(|m| m.get(&state).copied()))
+        .unwrap_or(vanilla)
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DyeOverrides {
@@ -51,6 +141,19 @@ pub fn sheep(index: usize) -> Option<u32> {
 mod tests {
     use super::*;
     use crate::potions;
+
+    #[test]
+    fn map_colors_follow_vanilla_ids_and_override_by_state() {
+        assert_eq!(map_color_id("plant"), Some(7));
+        assert_eq!(map_color_id("map.COLOR_RED"), Some(28));
+        assert_eq!(map_color_id("glow_lichen"), Some(61));
+        assert_eq!(map_color_id("teal"), None);
+        set_map_colors(HashMap::from([(5, 12)]));
+        assert_eq!(map_color(5, 1), 12);
+        assert_eq!(map_color(6, 1), 1);
+        set_map_colors(HashMap::new());
+        assert_eq!(map_color(5, 1), 1);
+    }
 
     #[test]
     fn overrides_replace_vanilla_and_clear_on_reset() {
