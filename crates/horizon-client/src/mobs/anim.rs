@@ -235,6 +235,33 @@ fn bob(p: &mut Poses, n: &str, age: f32, scale: f32) {
     q[5] += scale * ((age * 0.09).mcos() * 0.05 + 0.05);
     q[3] += scale * ((age * 0.067).msin() * 0.05);
 }
+static PACK_ARM_POSES: std::sync::RwLock<Vec<(String, horizon_polytone::item_modifiers::ArmPose)>> =
+    std::sync::RwLock::new(Vec::new());
+/// The arm poses a resource pack gives items (`item_modifiers`' `arm_pose`), by item id.
+pub fn set_pack_arm_poses(poses: Vec<(String, horizon_polytone::item_modifiers::ArmPose)>) {
+    if let Ok(mut guard) = PACK_ARM_POSES.write() {
+        *guard = poses;
+    }
+}
+fn pack_arm_pose(item: Option<&str>, kinetic: bool) -> Option<ArmPose> {
+    use horizon_polytone::item_modifiers::ArmPose as Pack;
+    let item = item?;
+    let pose = PACK_ARM_POSES
+        .read()
+        .ok()?
+        .iter()
+        .find(|(id, _)| id == item)?
+        .1;
+    Some(match pose {
+        Pack::Item | Pack::Spyglass => ArmPose::Item,
+        Pack::Block => ArmPose::Block,
+        Pack::BowAndArrow => ArmPose::Bow,
+        Pack::CrossbowHold => ArmPose::CrossbowHold,
+        Pack::TootHorn => ArmPose::TootHorn,
+        Pack::Spear if kinetic => ArmPose::Spear,
+        Pack::Spear => ArmPose::Item,
+    })
+}
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ArmPose {
     Empty,
@@ -789,7 +816,12 @@ pub fn setup(
             };
             let (main_spear, off_spear) =
                 (spear_in(&m.extra.main_hand), spear_in(&m.extra.off_hand));
-            let pose = if player {
+            let pose = if let Some(pose) = pack_arm_pose(
+                m.extra.main_hand.as_deref().filter(|_| player),
+                main_spear.is_some(),
+            ) {
+                pose
+            } else if player {
                 match m.extra.main_hand.as_deref() {
                     Some(_) if using_main && m.extra.blocking => ArmPose::Block,
                     Some("minecraft:bow") if using_main => ArmPose::Bow,
@@ -810,7 +842,10 @@ pub fn setup(
                 right
             };
             let off = if player && m.extra.off_hand.is_some() && !pose.affects_offhand() {
-                if off_spear.is_some() {
+                if let Some(pose) = pack_arm_pose(m.extra.off_hand.as_deref(), off_spear.is_some())
+                {
+                    pose
+                } else if off_spear.is_some() {
                     ArmPose::Spear
                 } else if using_off && m.extra.blocking {
                     ArmPose::Block

@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::Modifiers;
 use crate::colormaps::{Colormaps, SampleContext};
-use crate::item_modifiers::{ItemModifier, Rarity, Tooltip};
+use crate::item_modifiers::{ArmPose, ItemModifier, Rarity, Tooltip};
 use crate::tint::ColorSource;
 pub use regex::Regex;
 
@@ -113,6 +113,7 @@ impl ItemTints {
                         || m.rarity.is_some()
                         || !m.tooltips.is_empty()
                         || !m.removed_tooltips.is_empty()
+                        || m.arm_pose.is_some()
                 })
             {
                 by_item.insert(item, index);
@@ -137,6 +138,14 @@ impl ItemTints {
             ColorSource::Flat(color) => Some(*color & 0xFF_FFFF),
             _ => None,
         }
+    }
+
+    /// The items whose modifier sets an arm pose.
+    pub fn arm_poses(&self) -> Vec<(String, ArmPose)> {
+        self.by_item
+            .iter()
+            .filter_map(|(item, index)| Some((item.clone(), self.set.get(*index)?.arm_pose?)))
+            .collect()
     }
 
     pub fn tooltip_edits(&self, item: &str) -> Option<(&[Tooltip], &[Regex])> {
@@ -250,6 +259,32 @@ mod tests {
         assert_eq!(items.bar_color("foo:axe"), None);
         assert_eq!(items.rarity("foo:axe"), None);
         assert_eq!(items.bar_color("foo:none"), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn arm_poses_are_listed_for_the_items_that_set_one() {
+        let root = scratch("item-arm-pose");
+        put(
+            &root,
+            "assets/foo/polytone/item_modifiers/horn.json",
+            r#"{"arm_pose": "toot_horn"}"#,
+        );
+        put(
+            &root,
+            "assets/foo/polytone/item_modifiers/stick.json",
+            r##"{"rarity": "rare"}"##,
+        );
+        let items = ItemTints::read(
+            &root,
+            ["foo:horn".to_owned(), "foo:stick".to_owned()].into_iter(),
+            &none,
+        )
+        .unwrap();
+        assert_eq!(
+            items.arm_poses(),
+            vec![("foo:horn".to_owned(), ArmPose::TootHorn)]
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

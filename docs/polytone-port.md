@@ -46,6 +46,8 @@ Work only in this repository.
 - Item modifier tooltips: `tooltips` add lines (text or component, colour, bold, italic; `position` counts lines under the
   name, negative from the end) and `removed_tooltips` patterns drop lines whose text a matching language key shows or
   that match the pattern themselves.
+- Item `arm_pose`: a held item's pose replaces vanilla's choice for player models in third person (`spear` only for
+  items that have kinetic data, `spyglass` shows as a plain held item); first-person arms are unchanged.
 - Pack config: Horizon > Pack Config... lists the selected packs' entries (toggle, step or cycle; Shift-click resets one,
   Reset all, and a Preset button when entries have presets); leaving the page with changes saves and reloads the packs.
   `config_entries/` are read at their defaults or the player's choices (`polytone-configs.json` beside
@@ -56,14 +58,14 @@ Work only in this repository.
   once when a particle is created, with `o`, `p`, `g` and `r` answered (no biome/light/colormap/config yet).
   `horizon_height` (the dark disc's height) and `water_fog_brightening_time` (ticks to full water vision) apply too.
 - Read but not applied: the other block fields (`map_color`, `can_occlude`, particles), item modifier
-  arm pose and armor/scope textures, flowing-water-only tints, `fog_fade`, `sprites` offsets and overlays,
+  armor/scope textures, flowing-water-only tints, `fog_fade`, `sprites` offsets and overlays,
   per-tick particle expressions, `config(...)` in expressions other than particle modifiers
   and conditions.
 
 ## Next, in rough order
 
 1. Custom `offset_type` objects; `can_occlude`.
-2. Textured `bar_color`, arm pose, armor/scope textures.
+2. Textured `bar_color`, armor/scope textures.
 3. Position-dependent colormaps for fluid tints (blocks and items already read the position).
 4. Refused colormap features: `color_modifier`, `biome_id`, `legacy_temperature`, `grid`, `damage`.
 5. Biome layers: `blend_to_gray`, `REMOVE`, colormap and expression arguments, other attributes; weather groups and the other dimension attributes; fog distances and cloud colour.

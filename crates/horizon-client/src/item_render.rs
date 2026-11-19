@@ -601,6 +601,9 @@ impl ItemRenderer {
                 .unwrap_or_default()
             },
         );
+        crate::mobs::anim::set_pack_arm_poses(
+            polytone.as_ref().map(|p| p.arm_poses()).unwrap_or_default(),
+        );
         Ok(Self {
             polytone,
             item_ids,
