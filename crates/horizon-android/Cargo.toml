@@ -74,9 +74,10 @@ toml = "1"
 rustix = { version = "1", default-features = false, features = ["std", "time", "fs"] }
 
 [features]
-default = ["mods", "audio"]
+default = ["audio"]
 audio = ["horizon-client/audio"]
 controllers = []
+# Wasm code mods are off: they do not run on Android. Re-enable to build the runtime again.
 mods = ["horizon-client/mods", "horizon-mods/runtime"]
 
 [lints]
