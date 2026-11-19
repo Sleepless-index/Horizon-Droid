@@ -1306,11 +1306,7 @@ impl Game<'_> {
         if self.screen == Screen::Chat
             && self.title.is_none()
             && crate::platform::active()
-            && let Some(text) = self
-                .ui
-                .chat_screen
-                .as_ref()
-                .map(|s| s.value().to_owned())
+            && let Some(text) = self.ui.chat_screen.as_ref().map(|s| s.value().to_owned())
         {
             crate::platform::sync_text(&text);
         }
