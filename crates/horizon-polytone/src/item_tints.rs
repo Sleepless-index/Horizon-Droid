@@ -3,8 +3,9 @@ use std::path::Path;
 
 use crate::Modifiers;
 use crate::colormaps::{Colormaps, SampleContext};
-use crate::item_modifiers::{ItemModifier, Rarity};
+use crate::item_modifiers::{ItemModifier, Rarity, Tooltip};
 use crate::tint::ColorSource;
+pub use regex::Regex;
 
 const TINT_SLOTS: i32 = 5;
 
@@ -12,6 +13,59 @@ pub struct ItemTints {
     set: Modifiers<ItemModifier>,
     maps: Colormaps,
     by_item: HashMap<String, usize>,
+}
+
+/// Whether a tooltip line is what a translation key shows: its text, or its text up to the
+/// first placeholder (`Sharpness %s` shows as `Sharpness V`).
+fn shows_translation(plain: &str, translation: &str) -> bool {
+    let fixed = translation.split('%').next().unwrap_or(translation).trim();
+    if fixed.len() < 3 {
+        return false;
+    }
+    let plain = plain.trim();
+    if translation.contains('%') {
+        plain.starts_with(fixed)
+    } else {
+        plain == fixed
+    }
+}
+
+/// An item's tooltip edited by its modifier: lines a `removed_tooltips` pattern matches are
+/// dropped (`translations` are the texts of the keys the patterns match), then each added line
+/// goes `position` lines below the first editable one (the end when it has none or it is past
+/// the end; a negative one counts back from the end, `-1` being the end itself). The first
+/// `keep` lines (the name) stay.
+pub fn edit_tooltip<L>(
+    lines: &mut Vec<L>,
+    keep: usize,
+    plain: &dyn Fn(&L) -> String,
+    tooltips: &[Tooltip],
+    removed: &[Regex],
+    translations: &[String],
+    make: &dyn Fn(&Tooltip) -> L,
+) {
+    if !removed.is_empty() {
+        let mut index = 0;
+        lines.retain(|line| {
+            index += 1;
+            if index <= keep {
+                return true;
+            }
+            let text = plain(line);
+            let gone = removed.iter().any(|pattern| pattern.is_match(&text))
+                || translations.iter().any(|t| shows_translation(&text, t));
+            !gone
+        });
+    }
+    for tooltip in tooltips {
+        let len = lines.len();
+        let at = match tooltip.position {
+            None => len,
+            Some(p) if p >= 0 => (keep + p as usize).min(len),
+            Some(p) => (len as i64 + i64::from(p) + 1).clamp(keep as i64, len as i64) as usize,
+        };
+        lines.insert(at, make(tooltip));
+    }
 }
 
 impl ItemTints {
@@ -29,9 +83,13 @@ impl ItemTints {
         for item in items {
             let in_tag = |tag: &str| tags.get(tag).is_some_and(|members| members.contains(&item));
             if let Some(index) = set.resolve_index(&item, &in_tag)
-                && set
-                    .get(index)
-                    .is_some_and(|m| m.tint.is_some() || m.bar.is_some() || m.rarity.is_some())
+                && set.get(index).is_some_and(|m| {
+                    m.tint.is_some()
+                        || m.bar.is_some()
+                        || m.rarity.is_some()
+                        || !m.tooltips.is_empty()
+                        || !m.removed_tooltips.is_empty()
+                })
             {
                 by_item.insert(item, index);
             }
@@ -55,6 +113,12 @@ impl ItemTints {
             ColorSource::Flat(color) => Some(*color & 0xFF_FFFF),
             _ => None,
         }
+    }
+
+    pub fn tooltip_edits(&self, item: &str) -> Option<(&[Tooltip], &[Regex])> {
+        let m = self.modifier(item)?;
+        (!m.tooltips.is_empty() || !m.removed_tooltips.is_empty())
+            .then_some((m.tooltips.as_slice(), m.removed_tooltips.as_slice()))
     }
 
     pub fn rarity(&self, item: &str) -> Option<&'static str> {
@@ -170,5 +234,94 @@ mod tests {
         let root = scratch("item-tints-empty");
         assert!(ItemTints::read(&root, ["foo:stick".to_owned()].into_iter(), &none).is_none());
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod tooltip_tests {
+    use super::*;
+
+    fn tip(text: &str, position: Option<i32>) -> Tooltip {
+        Tooltip {
+            text: Some(text.to_owned()),
+            component: None,
+            color: None,
+            bold: None,
+            italic: None,
+            position,
+        }
+    }
+
+    fn edit(
+        lines: &[&str],
+        tips: &[Tooltip],
+        removed: &[&str],
+        translations: &[&str],
+    ) -> Vec<String> {
+        let mut lines: Vec<String> = lines.iter().map(|s| (*s).to_owned()).collect();
+        let removed: Vec<Regex> = removed.iter().map(|r| Regex::new(r).unwrap()).collect();
+        let translations: Vec<String> = translations.iter().map(|s| (*s).to_owned()).collect();
+        edit_tooltip(
+            &mut lines,
+            1,
+            &|l| l.clone(),
+            tips,
+            &removed,
+            &translations,
+            &|t| t.text.clone().unwrap(),
+        );
+        lines
+    }
+
+    #[test]
+    fn added_lines_go_to_their_position_and_default_to_the_end() {
+        let base = ["Sword", "Sharpness V", "Durability"];
+        assert_eq!(
+            edit(&base, &[tip("A", Some(0))], &[], &[]),
+            ["Sword", "A", "Sharpness V", "Durability"]
+        );
+        assert_eq!(
+            edit(&base, &[tip("A", Some(1))], &[], &[]),
+            ["Sword", "Sharpness V", "A", "Durability"]
+        );
+        assert_eq!(
+            edit(&base, &[tip("A", None), tip("B", Some(99))], &[], &[]),
+            ["Sword", "Sharpness V", "Durability", "A", "B"]
+        );
+        assert_eq!(
+            edit(&base, &[tip("A", Some(-1))], &[], &[]),
+            ["Sword", "Sharpness V", "Durability", "A"]
+        );
+        assert_eq!(
+            edit(&base, &[tip("A", Some(-2))], &[], &[]),
+            ["Sword", "Sharpness V", "A", "Durability"]
+        );
+        assert_eq!(
+            edit(&base, &[tip("A", Some(-99))], &[], &[]),
+            ["Sword", "A", "Sharpness V", "Durability"]
+        );
+    }
+
+    #[test]
+    fn removed_lines_match_by_text_or_by_the_translation_of_a_matched_key() {
+        let base = [
+            "Sword",
+            "Sharpness V",
+            "When in Main Hand:",
+            "Durability: 5 / 9",
+        ];
+        assert_eq!(
+            edit(&base, &[], &["^Durab"], &[]),
+            ["Sword", "Sharpness V", "When in Main Hand:"]
+        );
+        assert_eq!(
+            edit(&base, &[], &["enchantment\\..*"], &["Sharpness %s"]),
+            ["Sword", "When in Main Hand:", "Durability: 5 / 9"]
+        );
+        assert_eq!(
+            edit(&base, &[], &["item\\.modifiers.*"], &["When in Main Hand:"]),
+            ["Sword", "Sharpness V", "Durability: 5 / 9"]
+        );
+        assert_eq!(edit(&base, &[], &["Sword"], &[]), base);
     }
 }

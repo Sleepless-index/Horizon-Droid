@@ -494,6 +494,7 @@ pub struct ItemRenderer {
     /// `minecraft:item` registry ids (`Item.getId`).
     item_ids: HashMap<String, i32>,
     polytone: Option<horizon_polytone::item_tints::ItemTints>,
+    removed_tooltip_texts: Mutex<HashMap<(String, String), Arc<Vec<String>>>>,
 }
 
 fn opaque(rgb: i32) -> i32 {
@@ -612,6 +613,7 @@ impl ItemRenderer {
                 translucent: Mutex::default(),
             },
             baked: Mutex::default(),
+            removed_tooltip_texts: Mutex::default(),
             extents: Mutex::default(),
             gui_drawn: Mutex::default(),
             parts,
@@ -620,6 +622,44 @@ impl ItemRenderer {
     }
     pub fn polytone_bar_color(&self, item: &str) -> Option<u32> {
         self.polytone.as_ref()?.bar_color(item)
+    }
+    pub fn polytone_tooltip_edits(
+        &self,
+        item: &str,
+    ) -> Option<(
+        &[horizon_polytone::item_modifiers::Tooltip],
+        &[horizon_polytone::item_tints::Regex],
+    )> {
+        self.polytone.as_ref()?.tooltip_edits(item)
+    }
+    /// The texts of the language keys an item's `removed_tooltips` patterns match, in the
+    /// current language (computed once per item and language).
+    pub fn polytone_removed_tooltip_texts(&self, item: &str) -> Arc<Vec<String>> {
+        let Some((_, patterns)) = self.polytone_tooltip_edits(item) else {
+            return Arc::default();
+        };
+        let language = crate::lang::code();
+        let key = (item.to_owned(), language);
+        if let Ok(cache) = self.removed_tooltip_texts.lock()
+            && let Some(hit) = cache.get(&key)
+        {
+            return hit.clone();
+        }
+        let texts: Arc<Vec<String>> = Arc::new(
+            crate::lang::current()
+                .map(|lang| {
+                    lang.map()
+                        .iter()
+                        .filter(|(k, _)| patterns.iter().any(|p| p.is_match(k)))
+                        .map(|(_, v)| v.clone())
+                        .collect()
+                })
+                .unwrap_or_default(),
+        );
+        if let Ok(mut cache) = self.removed_tooltip_texts.lock() {
+            cache.insert(key, texts.clone());
+        }
+        texts
     }
     pub fn polytone_rarity(&self, item: &str) -> Option<&'static str> {
         self.polytone.as_ref()?.rarity(item)

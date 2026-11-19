@@ -2127,6 +2127,32 @@ impl Game<'_> {
         nested: bool,
         creative: bool,
     ) -> Vec<(horizon_client::text::Text, u32)> {
+        let mut lines = self.vanilla_tooltip_lines(stack, nested, creative);
+        let renderer = &self.pack.item_renderer;
+        if let Some((tooltips, removed)) = renderer.polytone_tooltip_edits(&stack.item) {
+            let keep = usize::from(
+                !nested
+                    && horizon_client::item_tooltip::TooltipDisplay::for_stack(stack)
+                        .name_visible(self.screen == Screen::Creative),
+            );
+            horizon_polytone::item_tints::edit_tooltip(
+                &mut lines,
+                keep,
+                &|(text, _)| text.plain(),
+                tooltips,
+                removed,
+                &renderer.polytone_removed_tooltip_texts(&stack.item),
+                &|tip| (polytone_tooltip_text(tip), u32::MAX),
+            );
+        }
+        lines
+    }
+    fn vanilla_tooltip_lines(
+        &self,
+        stack: &ItemStack,
+        nested: bool,
+        creative: bool,
+    ) -> Vec<(horizon_client::text::Text, u32)> {
         let e: &Enchantments = &self.stations().enchantments;
         let color = self.rarity_color(stack);
         let advanced = !nested && self.options_advanced_tooltips();
@@ -3110,4 +3136,29 @@ mod cycling_tests {
         assert_eq!(smithing_slot_icons(Some("minecraft:stick")).1, 0);
         assert_eq!(smithing_slot_icons(None).3, 0);
     }
+}
+
+fn polytone_tooltip_text(
+    tip: &horizon_polytone::item_modifiers::Tooltip,
+) -> horizon_client::text::Text {
+    use horizon_client::text::{Style, Text, named_color};
+    let base = match (&tip.component, &tip.text) {
+        (Some(component), _) => horizon_client::packs::component(component),
+        (None, Some(text)) => Text::legacy(text),
+        (None, None) => Text::empty(),
+    };
+    let color = match &tip.color {
+        Some(serde_json::Value::String(name)) => name
+            .strip_prefix('#')
+            .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+            .or_else(|| named_color(name)),
+        Some(serde_json::Value::Number(n)) => n.as_u64().map(|c| c as u32 & 0xFF_FFFF),
+        _ => None,
+    };
+    base.with_style(&Style {
+        color,
+        bold: tip.bold,
+        italic: tip.italic,
+        ..Default::default()
+    })
 }
