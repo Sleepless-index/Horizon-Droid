@@ -15,19 +15,43 @@ pub struct ItemTints {
     by_item: HashMap<String, usize>,
 }
 
-/// Whether a tooltip line is what a translation key shows: its text, or its text up to the
-/// first placeholder (`Sharpness %s` shows as `Sharpness V`).
+/// Whether a tooltip line shows a translation: the template's fixed text appears in it in
+/// order, its placeholders (`%s`, `%1$s`) standing for anything (`Sharpness %s` shows as
+/// `Sharpness V`, `Attack Damage` as `7 Attack Damage`).
 fn shows_translation(plain: &str, translation: &str) -> bool {
-    let fixed = translation.split('%').next().unwrap_or(translation).trim();
-    if fixed.len() < 3 {
+    let mut segments = vec![String::new()];
+    let mut chars = translation.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            segments.last_mut().unwrap().push(c);
+        } else if chars.peek() == Some(&'%') {
+            chars.next();
+            segments.last_mut().unwrap().push('%');
+        } else {
+            for p in chars.by_ref() {
+                if matches!(p, 's' | 'd' | 'f') {
+                    break;
+                }
+            }
+            segments.push(String::new());
+        }
+    }
+    let segments: Vec<&str> = segments
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if segments.iter().map(|s| s.len()).sum::<usize>() < 3 {
         return false;
     }
-    let plain = plain.trim();
-    if translation.contains('%') {
-        plain.starts_with(fixed)
-    } else {
-        plain == fixed
+    let mut rest = plain;
+    for segment in segments {
+        match rest.find(segment) {
+            Some(at) => rest = &rest[at + segment.len()..],
+            None => return false,
+        }
     }
+    true
 }
 
 /// An item's tooltip edited by its modifier: lines a `removed_tooltips` pattern matches are
@@ -323,5 +347,16 @@ mod tooltip_tests {
             ["Sword", "Sharpness V", "Durability: 5 / 9"]
         );
         assert_eq!(edit(&base, &[], &["Sword"], &[]), base);
+        let stats = ["Sword", " 7 Attack Damage", " 1.6 Attack Speed"];
+        assert_eq!(
+            edit(
+                &stats,
+                &[],
+                &["attribute\\.name\\.attack_damage"],
+                &["Attack Damage"]
+            ),
+            ["Sword", " 1.6 Attack Speed"]
+        );
+        assert_eq!(edit(&stats, &[], &["x"], &["+%s %s", "%s%%"]), stats);
     }
 }
