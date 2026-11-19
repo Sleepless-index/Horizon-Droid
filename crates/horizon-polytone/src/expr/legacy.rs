@@ -37,7 +37,7 @@ pub(super) const FUNCTIONS: &[(&str, usize, usize, MathFn)] = &[
 /// The legacy calls that are random draws: `r.rand()`, `r.gaussian()`, `r.noise(a, b)` now.
 const RANDOM: [&str; 3] = ["rand", "gaussian", "noise"];
 
-const VARIABLES: [&str; 36] = [
+const VARIABLES: [&str; 39] = [
     "TIME",
     "DAY_TIME",
     "SUN_TIME",
@@ -74,6 +74,9 @@ const VARIABLES: [&str; 36] = [
     "GREEN",
     "BLUE",
     "ALPHA",
+    "BIOME_ID",
+    "ITEM_DAMAGE",
+    "LEGACY_TEMPERATURE",
 ];
 
 /// Whether `tokens` are a legacy expression, which picks the legacy argument order of `lerp`,
@@ -130,6 +133,9 @@ pub(super) fn variable(name: &str) -> Option<Result<Expr, String>> {
         "DZ" => o("zd"),
         "TEMPERATURE" => o("temperature"),
         "DOWNFALL" => o("downfall"),
+        "BIOME_ID" => o("biomeId"),
+        "ITEM_DAMAGE" => o("itemDamage"),
+        "LEGACY_TEMPERATURE" => o("legacyTemperature"),
         "SKY_LIGHT" => o("skyLight"),
         "BLOCK_LIGHT" => o("blockLight"),
         "AGE" => o("age"),

@@ -504,6 +504,31 @@ mod custom_tint_tests {
     }
 
     #[test]
+    fn a_slot_whose_colormap_reads_the_biome_id_changes_with_the_biome() {
+        let root = pack("biome-id");
+        let dir = root.join("assets/foo/polytone/block_modifiers");
+        std::fs::write(
+            dir.join("moss.json"),
+            r#"{"colormap": {"x_axis": "1 - biome_id", "y_axis": 0}}"#,
+        )
+        .unwrap();
+        let set = BlockModifier::read(&root);
+        let entry = set.resolve_index("foo:moss", &|_| false).unwrap();
+        let custom = CustomTints {
+            maps: Colormaps::read(&root),
+            set,
+            slots: vec![(entry, 0)],
+            ..Default::default()
+        };
+        let biome = |biome_index| SampleContext {
+            biome_index,
+            ..SampleContext::default()
+        };
+        assert_ne!(custom.sample(0, &biome(0)), custom.sample(0, &biome(255)));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn a_slot_samples_its_colormap_by_the_biomes_temperature() {
         let root = pack("sample");
         let set = BlockModifier::read(&root);
@@ -657,7 +682,7 @@ impl CustomTints {
             .and_then(|tint| tint.color(index, &self.maps, at))
             .map_or(0xFF_FFFF, |color| color & 0xFF_FFFF)
     }
-    fn color(&self, slot: u16, biome: &BiomeInfo, [x, y, z]: [i32; 3]) -> u32 {
+    fn color(&self, slot: u16, biome: &BiomeInfo, index: u16, [x, y, z]: [i32; 3]) -> u32 {
         self.sample(
             slot,
             &SampleContext {
@@ -666,6 +691,9 @@ impl CustomTints {
                 z: f64::from(z),
                 temperature: f64::from(biome.temperature),
                 downfall: f64::from(biome.downfall),
+                biome: &biome.name,
+                biome_index: u32::from(index),
+                item_damage: 0.0,
             },
         )
     }
@@ -1388,6 +1416,7 @@ impl<'a> Tints<'a> {
                     Resolver::Custom(slot) => self.custom.color(
                         slot,
                         self.biomes.get(biome),
+                        biome,
                         [bx + x + dx, by, bz + z + dz],
                     ),
                 };

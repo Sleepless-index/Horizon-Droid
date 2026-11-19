@@ -367,6 +367,7 @@ pub struct Particle {
     /// `quadSize`.
     pub size: f32,
     pub rgba: [f32; 4],
+    modifier: Option<(std::sync::Arc<str>, f32)>,
     roll: f32,
     o_roll: f32,
     sprite: Sprite,
@@ -717,6 +718,7 @@ impl Particle {
             light: Light::World,
             behaviour: Behaviour::Base,
             no_render: false,
+            modifier: None,
             pre_tick: false,
             random: LegacyRandom::new(0),
         }
@@ -1186,10 +1188,49 @@ impl ParticleEngine {
             .modifier_seeds
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
+        let base_size = particle.size;
         self.modifiers
             .apply(&id, &mut state, &world, self.modifier_seeds);
         particle.lifetime = state.life as i32;
         particle.velocity = state.motion;
+        particle.size = state.size as f32;
+        particle.rgba = state.rgba.map(|c| c as f32);
+        if self.modifiers.targets(&id) {
+            particle.modifier = Some((id.into(), base_size));
+        }
+    }
+
+    fn retick_modifier(&mut self, particle: &mut Particle) {
+        let Some((id, base_size)) = particle.modifier.clone() else {
+            return;
+        };
+        let mut state = horizon_polytone::particles::ParticleState {
+            age: f64::from(particle.age),
+            life: f64::from(particle.lifetime),
+            position: particle.position,
+            motion: particle.velocity,
+            size: f64::from(base_size),
+            roll: f64::from(particle.roll),
+            rgba: particle.rgba.map(f64::from),
+            temperature: 0.8,
+            downfall: 0.4,
+            sky_light: 15.0,
+            ..Default::default()
+        };
+        let world = horizon_polytone::particles::ParticleWorld {
+            player: self.camera,
+            time: self.ticks as f64,
+            day_time: self.ticks as f64,
+            render_distance: 12.0,
+            ..Default::default()
+        };
+        self.modifiers.apply_phase(
+            &id,
+            &mut state,
+            &world,
+            self.modifier_seeds,
+            horizon_polytone::particles::Phase::Tick,
+        );
         particle.size = state.size as f32;
         particle.rgba = state.rgba.map(|c| c as f32);
     }
@@ -3370,6 +3411,9 @@ impl ParticleEngine {
         let mut particles = std::mem::take(&mut self.particles);
         for p in &mut particles {
             self.tick_particle(p, level);
+            if p.modifier.is_some() && !p.removed {
+                self.retick_modifier(p);
+            }
         }
         particles.retain(|p| !p.removed);
         self.particles = particles;
@@ -4587,6 +4631,34 @@ mod tests {
         assert_eq!(smoke.rgba, [0.0, 1.0, 0.0, 0.5]);
         assert_ne!(flame.lifetime, 77);
         assert_ne!(flame.rgba, [0.0, 1.0, 0.0, 0.5]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn a_pack_particle_modifier_fades_a_particle_as_it_ages() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-particle-fade-{}", std::process::id()));
+        let modifiers = dir.join("assets/minecraft/polytone/particle_modifiers");
+        std::fs::create_dir_all(&modifiers).unwrap();
+        std::fs::write(
+            modifiers.join("smoke.json"),
+            br#"{"targets": "minecraft:smoke", "alpha": "1 - o.age / o.life", "life": 40}"#,
+        )
+        .unwrap();
+        let mut engine = ParticleEngine::new(&dir, &HashMap::new(), &HashSet::new());
+        engine.create(
+            &ParticleOptions::simple(ParticleType::Smoke),
+            [0.0; 3],
+            [0.0; 3],
+        );
+        let mut smoke = engine.pending.pop().unwrap();
+        assert_eq!(smoke.lifetime, 40);
+        smoke.age = 10;
+        engine.retick_modifier(&mut smoke);
+        assert!((smoke.rgba[3] - 0.75).abs() < 1e-6, "{:?}", smoke.rgba);
+        smoke.age = 30;
+        engine.retick_modifier(&mut smoke);
+        assert!((smoke.rgba[3] - 0.25).abs() < 1e-6, "{:?}", smoke.rgba);
+        assert_eq!(smoke.lifetime, 40);
         let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]

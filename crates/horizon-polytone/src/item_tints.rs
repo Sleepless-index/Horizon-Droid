@@ -4,7 +4,6 @@ use std::path::Path;
 use crate::Modifiers;
 use crate::colormaps::{Colormaps, SampleContext};
 use crate::item_modifiers::{ArmPose, ItemModifier, Rarity, Tooltip};
-use crate::tint::ColorSource;
 pub use regex::Regex;
 
 const TINT_SLOTS: i32 = 5;
@@ -145,6 +144,8 @@ impl ItemTints {
             z: 0.0,
             temperature: remaining,
             downfall: remaining,
+            item_damage: 1.0 - remaining,
+            ..Default::default()
         };
         self.modifier(item)?
             .bar
@@ -219,6 +220,7 @@ impl ItemTints {
             z: at[2],
             temperature: 0.8,
             downfall: 0.4,
+            ..Default::default()
         };
         for index in 0..TINT_SLOTS {
             let Some(color) = tint.color(index, &self.maps, &context) else {

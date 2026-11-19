@@ -67,24 +67,106 @@ impl Texture {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct SampleContext {
+pub struct SampleContext<'a> {
     pub x: f64,
     pub y: f64,
     pub z: f64,
     pub temperature: f64,
     pub downfall: f64,
+    pub biome: &'a str,
+    pub biome_index: u32,
+    pub item_damage: f64,
 }
 
-struct Sampler<'a>(&'a SampleContext);
+struct Sampler<'a> {
+    at: &'a SampleContext<'a>,
+    mapper: Option<&'a BiomeMapper>,
+}
+
+#[derive(Debug, Default)]
+struct BiomeMapper {
+    values: BTreeMap<String, f64>,
+    size: f64,
+}
+
+impl BiomeMapper {
+    fn parse(json: Option<&Json>) -> Result<Option<Self>, String> {
+        let Some(json) = json.filter(|v| !v.is_null()) else {
+            return Ok(None);
+        };
+        let object = json
+            .as_object()
+            .ok_or("a biome_id_mapper is an object of biome ids to numbers")?;
+        let mut mapper = Self {
+            values: BTreeMap::new(),
+            size: 1.0,
+        };
+        for (key, value) in object {
+            let number = value
+                .as_f64()
+                .ok_or_else(|| format!("biome_id_mapper {key} is a number"))?;
+            if key == "texture_size" {
+                if number <= 0.0 {
+                    return Err("texture_size is above zero".to_owned());
+                }
+                mapper.size = number;
+            } else {
+                mapper.values.insert(normalize(key), number);
+            }
+        }
+        Ok(Some(mapper))
+    }
+
+    fn value(&self, biome: &str) -> f64 {
+        self.values.get(&normalize(biome)).copied().unwrap_or(0.0) / self.size
+    }
+}
+
+fn spell_samplers(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        match word.as_str() {
+            "temperature" | "downfall" | "biome_id" | "item_damage" | "legacy_temperature" => {
+                out.push_str(&word.to_ascii_uppercase());
+            }
+            _ => out.push_str(word),
+        }
+        word.clear();
+    };
+    for c in source.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' {
+            word.push(c);
+        } else {
+            flush(&mut word, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut word, &mut out);
+    out
+}
 
 impl Sampler<'_> {
     fn read(&self, name: &str) -> Option<f64> {
+        let at = self.at;
         Some(match name {
-            "x" => self.0.x,
-            "y" => self.0.y,
-            "z" => self.0.z,
-            "temperature" => self.0.temperature,
-            "downfall" => self.0.downfall,
+            "x" => at.x,
+            "y" => at.y,
+            "z" => at.z,
+            "temperature" => at.temperature,
+            "downfall" => at.downfall,
+            "biomeId" => match self.mapper {
+                Some(mapper) => mapper.value(at.biome),
+                None => f64::from(at.biome_index) / 255.0,
+            },
+            "itemDamage" => at.item_damage,
+            "legacyTemperature" => {
+                if at.y > 64.0 {
+                    at.temperature - (at.y - 64.0) * 0.05 / 30.0
+                } else {
+                    at.temperature
+                }
+            }
             _ => return None,
         })
     }
@@ -115,11 +197,11 @@ impl Host for Sampler<'_> {
             return None;
         }
         let value = match field {
-            Field::X => self.0.x,
-            Field::Y => self.0.y,
-            Field::Z => self.0.z,
-            Field::Temperature => self.0.temperature,
-            Field::Downfall => self.0.downfall,
+            Field::X => self.at.x,
+            Field::Y => self.at.y,
+            Field::Z => self.at.z,
+            Field::Temperature => self.at.temperature,
+            Field::Downfall => self.at.downfall,
             _ => return None,
         };
         Some(Value::Num(value))
@@ -130,13 +212,7 @@ fn axis(json: Option<&Json>, default: &str) -> Result<Program, String> {
     let source = match json {
         None => default.to_owned(),
         Some(Json::String(s)) => match s.trim() {
-            "temperature" => "TEMPERATURE".to_owned(),
-            "downfall" => "DOWNFALL".to_owned(),
-            "legacy_temperature" => "TEMPERATURE".to_owned(),
-            "biome_id" => {
-                return Err("the biome_id sampler isn't read yet".to_owned());
-            }
-            other => other.to_owned(),
+            other => spell_samplers(other),
         },
         Some(Json::Number(n)) => n.to_string(),
         Some(_) => return Err("an axis is an expression".to_owned()),
@@ -235,6 +311,7 @@ fn modify(programs: &[Option<Program>; 3], color: u32) -> u32 {
 
 #[derive(Debug)]
 pub struct Colormap {
+    mapper: Option<BiomeMapper>,
     modifier: Option<[Option<Program>; 3]>,
     x: Program,
     y: Program,
@@ -255,6 +332,10 @@ impl Colormap {
             Some(json) => modifier(json.get("color_modifier"))?,
             None => None,
         };
+        let mapper = match json {
+            Some(json) => BiomeMapper::parse(json.get("biome_id_mapper"))?,
+            None => None,
+        };
         let (x, y, triangular, rounds, blend, default_color) = match json {
             None => (
                 axis(None, "TEMPERATURE")?,
@@ -268,9 +349,26 @@ impl Colormap {
                 if !json.is_object() {
                     return Err("a colormap is an object".to_owned());
                 }
+                let kind = match json.get("type") {
+                    None | Some(Json::Null) => None,
+                    Some(Json::String(s)) => Some(match s.trim() {
+                        "grid" => (Some("1 - BIOME_ID"), Some("1 - POS_Y / 255")),
+                        "damage" => (Some("1 - ITEM_DAMAGE"), Some("1")),
+                        "fixed" => (Some("1"), Some("1")),
+                        other => return Err(format!("the colormap type {other:?} isn't known")),
+                    }),
+                    Some(_) => return Err("a colormap type is a name".to_owned()),
+                };
+                let by_type =
+                    |key: &str, default: &str, typed: Option<&str>| match (json.get(key), typed) {
+                        (None, Some(source)) => {
+                            axis(Some(&Json::String(source.to_owned())), default)
+                        }
+                        (given, _) => axis(given, default),
+                    };
                 (
-                    axis(json.get("x_axis"), "TEMPERATURE")?,
-                    axis(json.get("y_axis"), "DOWNFALL")?,
+                    by_type("x_axis", "TEMPERATURE", kind.and_then(|k| k.0))?,
+                    by_type("y_axis", "DOWNFALL", kind.and_then(|k| k.1))?,
                     flag(json, "triangular", false),
                     flag(json, "rounds", true),
                     flag(json, "biome_blend", true),
@@ -289,12 +387,14 @@ impl Colormap {
         };
         let biome_only = x.reads_only(&only_biome)
             && y.reads_only(&only_biome)
+            && mapper.is_none()
             && color_modifier
                 .iter()
                 .flatten()
                 .flatten()
                 .all(|p| p.reads_only(&channels));
         Ok(Self {
+            mapper,
             modifier: color_modifier,
             x,
             y,
@@ -332,7 +432,10 @@ impl Colormap {
 
     pub fn sample(&self, tint: i32, at: &SampleContext) -> Option<u32> {
         let texture = self.texture(tint)?;
-        let mut host = Sampler(at);
+        let mut host = Sampler {
+            at,
+            mapper: self.mapper.as_ref(),
+        };
         let u = unit(self.x.eval(&mut host).ok()?.num());
         let mut v = unit(self.y.eval(&mut host).ok()?.num());
         if self.triangular {
@@ -716,17 +819,92 @@ mod tests {
     }
 
     #[test]
-    fn the_legacy_temperature_sampler_reads_the_temperature() {
+    fn the_legacy_temperature_sampler_cools_with_height() {
         let legacy = Colormap::new(
             Some(&json!({"x_axis": "legacy_temperature"})),
             only(gradient()),
         )
         .unwrap();
         let plain = Colormap::new(Some(&json!({})), only(gradient())).unwrap();
+        let at = |y: f64| SampleContext {
+            y,
+            temperature: 0.8,
+            downfall: 0.4,
+            ..Default::default()
+        };
         assert_eq!(
-            legacy.sample_biome(ALL_TINTS, 0.3, 0.7),
-            plain.sample_biome(ALL_TINTS, 0.3, 0.7)
+            legacy.sample(ALL_TINTS, &at(64.0)),
+            plain.sample(ALL_TINTS, &at(64.0))
         );
+        assert_ne!(
+            legacy.sample(ALL_TINTS, &at(250.0)),
+            plain.sample(ALL_TINTS, &at(250.0))
+        );
+        assert!(!legacy.depends_only_on_biome());
+    }
+
+    #[test]
+    fn the_biome_id_sampler_reads_the_registry_index_or_a_mapper() {
+        let by_index = Colormap::new(
+            Some(&json!({"x_axis": "biome_id", "y_axis": 0})),
+            only(gradient()),
+        )
+        .unwrap();
+        let at = |index: u32, biome: &'static str| SampleContext {
+            biome,
+            biome_index: index,
+            ..Default::default()
+        };
+        assert_ne!(
+            by_index.sample(ALL_TINTS, &at(10, "minecraft:plains")),
+            by_index.sample(ALL_TINTS, &at(200, "minecraft:plains"))
+        );
+        let mapped = Colormap::new(
+            Some(&json!({
+                "x_axis": "biome_id",
+                "y_axis": 0,
+                "biome_id_mapper": {"plains": 0, "minecraft:desert": 255, "texture_size": 255}
+            })),
+            only(gradient()),
+        )
+        .unwrap();
+        assert_eq!(
+            mapped.sample(ALL_TINTS, &at(99, "minecraft:plains")),
+            mapped.sample(ALL_TINTS, &at(1, "minecraft:plains"))
+        );
+        assert_ne!(
+            mapped.sample(ALL_TINTS, &at(99, "minecraft:plains")),
+            mapped.sample(ALL_TINTS, &at(99, "minecraft:desert"))
+        );
+        assert!(!mapped.depends_only_on_biome());
+    }
+
+    #[test]
+    fn the_named_colormap_types_pick_their_axes() {
+        let damage = Colormap::new(Some(&json!({"type": "damage"})), only(gradient())).unwrap();
+        let at = |damage: f64| SampleContext {
+            item_damage: damage,
+            ..Default::default()
+        };
+        assert_ne!(
+            damage.sample(ALL_TINTS, &at(0.0)),
+            damage.sample(ALL_TINTS, &at(1.0))
+        );
+        let fixed = Colormap::new(Some(&json!({"type": "fixed"})), only(gradient())).unwrap();
+        assert_eq!(
+            fixed.sample(ALL_TINTS, &at(0.0)),
+            fixed.sample(ALL_TINTS, &at(1.0))
+        );
+        let grid = Colormap::new(Some(&json!({"type": "grid"})), only(gradient())).unwrap();
+        let row = |y: f64| SampleContext {
+            y,
+            ..Default::default()
+        };
+        assert_ne!(
+            grid.sample(ALL_TINTS, &row(0.0)),
+            grid.sample(ALL_TINTS, &row(200.0))
+        );
+        assert!(Colormap::new(Some(&json!({"type": "spiral"})), only(gradient())).is_err());
     }
 
     #[test]
@@ -742,7 +920,6 @@ mod tests {
         let refused = |json: Json| Colormap::new(Some(&json), only(gradient())).is_err();
         assert!(refused(json!({"color_modifier": {"hue": "1"}})));
         assert!(refused(json!({"color_modifier": {"red": "RED *"}})));
-        assert!(refused(json!({"x_axis": "biome_id"})));
         assert!(refused(json!({"x_axis": "POS_X +"})));
         assert!(refused(json!({"x_axis": "BIOME"})));
         assert!(refused(json!({"x_axis": ["a"]})));

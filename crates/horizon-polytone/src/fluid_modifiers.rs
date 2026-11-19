@@ -79,6 +79,7 @@ pub fn lava_colors(root: &Path) -> [Option<u32>; 2] {
         z: 0.0,
         temperature: 0.8,
         downfall: 0.4,
+        ..Default::default()
     };
     ["minecraft:lava", "minecraft:flowing_lava"].map(|id| {
         set.resolve(id, &lava_tag)?

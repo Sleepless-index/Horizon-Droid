@@ -68,18 +68,23 @@ Work only in this repository.
 - Particle modifiers (`particle_modifiers/`): `color`, `red/green/blue/alpha`, `size`, `life` and `speed` expressions run
   once when a particle is created, with `o`, `p`, `g` and `r` answered (no biome/light/colormap/config yet).
   `horizon_height` (the dark disc's height) and `water_fog_brightening_time` (ticks to full water vision) apply too.
+- Colormap samplers `biome_id` (registry index / 255, or `biome_id_mapper` values / `texture_size`), `item_damage`,
+  `legacy_temperature` (cools above y 64, without the noise term) and the `type` shortcuts `grid`, `damage`, `fixed` read
+  for block custom tints and item bars; `biome_id` and `legacy_temperature` are not read by `colors.json` biome tables or
+  fluid tints yet.
+- Particle modifiers re-run colour and `size` (as a multiple of the spawn size) every tick on the particles they target;
+  `life` and `speed` stay spawn-only.
 - Read but not applied: the other block fields (`can_occlude`, break particles), flowing-water-only tints,
   `sprites` offsets and overlays,
-  per-tick particle expressions, `config(...)` in expressions other than particle modifiers
-  and conditions.
+  `config(...)` in expressions other than particle modifiers and conditions.
 
 ## Next, in rough order
 
 1. Custom `offset_type` objects; `can_occlude`.
 3. Position-dependent colormaps for fluid tints (blocks and items already read the position).
-4. Refused colormap features: `biome_id`, `grid`, `damage`.
+4. Colormap `state_prop`, `biome_id` in biome and fluid tables.
 5. Biome layers: `blend_to_gray`, `REMOVE`, colormap and expression arguments, other attributes; weather groups and the other dimension attributes; fog distances and cloud colour.
-6. Per-tick particle expressions.
+6. Custom particle tickers.
 
 ## Rules
 

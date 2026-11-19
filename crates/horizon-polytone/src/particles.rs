@@ -717,6 +717,12 @@ impl crate::expr::Host for ModifierHost<'_> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    Spawn,
+    Tick,
+}
+
 impl ParticleModifier {
     /// Runs the expressions on a particle that was just made: colour first (`color`, then the
     /// channels), then `size`, `life` and `speed`, each seeing what the ones before set.
@@ -727,8 +733,24 @@ impl ParticleModifier {
         configs: &crate::pack::Configs,
         seed: u64,
     ) {
+        self.apply_phase(state, world, configs, seed, Phase::Spawn);
+    }
+
+    /// `Phase::Tick` reruns what can change as the particle ages: the colour channels, and `size`
+    /// as a multiple of the state's size, which the caller resets to the spawn size first.
+    pub fn apply_phase(
+        &self,
+        state: &mut ParticleState,
+        world: &ParticleWorld,
+        configs: &crate::pack::Configs,
+        seed: u64,
+        phase: Phase,
+    ) {
         let mut rng = Rng(seed | 1);
         for key in MODIFIER_FIELDS {
+            if phase == Phase::Tick && matches!(key, "life" | "speed") {
+                continue;
+            }
             let Some(program) = self.fields.get(key) else {
                 continue;
             };
@@ -805,9 +827,25 @@ impl ParticleModifiers {
 
     /// Applies every modifier that targets the particle type `id` (`namespace:path`).
     pub fn apply(&self, id: &str, state: &mut ParticleState, world: &ParticleWorld, seed: u64) {
+        self.apply_phase(id, state, world, seed, Phase::Spawn);
+    }
+
+    /// Whether any modifier targets `id`.
+    pub fn targets(&self, id: &str) -> bool {
+        self.0.iter().any(|m| m.targets.matches(id, |_| false))
+    }
+
+    pub fn apply_phase(
+        &self,
+        id: &str,
+        state: &mut ParticleState,
+        world: &ParticleWorld,
+        seed: u64,
+        phase: Phase,
+    ) {
         for modifier in &self.0 {
             if modifier.targets.matches(id, |_| false) {
-                modifier.apply(state, world, &self.1, seed);
+                modifier.apply_phase(state, world, &self.1, seed, phase);
             }
         }
     }
@@ -987,6 +1025,41 @@ mod tests {
             .unwrap()
             .is_none()
         );
+    }
+
+    #[test]
+    fn the_tick_phase_reruns_colour_and_size_but_not_life_or_speed() {
+        let modifier = ParticleModifier::parse(
+            &json!({
+                "targets": ["minecraft:smoke"],
+                "alpha": "1 - o.age / o.life",
+                "size": "1 + o.age / 10",
+                "life": "o.life() + 10",
+                "speed": 0.5
+            }),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        let mut state = ParticleState {
+            age: 5.0,
+            life: 20.0,
+            size: 0.2,
+            motion: [1.0, 1.0, 1.0],
+            rgba: [1.0; 4],
+            ..Default::default()
+        };
+        modifier.apply_phase(
+            &mut state,
+            &ParticleWorld::default(),
+            &Default::default(),
+            3,
+            Phase::Tick,
+        );
+        assert!((state.rgba[3] - 0.75).abs() < 1e-9);
+        assert!((state.size - 0.3).abs() < 1e-9);
+        assert_eq!(state.life, 20.0);
+        assert_eq!(state.motion, [1.0, 1.0, 1.0]);
     }
 
     #[test]

@@ -5,7 +5,7 @@ use serde_json::Value as Json;
 use crate::colormaps::{Colormap, Colormaps, SampleContext, Texture};
 use crate::colors::parse_color;
 
-const COLORMAP_KEYS: [&str; 7] = [
+const COLORMAP_KEYS: [&str; 9] = [
     "default_color",
     "x_axis",
     "y_axis",
@@ -13,6 +13,8 @@ const COLORMAP_KEYS: [&str; 7] = [
     "rounds",
     "biome_blend",
     "color_modifier",
+    "type",
+    "biome_id_mapper",
 ];
 
 #[derive(Debug)]
