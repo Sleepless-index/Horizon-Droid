@@ -37,7 +37,7 @@ impl BiomeOverrides {
             .into_resolved("minecraft:water", &water_tag)
             .and_then(|m| m.tint)
             .filter(|tint| {
-                let biome_only = tint.depends_only_on_biome(&overrides.maps);
+                let biome_only = tint.depends_on_biome_alone(&overrides.maps);
                 if !biome_only {
                     log::warn!("fluid_modifiers: the tint of minecraft:water reads the position, which isn't applied yet");
                 }
@@ -55,7 +55,7 @@ impl BiomeOverrides {
                     return None;
                 }
                 match maps.get(&id) {
-                    Some(map) if map.depends_only_on_biome() => Some(Choice::Map(id)),
+                    Some(map) if map.depends_on_biome_alone() => Some(Choice::Map(id)),
                     Some(_) => {
                         log::warn!(
                             "biome_colors.{function}: {id} reads the position, which isn't applied yet"
@@ -87,36 +87,59 @@ impl BiomeOverrides {
             && self.fluid_water.is_none()
     }
 
-    fn resolve(&self, choice: &Option<Choice>, temperature: f64, downfall: f64) -> Option<u32> {
+    fn resolve(
+        &self,
+        choice: &Option<Choice>,
+        climate: [f64; 2],
+        biome: (&str, u32),
+    ) -> Option<u32> {
         match choice.as_ref()? {
             Choice::Flat(color) => Some(*color),
             Choice::Map(id) => self
                 .maps
                 .get(id)?
-                .sample_biome(TINT, temperature, downfall)
+                .sample_in_biome(TINT, climate[0], climate[1], biome.0, biome.1)
                 .map(|c| c & 0xFF_FFFF),
         }
     }
 
     pub fn grass(&self, temperature: f64, downfall: f64) -> Option<u32> {
-        self.resolve(&self.grass, temperature, downfall)
+        self.grass_in([temperature, downfall], ("", 0))
     }
 
     pub fn foliage(&self, temperature: f64, downfall: f64) -> Option<u32> {
-        self.resolve(&self.foliage, temperature, downfall)
+        self.foliage_in([temperature, downfall], ("", 0))
     }
 
     pub fn dry_foliage(&self, temperature: f64, downfall: f64) -> Option<u32> {
-        self.resolve(&self.dry_foliage, temperature, downfall)
+        self.dry_foliage_in([temperature, downfall], ("", 0))
     }
 
     pub fn water(&self, temperature: f64, downfall: f64) -> Option<u32> {
+        self.water_in([temperature, downfall], ("", 0))
+    }
+
+    /// The colours for the biome `biome` (its name and registry index) with its climate
+    /// `[temperature, downfall]`.
+    pub fn grass_in(&self, climate: [f64; 2], biome: (&str, u32)) -> Option<u32> {
+        self.resolve(&self.grass, climate, biome)
+    }
+
+    pub fn foliage_in(&self, climate: [f64; 2], biome: (&str, u32)) -> Option<u32> {
+        self.resolve(&self.foliage, climate, biome)
+    }
+
+    pub fn dry_foliage_in(&self, climate: [f64; 2], biome: (&str, u32)) -> Option<u32> {
+        self.resolve(&self.dry_foliage, climate, biome)
+    }
+
+    pub fn water_in(&self, climate: [f64; 2], biome: (&str, u32)) -> Option<u32> {
         if let Some(tint) = &self.fluid_water {
-            if let Some(color) = tint.biome_color(TINT, &self.maps, temperature, downfall) {
+            if let Some(color) = tint.biome_color_in(TINT, &self.maps, climate, biome) {
                 return Some(color);
             }
         }
-        self.resolve(&self.water, temperature, downfall)
+        self.resolve(&self.water, climate, biome)
     }
 }
 

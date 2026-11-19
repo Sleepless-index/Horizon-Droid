@@ -7,6 +7,24 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::RwLock;
 
+static ACTIVE: RwLock<Option<Configs>> = RwLock::new(None);
+
+/// The config entries of the pack that is loaded: what `config(...)` answers in colormaps and
+/// everything else that samples later than it is read.
+pub fn set_active(configs: Configs) {
+    if let Ok(mut guard) = ACTIVE.write() {
+        *guard = Some(configs);
+    }
+}
+
+pub(crate) fn active_config(id: &str) -> Result<Value, String> {
+    ACTIVE
+        .read()
+        .ok()
+        .and_then(|guard| guard.as_ref()?.get(id).map(ConfigValue::to_value))
+        .ok_or_else(|| format!("no config {id}"))
+}
+
 static CHOSEN: RwLock<BTreeMap<String, ConfigValue>> = RwLock::new(BTreeMap::new());
 
 /// The values a player chose for config entries, by id; every pack read after this takes them.

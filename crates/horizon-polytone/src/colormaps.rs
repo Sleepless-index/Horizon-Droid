@@ -188,8 +188,11 @@ impl Host for Sampler<'_> {
         }
     }
 
-    fn function(&mut self, name: &str, _: &[Value]) -> Result<Value, String> {
-        Err(format!("{name} is not available in a colormap"))
+    fn function(&mut self, name: &str, args: &[Value]) -> Result<Value, String> {
+        match (name, args) {
+            ("config", [Value::Str(id)]) => crate::pack::active_config(id),
+            _ => Err(format!("{name} is not available in a colormap")),
+        }
     }
 
     fn field(&mut self, root: Root, field: Field) -> Option<Value> {
@@ -262,8 +265,11 @@ impl Host for Channels {
         }
     }
 
-    fn function(&mut self, name: &str, _: &[Value]) -> Result<Value, String> {
-        Err(format!("{name} is not available in a colour modifier"))
+    fn function(&mut self, name: &str, args: &[Value]) -> Result<Value, String> {
+        match (name, args) {
+            ("config", [Value::Str(id)]) => crate::pack::active_config(id),
+            _ => Err(format!("{name} is not available in a colour modifier")),
+        }
     }
 }
 
@@ -311,6 +317,7 @@ fn modify(programs: &[Option<Program>; 3], color: u32) -> u32 {
 
 #[derive(Debug)]
 pub struct Colormap {
+    per_biome: bool,
     mapper: Option<BiomeMapper>,
     modifier: Option<[Option<Program>; 3]>,
     x: Program,
@@ -385,15 +392,22 @@ impl Colormap {
             root == Root::Object
                 && matches!(name, "temperature" | "downfall" | "red" | "green" | "blue")
         };
+        let per_biome_reads = |root: Root, name: &str| {
+            root == Root::Object && matches!(name, "temperature" | "downfall" | "biomeId")
+        };
+        let modifier_ok = color_modifier
+            .iter()
+            .flatten()
+            .flatten()
+            .all(|p| p.reads_only(&channels));
         let biome_only = x.reads_only(&only_biome)
             && y.reads_only(&only_biome)
             && mapper.is_none()
-            && color_modifier
-                .iter()
-                .flatten()
-                .flatten()
-                .all(|p| p.reads_only(&channels));
+            && modifier_ok;
+        let per_biome =
+            x.reads_only(&per_biome_reads) && y.reads_only(&per_biome_reads) && modifier_ok;
         Ok(Self {
+            per_biome,
             mapper,
             modifier: color_modifier,
             x,
@@ -423,6 +437,34 @@ impl Colormap {
 
     pub fn depends_only_on_biome(&self) -> bool {
         self.biome_only
+    }
+
+    /// Whether the colour follows only which biome it is: its climate, name and registry index.
+    pub fn depends_on_biome_alone(&self) -> bool {
+        self.per_biome
+    }
+
+    pub fn sample_in_biome(
+        &self,
+        tint: i32,
+        temperature: f64,
+        downfall: f64,
+        biome: &str,
+        biome_index: u32,
+    ) -> Option<u32> {
+        if !self.per_biome {
+            return None;
+        }
+        self.sample(
+            tint,
+            &SampleContext {
+                temperature,
+                downfall,
+                biome,
+                biome_index,
+                ..SampleContext::default()
+            },
+        )
     }
 
     pub fn default_color(&self) -> Option<u32> {
@@ -877,6 +919,39 @@ mod tests {
             mapped.sample(ALL_TINTS, &at(99, "minecraft:desert"))
         );
         assert!(!mapped.depends_only_on_biome());
+    }
+
+    #[test]
+    fn config_reads_the_active_packs_entries_in_axes_and_modifiers() {
+        let configs = crate::pack::Configs::from_files([(
+            "assets/zz/polytone/config_entries/shift.json".to_owned(),
+            br#"{"default_value": 0.25}"#.to_vec(),
+        )]);
+        crate::pack::set_active(configs);
+        let shifted = Colormap::new(
+            Some(&json!({"x_axis": "config('zz:shift')", "y_axis": 0})),
+            only(gradient()),
+        )
+        .unwrap();
+        let fixed = Colormap::new(
+            Some(&json!({"x_axis": "0.25", "y_axis": 0})),
+            only(gradient()),
+        )
+        .unwrap();
+        let at = SampleContext::default();
+        assert_eq!(shifted.sample(ALL_TINTS, &at), fixed.sample(ALL_TINTS, &at));
+        let modified = Colormap::new(
+            Some(&json!({"y_axis": 0, "color_modifier": {"red": "config('zz:shift') * 400"}})),
+            only(gradient()),
+        )
+        .unwrap();
+        assert_eq!((modified.sample(ALL_TINTS, &at).unwrap() >> 16) & 0xFF, 100);
+        let missing = Colormap::new(
+            Some(&json!({"x_axis": "config('zz:none')"})),
+            only(gradient()),
+        )
+        .unwrap();
+        assert_eq!(missing.sample(ALL_TINTS, &at), None);
     }
 
     #[test]

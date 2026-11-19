@@ -70,8 +70,10 @@ Work only in this repository.
   `horizon_height` (the dark disc's height) and `water_fog_brightening_time` (ticks to full water vision) apply too.
 - Colormap samplers `biome_id` (registry index / 255, or `biome_id_mapper` values / `texture_size`), `item_damage`,
   `legacy_temperature` (cools above y 64, without the noise term) and the `type` shortcuts `grid`, `damage`, `fixed` read
-  for block custom tints and item bars; `biome_id` and `legacy_temperature` are not read by `colors.json` biome tables or
-  fluid tints yet.
+  for block custom tints and item bars. `colors.json` biome tables and the water fluid tint read `biome_id` (a biome's
+  registry index in its table) but not `legacy_temperature`, which needs a height.
+- `config('ns:id')` answers in colormap axes and `color_modifier`, from the loaded pack's entries and the player's
+  choices, alongside particle modifiers and conditions. A biome-table colormap that calls it is not read.
 - Particle modifiers re-run colour and `size` (as a multiple of the spawn size) every tick on the particles they target;
   `life` and `speed` stay spawn-only.
 - Block `can_occlude` (client side, as Polytone sets it on every state and rebuilds the cache): `false` shows the faces of
@@ -80,13 +82,13 @@ Work only in this repository.
   landing) and `tinted_breaking_particles: false` leaves them untinted. Tag targets never match, as for block tints.
 - Read but not applied: flowing-water-only tints,
   `sprites` offsets and overlays,
-  `config(...)` in expressions other than particle modifiers and conditions.
+  nothing else reads `config(...)`: every expression host that exists now does.
 
 ## Next, in rough order
 
 1. Custom `offset_type` objects.
 3. Position-dependent colormaps for fluid tints (blocks and items already read the position).
-4. Colormap `state_prop`, `biome_id` in biome and fluid tables.
+4. Colormap `state_prop`.
 5. Biome layers: `blend_to_gray`, `REMOVE`, colormap and expression arguments, other attributes; weather groups and the other dimension attributes; fog distances and cloud colour.
 6. Custom particle tickers.
 

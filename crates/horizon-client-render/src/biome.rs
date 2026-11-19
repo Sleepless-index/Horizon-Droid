@@ -198,6 +198,9 @@ impl BiomeInfo {
     /// A biome file's (`worldgen/biome/<name>.json`) values, the colours it
     /// leaves out sampled from the colormaps.
     fn from_json(name: String, v: &Value, maps: &Colormaps) -> Self {
+        Self::from_json_at(name, 0, v, maps)
+    }
+    fn from_json_at(name: String, id: u32, v: &Value, maps: &Colormaps) -> Self {
         let effects = &v["effects"];
         let attributes = &v["attributes"];
         let visuals = maps.visuals.visuals(&name, &|tag| {
@@ -243,25 +246,25 @@ impl BiomeInfo {
             grass: color(&effects["grass_color"])
                 .or_else(|| {
                     maps.polytone
-                        .grass(f64::from(temperature), f64::from(downfall))
+                        .grass_in([f64::from(temperature), f64::from(downfall)], (&name, id))
                 })
                 .unwrap_or_else(|| sample(&maps.grass, temperature, downfall, 0xFF00FF)),
             modifier,
             foliage: color(&effects["foliage_color"])
                 .or_else(|| {
                     maps.polytone
-                        .foliage(f64::from(temperature), f64::from(downfall))
+                        .foliage_in([f64::from(temperature), f64::from(downfall)], (&name, id))
                 })
                 .unwrap_or_else(|| sample(&maps.foliage, temperature, downfall, 0x48B518)),
             dry_foliage: color(&effects["dry_foliage_color"])
                 .or_else(|| {
                     maps.polytone
-                        .dry_foliage(f64::from(temperature), f64::from(downfall))
+                        .dry_foliage_in([f64::from(temperature), f64::from(downfall)], (&name, id))
                 })
                 .unwrap_or_else(|| sample(&maps.dry, temperature, downfall, 0x5D4930)),
             water: maps
                 .polytone
-                .water(f64::from(temperature), f64::from(downfall))
+                .water_in([f64::from(temperature), f64::from(downfall)], (&name, id))
                 .or_else(|| color(&effects["water_color"]))
                 .unwrap_or(0x3F76E4),
             sky: visuals
@@ -337,7 +340,8 @@ impl Biomes {
                     .ok_or("bad biome")?
             );
             let v: Value = serde_json::from_slice(&fs::read(&path)?)?;
-            list.push(BiomeInfo::from_json(name, &v, &maps));
+            let id = list.len() as u32;
+            list.push(BiomeInfo::from_json_at(name, id, &v, &maps));
         }
         let index = list
             .iter()
@@ -363,7 +367,11 @@ impl Biomes {
         let mut files: Vec<(&str, &Value)> = files.into_iter().collect();
         files.sort_by(|a, b| identifier_order(a.0, b.0));
         for (name, json) in files {
-            let info = BiomeInfo::from_json(name.to_owned(), json, &out.colormaps);
+            let id = out
+                .index
+                .get(name)
+                .map_or(out.list.len() as u32, |&id| u32::from(id));
+            let info = BiomeInfo::from_json_at(name.to_owned(), id, json, &out.colormaps);
             match out.index.get(name) {
                 Some(&id) => out.list[usize::from(id)] = info,
                 None if out.list.len() < usize::from(u16::MAX) => {
@@ -688,6 +696,53 @@ mod pack_tests {
         base.colormaps = Arc::new(maps);
         let packed = base.with_packs([("pack:new", &json!({}))]);
         assert_eq!(packed.get(packed.id("pack:new")).grass, 0x112233);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_biome_id_colormap_gives_each_biome_its_own_pack_colour() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-polytone-biome-ids-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("assets/foo/polytone/colormaps");
+        std::fs::create_dir_all(&dir).unwrap();
+        let pixels: Vec<u8> = (0..4u32)
+            .flat_map(|i| [(i * 60) as u8, 0, 255 - (i * 60) as u8, 255])
+            .collect();
+        let mut png = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png, 4, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&pixels)
+                .unwrap();
+        }
+        std::fs::write(dir.join("ids.png"), png).unwrap();
+        std::fs::write(
+            dir.join("ids.json"),
+            r#"{"x_axis": "1 - biome_id * 255 / 3", "y_axis": 1}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("assets/foo/polytone/colors.json"),
+            r#"{"biome_colors": {"grass": "foo:ids"}}"#,
+        )
+        .unwrap();
+        let maps = Colormaps {
+            grass: Vec::new(),
+            foliage: Vec::new(),
+            dry: Vec::new(),
+            polytone: horizon_polytone::biome_colors::BiomeOverrides::read(&root),
+            visuals: Default::default(),
+            tags: Default::default(),
+        };
+        let at = |id| BiomeInfo::from_json_at("minecraft:plains".to_owned(), id, &json!({}), &maps);
+        assert_eq!(at(0).grass, 0x0000FF);
+        assert_eq!(at(3).grass, 0xB4004B);
+        assert_ne!(at(1).grass, at(2).grass);
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -74,6 +74,33 @@ impl ColorSource {
         }
     }
 
+    pub fn depends_on_biome_alone(&self, maps: &Colormaps) -> bool {
+        match self {
+            Self::Flat(_) => true,
+            Self::Linked(id) => maps.get(id).is_some_and(Colormap::depends_on_biome_alone),
+            Self::Inline(map) => map.depends_on_biome_alone(),
+        }
+    }
+
+    pub fn biome_color_in(
+        &self,
+        index: i32,
+        maps: &Colormaps,
+        climate: [f64; 2],
+        biome: (&str, u32),
+    ) -> Option<u32> {
+        let color = match self {
+            Self::Flat(color) => *color,
+            Self::Linked(id) => maps
+                .get(id)?
+                .sample_in_biome(index, climate[0], climate[1], biome.0, biome.1)?,
+            Self::Inline(map) => {
+                map.sample_in_biome(index, climate[0], climate[1], biome.0, biome.1)?
+            }
+        };
+        Some(color & 0xFF_FFFF)
+    }
+
     pub fn biome_color(
         &self,
         index: i32,
@@ -151,6 +178,24 @@ impl Tint {
     ) -> Option<u32> {
         self.source(index)?
             .biome_color(index, maps, temperature, downfall)
+    }
+
+    pub fn depends_on_biome_alone(&self, maps: &Colormaps) -> bool {
+        match self {
+            Self::All(source) => source.depends_on_biome_alone(maps),
+            Self::Indexed(sources) => sources.values().all(|s| s.depends_on_biome_alone(maps)),
+        }
+    }
+
+    pub fn biome_color_in(
+        &self,
+        index: i32,
+        maps: &Colormaps,
+        climate: [f64; 2],
+        biome: (&str, u32),
+    ) -> Option<u32> {
+        self.source(index)?
+            .biome_color_in(index, maps, climate, biome)
     }
 
     pub fn color(&self, index: i32, maps: &Colormaps, at: &SampleContext) -> Option<u32> {

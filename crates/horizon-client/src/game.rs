@@ -43,6 +43,7 @@ macro_rules! world_biomes {
 
 /// The world's packs' content files, as a field-level borrow (see the macros).
 fn polytone_block_tints(tables: &mut MeshTables, facts: &BlockFacts, root: &std::path::Path) {
+    horizon_polytone::pack::set_active(horizon_polytone::pack::Configs::read(root));
     tables.apply_polytone_fluid_tints(root);
     tables.apply_polytone_colors(root);
     let colors = horizon_polytone::colors::PackColors::read(root);
