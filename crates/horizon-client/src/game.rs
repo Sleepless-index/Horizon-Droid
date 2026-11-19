@@ -8022,7 +8022,15 @@ impl Game<'_> {
             .map(|c| c.bar())
             .unwrap_or_else(|| hud_overlays::damage_bar(stack.damage as i32, max_damage));
         // Client-only: a mod may replace or hide the bar vanilla just chose.
-        if let Some(color) = self.pack.item_renderer.polytone_bar_color(&stack.item)
+        let remaining = if max_damage > 0 {
+            1.0 - f64::from(stack.damage) / f64::from(max_damage)
+        } else {
+            1.0
+        };
+        if let Some(color) = self
+            .pack
+            .item_renderer
+            .polytone_bar_color(&stack.item, remaining)
             && let Some((_, bar_color)) = &mut bar
         {
             *bar_color = color;

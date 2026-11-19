@@ -132,8 +132,9 @@ fn axis(json: Option<&Json>, default: &str) -> Result<Program, String> {
         Some(Json::String(s)) => match s.trim() {
             "temperature" => "TEMPERATURE".to_owned(),
             "downfall" => "DOWNFALL".to_owned(),
-            "legacy_temperature" | "biome_id" => {
-                return Err(format!("the {} sampler isn't read yet", s.trim()));
+            "legacy_temperature" => "TEMPERATURE".to_owned(),
+            "biome_id" => {
+                return Err("the biome_id sampler isn't read yet".to_owned());
             }
             other => other.to_owned(),
         },
@@ -165,8 +166,76 @@ fn unit(value: f64) -> f64 {
     }
 }
 
+struct Channels([f64; 3]);
+
+impl Host for Channels {
+    fn root(&mut self, root: Root) -> Value {
+        if root == Root::Object {
+            Value::Object(0)
+        } else {
+            Value::Null
+        }
+    }
+
+    fn method(&mut self, target: &Value, name: &str, args: &[Value]) -> Result<Value, String> {
+        match (target, args.is_empty(), name) {
+            (Value::Object(0), true, "red") => Ok(Value::Num(self.0[0])),
+            (Value::Object(0), true, "green") => Ok(Value::Num(self.0[1])),
+            (Value::Object(0), true, "blue") => Ok(Value::Num(self.0[2])),
+            _ => Err(format!("{name} is not available in a colour modifier")),
+        }
+    }
+
+    fn function(&mut self, name: &str, _: &[Value]) -> Result<Value, String> {
+        Err(format!("{name} is not available in a colour modifier"))
+    }
+}
+
+fn modifier(json: Option<&Json>) -> Result<Option<[Option<Program>; 3]>, String> {
+    let Some(json) = json.filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let object = json
+        .as_object()
+        .ok_or("a color_modifier is an object of red, green and blue expressions")?;
+    let channel = |key: &str| -> Result<Option<Program>, String> {
+        match object.get(key) {
+            None => Ok(None),
+            Some(Json::String(s)) => Program::compile(s).map(Some),
+            Some(Json::Number(n)) => Program::compile(&n.to_string()).map(Some),
+            Some(_) => Err(format!("{key} is an expression")),
+        }
+    };
+    for key in object.keys() {
+        if !matches!(key.as_str(), "red" | "green" | "blue") {
+            return Err(format!("color_modifier {key} isn't read"));
+        }
+    }
+    Ok(Some([channel("red")?, channel("green")?, channel("blue")?]))
+}
+
+fn modify(programs: &[Option<Program>; 3], color: u32) -> u32 {
+    let base = [
+        f64::from((color >> 16) & 0xFF),
+        f64::from((color >> 8) & 0xFF),
+        f64::from(color & 0xFF),
+    ];
+    let mut host = Channels(base);
+    let mut out = 0u32;
+    for (value, program) in base.iter().zip(programs) {
+        let result = program
+            .as_ref()
+            .and_then(|p| p.eval(&mut host).ok())
+            .map_or(*value, |v| v.num());
+        let result = if result.is_nan() { *value } else { result };
+        out = (out << 8) | result.round().clamp(0.0, 255.0) as u32;
+    }
+    out
+}
+
 #[derive(Debug)]
 pub struct Colormap {
+    modifier: Option<[Option<Program>; 3]>,
     x: Program,
     y: Program,
     triangular: bool,
@@ -182,6 +251,10 @@ impl Colormap {
         if textures.is_empty() {
             return Err("no texture".to_owned());
         }
+        let color_modifier = match json {
+            Some(json) => modifier(json.get("color_modifier"))?,
+            None => None,
+        };
         let (x, y, triangular, rounds, blend, default_color) = match json {
             None => (
                 axis(None, "TEMPERATURE")?,
@@ -194,9 +267,6 @@ impl Colormap {
             Some(json) => {
                 if !json.is_object() {
                     return Err("a colormap is an object".to_owned());
-                }
-                if json.get("color_modifier").is_some_and(|v| !v.is_null()) {
-                    return Err("color_modifier isn't read yet".to_owned());
                 }
                 (
                     axis(json.get("x_axis"), "TEMPERATURE")?,
@@ -213,8 +283,19 @@ impl Colormap {
         let only_biome = |root: Root, name: &str| {
             root == Root::Object && matches!(name, "temperature" | "downfall")
         };
-        let biome_only = x.reads_only(&only_biome) && y.reads_only(&only_biome);
+        let channels = |root: Root, name: &str| {
+            root == Root::Object
+                && matches!(name, "temperature" | "downfall" | "red" | "green" | "blue")
+        };
+        let biome_only = x.reads_only(&only_biome)
+            && y.reads_only(&only_biome)
+            && color_modifier
+                .iter()
+                .flatten()
+                .flatten()
+                .all(|p| p.reads_only(&channels));
         Ok(Self {
+            modifier: color_modifier,
             x,
             y,
             triangular,
@@ -257,10 +338,14 @@ impl Colormap {
         if self.triangular {
             v *= u;
         }
-        Some(texture.at(
+        let color = texture.at(
             pick(u, texture.width, self.rounds),
             pick(v, texture.height, self.rounds),
-        ))
+        );
+        Some(match &self.modifier {
+            Some(programs) => modify(programs, color),
+            None => color,
+        })
     }
 
     pub fn sample_biome(&self, tint: i32, temperature: f64, downfall: f64) -> Option<u32> {
@@ -614,6 +699,37 @@ mod tests {
     }
 
     #[test]
+    fn a_color_modifier_rewrites_the_sampled_channels() {
+        let map = Colormap::new(
+            Some(&json!({"color_modifier": {"red": "RED * 0.5", "blue": "255 - GREEN"}})),
+            only(gradient()),
+        )
+        .unwrap();
+        let plain = Colormap::new(Some(&json!({})), only(gradient())).unwrap();
+        let sampled = plain.sample_biome(ALL_TINTS, 0.5, 0.5).unwrap();
+        let (red, green) = ((sampled >> 16) & 0xFF, (sampled >> 8) & 0xFF);
+        let modified = map.sample_biome(ALL_TINTS, 0.5, 0.5).unwrap();
+        assert_eq!((modified >> 16) & 0xFF, (red as f64 * 0.5).round() as u32);
+        assert_eq!((modified >> 8) & 0xFF, green);
+        assert_eq!(modified & 0xFF, 255 - green);
+        assert!(map.depends_only_on_biome());
+    }
+
+    #[test]
+    fn the_legacy_temperature_sampler_reads_the_temperature() {
+        let legacy = Colormap::new(
+            Some(&json!({"x_axis": "legacy_temperature"})),
+            only(gradient()),
+        )
+        .unwrap();
+        let plain = Colormap::new(Some(&json!({})), only(gradient())).unwrap();
+        assert_eq!(
+            legacy.sample_biome(ALL_TINTS, 0.3, 0.7),
+            plain.sample_biome(ALL_TINTS, 0.3, 0.7)
+        );
+    }
+
+    #[test]
     fn biome_blend_is_on_unless_switched_off() {
         let on = Colormap::new(Some(&json!({})), only(gradient())).unwrap();
         let off = Colormap::new(Some(&json!({"biome_blend": false})), only(gradient())).unwrap();
@@ -624,9 +740,9 @@ mod tests {
     #[test]
     fn what_cannot_be_read_faithfully_is_refused() {
         let refused = |json: Json| Colormap::new(Some(&json), only(gradient())).is_err();
-        assert!(refused(json!({"color_modifier": {"red": "RED * 0.5"}})));
+        assert!(refused(json!({"color_modifier": {"hue": "1"}})));
+        assert!(refused(json!({"color_modifier": {"red": "RED *"}})));
         assert!(refused(json!({"x_axis": "biome_id"})));
-        assert!(refused(json!({"y_axis": "legacy_temperature"})));
         assert!(refused(json!({"x_axis": "POS_X +"})));
         assert!(refused(json!({"x_axis": "BIOME"})));
         assert!(refused(json!({"x_axis": ["a"]})));
@@ -660,7 +776,7 @@ mod tests {
         std::fs::write(base.join("refused.png"), pixel(5, 5, 5)).unwrap();
         std::fs::write(
             base.join("refused.json"),
-            r#"{"color_modifier": {"red": "1"}}"#,
+            r#"{"color_modifier": {"hue": "1"}}"#,
         )
         .unwrap();
 

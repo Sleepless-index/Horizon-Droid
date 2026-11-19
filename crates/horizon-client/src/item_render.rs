@@ -635,8 +635,8 @@ impl ItemRenderer {
             grass,
         })
     }
-    pub fn polytone_bar_color(&self, item: &str) -> Option<u32> {
-        self.polytone.as_ref()?.bar_color(item)
+    pub fn polytone_bar_color(&self, item: &str, remaining: f64) -> Option<u32> {
+        self.polytone.as_ref()?.bar_color(item, remaining)
     }
     pub fn polytone_tooltip_edits(
         &self,

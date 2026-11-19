@@ -137,11 +137,19 @@ impl ItemTints {
         self.by_item.get(item).and_then(|i| self.set.get(*i))
     }
 
-    pub fn bar_color(&self, item: &str) -> Option<u32> {
-        match self.modifier(item)?.bar.as_ref()?.source(0)? {
-            ColorSource::Flat(color) => Some(*color & 0xFF_FFFF),
-            _ => None,
-        }
+    pub fn bar_color(&self, item: &str, remaining: f64) -> Option<u32> {
+        let remaining = remaining.clamp(0.0, 1.0);
+        let context = SampleContext {
+            x: remaining,
+            y: remaining,
+            z: 0.0,
+            temperature: remaining,
+            downfall: remaining,
+        };
+        self.modifier(item)?
+            .bar
+            .as_ref()?
+            .color(0, &self.maps, &context)
     }
 
     /// The items whose modifier sets an arm pose.
@@ -287,11 +295,25 @@ mod tests {
             &none,
         )
         .unwrap();
-        assert_eq!(items.bar_color("foo:pick"), Some(0x00FFFF));
+        assert_eq!(items.bar_color("foo:pick", 1.0), Some(0x00FFFF));
         assert_eq!(items.rarity("foo:pick"), Some("epic"));
-        assert_eq!(items.bar_color("foo:axe"), None);
+        assert_eq!(items.bar_color("foo:axe", 1.0), None);
         assert_eq!(items.rarity("foo:axe"), None);
-        assert_eq!(items.bar_color("foo:none"), None);
+        assert_eq!(items.bar_color("foo:none", 1.0), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_bar_png_alone_colours_the_durability_bar() {
+        let root = scratch("item-bar-png");
+        put(
+            &root,
+            "assets/foo/polytone/item_modifiers/pick_bar.png",
+            pixel(255, 0, 255),
+        );
+        let items = ItemTints::read(&root, ["foo:pick".to_owned()].into_iter(), &none).unwrap();
+        assert_eq!(items.bar_color("foo:pick", 1.0), Some(0xFF00FF));
+        assert_eq!(items.bar_color("foo:pick", 0.2), Some(0xFF00FF));
         let _ = std::fs::remove_dir_all(&root);
     }
 

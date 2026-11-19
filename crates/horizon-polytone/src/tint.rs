@@ -261,7 +261,7 @@ mod tests {
             json!([1]),
             json!(""),
             json!(1.5),
-            json!({"x_axis": "temperature", "color_modifier": {"red": "1"}}),
+            json!({"x_axis": "temperature", "color_modifier": {"hue": "1"}}),
         ] {
             let textures = if json.get("x_axis").is_some() {
                 gradient()

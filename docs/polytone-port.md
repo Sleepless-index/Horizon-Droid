@@ -59,7 +59,10 @@ Work only in this repository.
   `options.txt`), `polytone_condition` filters any scanned file, particle modifiers can call `config(id)`, `overlays.entries[].polytone_condition` picks the pack's overlay
   folders and `sounds.json` events with an unmet `polytone_condition` are dropped before the packs merge (the overlay
   cache keys on the player's choices).
-- Textured `bar_color`: a `<item>_bar.png` alone colours the durability bar like the `.png` colours the tint.
+- Textured `bar_color`: a `<item>_bar.png` (or a `bar_color` colormap) colours the durability bar, sampled with the remaining
+  durability (1 = full) as `x`, `y`, `temperature` and `downfall`. The bar only shows on a damaged item.
+- Colormap `color_modifier`: `red`/`green`/`blue` expressions over `RED`, `GREEN`, `BLUE` (0-255) rewrite the sampled colour;
+  `legacy_temperature` samples like `temperature`. `biome_id` is still refused.
 - `fog_fade` (water and lava fog): the fog starts at `end - (end - start) * fade`, so 1 is vanilla and 0 is a hard edge.
   Block `map_color` (a `MapColor` name, with or without `map.`) recolours that block on filled maps.
 - Particle modifiers (`particle_modifiers/`): `color`, `red/green/blue/alpha`, `size`, `life` and `speed` expressions run
@@ -74,7 +77,7 @@ Work only in this repository.
 
 1. Custom `offset_type` objects; `can_occlude`.
 3. Position-dependent colormaps for fluid tints (blocks and items already read the position).
-4. Refused colormap features: `color_modifier`, `biome_id`, `legacy_temperature`, `grid`, `damage`.
+4. Refused colormap features: `biome_id`, `grid`, `damage`.
 5. Biome layers: `blend_to_gray`, `REMOVE`, colormap and expression arguments, other attributes; weather groups and the other dimension attributes; fog distances and cloud colour.
 6. Per-tick particle expressions.
 
