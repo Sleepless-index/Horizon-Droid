@@ -7,7 +7,7 @@ use std::{
     collections::HashMap,
     fs,
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 #[derive(Clone, Debug)]
@@ -503,6 +503,25 @@ impl Creative {
         self.tabs.iter().map(Tab::header).collect()
     }
     pub fn tab(&self) -> &Tab {
+        if self.tabs.is_empty() {
+            // An empty export (`{"tabs":[]}`) or a rebuild that filtered
+            // every category tab away leaves no tabs. `tabs.len() - 1`
+            // would underflow; return a shared empty tab instead, so
+            // `set_permissions`/`select`/`items` keep working.
+            static EMPTY_TAB: OnceLock<Tab> = OnceLock::new();
+            return EMPTY_TAB.get_or_init(|| Tab {
+                id: String::new(),
+                title: String::new(),
+                icon: "minecraft:stone".to_owned(),
+                items: Vec::new(),
+                top: true,
+                column: 0,
+                search: false,
+                inventory: false,
+                hotbar: false,
+                page: 0,
+            });
+        }
         &self.tabs[self.selected.min(self.tabs.len() - 1)]
     }
     /// selectTab: a different tab empties the search box; the scrollbar goes to the top.
@@ -636,6 +655,9 @@ impl Creative {
     /// Items shown by the selected tab (the search tab filters by `search`),
     /// worked out again only when the tab, the search or the language changed.
     pub fn items(&self, names: &Names) -> Arc<[ItemStack]> {
+        if self.tabs.is_empty() {
+            return Arc::from([]);
+        }
         let tab = self.selected.min(self.tabs.len() - 1);
         let search = if self.tab().search {
             self.search.value.as_str()

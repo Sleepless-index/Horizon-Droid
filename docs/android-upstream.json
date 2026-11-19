@@ -36,5 +36,36 @@
     ],
     "moving_main_merged": false,
     "notes": "Reviewed newer account-save reporting and desktop encrypted-file storage changes. Android retains its Keystore AES/GCM store and reports sign-in save failures through the existing shared task. The selected stable nightly baseline is unchanged; no experimental UI branches were merged."
+  },
+  "crash_fix_merge": {
+    "date": "2026-11-19",
+    "branch": "fix/upstream-crash-fixes",
+    "commits": [
+      "ae6090bcf",
+      "82cbf5f85",
+      "cd8a960a5",
+      "6e919ff26",
+      "30e5e845a",
+      "66b6e87c8",
+      "df96c55f6",
+      "342a849e0",
+      "f3cbd0d05",
+      "a2a9a312a",
+      "039982435",
+      "28529399d",
+      "dfca48410",
+      "b2a77ca44"
+    ],
+    "moving_main_merged": false,
+    "baseline_unchanged": true,
+    "ported_from_starling": [
+      {
+        "commit": "bb6ec90df7",
+        "source": "https://github.com/Starling-client/starling",
+        "change": "Client-side support for a mod's blocks being signs, by their template; upstream author Aaron Wang"
+      }
+    ],
+    "verification": "x86_64 Linux, stable Rust 1.97, --no-default-features: horizon-client lib 1234 passed and bin 515 passed; horizon-world, horizon-command and horizon-mods tests passed; tools/check_public_tree.py passed. game::native_hooks::tests::catalog_matches_hook_points fails: native-hooks.json lists 10 hooks with no function in the source. Tests that need prepared game data were ignored or skipped. No Android build, ARM64 Clippy or device test was run for this merge.",
+    "notes": "Fourteen fix commits (SNBT nesting cap, chunk and region edge cases, shulker lid and biome-table panics, spawner distance overflow, respawn attribute persistence, offhand animal food and equippable use fixes) merged into android; the merged upstream baseline is unchanged. The horizon-client lib and bin test targets did not compile before this merge and were repaired in the same change."
   }
 }

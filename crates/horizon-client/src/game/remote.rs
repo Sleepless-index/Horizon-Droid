@@ -9491,7 +9491,7 @@ pub(super) fn item_has_use(info: &horizon_client::items::ItemInfo) -> bool {
     let id = info.id.trim_start_matches("minecraft:");
     id.ends_with("_spear")
         || info.consumable.is_some()
-        || info.equip_slot.is_some()
+        || (info.equip_slot.is_some() && info.swappable)
         || info.blocks_attacks.is_some()
         || horizon_client::items::bucket_contents(&info.id).is_some()
         || id.ends_with("_boat")
@@ -10434,9 +10434,12 @@ mod tests {
         // Other items answer the same whether or not the player glides.
         let shield = items.get("minecraft:shield").unwrap();
         let stick = items.get("minecraft:stick").unwrap();
+        // A carved pumpkin has an equip_slot (head) but is not swappable, so it has no Item.use.
+        let pumpkin = items.get("minecraft:carved_pumpkin").unwrap();
         for gliding in [false, true] {
             assert!(super::use_ends_click(shield, gliding));
             assert!(!super::use_ends_click(stick, gliding));
+            assert!(!super::use_ends_click(pumpkin, gliding));
         }
     }
 }
