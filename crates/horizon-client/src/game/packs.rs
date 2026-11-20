@@ -498,12 +498,19 @@ pub(super) fn stage_pack(
         sounds: Some(horizon_client::sound_events::SoundRegistry::load(&root)),
     };
     progress.set(2);
+    let biomes = match horizon_client::biome::Biomes::load(&root) {
+        Ok(biomes) => Arc::new(biomes),
+        Err(error) => {
+            log::warn!("biomes: keeping the earlier table after a pack reload: {error}");
+            context.biomes.clone()
+        }
+    };
     let pack = PackResources::load(
         &root,
         assets.clone(),
         render,
         res.facts(),
-        context.biomes.clone(),
+        biomes,
         context.light.clone(),
     )?;
     let textures = prepare_renderer_textures(&pack);
