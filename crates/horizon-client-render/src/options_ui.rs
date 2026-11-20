@@ -2468,7 +2468,9 @@ impl OptionsUi {
     /// Open a page whose Done/Escape returns directly to the calling screen.
     pub fn open_at(&mut self, in_world: bool, page: Page) {
         self.stack.clear();
-        self.data_pack_dir = None;
+        if self.data_pack_dir.take().is_some() {
+            self.pack_infos.clear();
+        }
         self.focus = None;
         self.can_change_value = false;
         self.push(page);
@@ -5022,6 +5024,9 @@ impl OptionsUi {
             Page::Packs => {
                 // PackSelectionScreen.onClose: PackSelectionModel.commit.
                 let data = self.data_pack_dir.take();
+                if data.is_some() {
+                    self.pack_infos.clear();
+                }
                 if let Some(p) = self.pack_screen.take()
                     && p.changed
                 {
