@@ -509,7 +509,7 @@ mod custom_tint_tests {
         let dir = root.join("assets/foo/polytone/block_modifiers");
         std::fs::write(
             dir.join("moss.json"),
-            r#"{"colormap": {"x_axis": "1 - biome_id", "y_axis": 0}}"#,
+            r#"{"colormap": {"x_axis": "biome_id", "y_axis": 0, "biome_id_mapper": {"plains": 0, "desert": 1, "texture_size": 2}}}"#,
         )
         .unwrap();
         let set = BlockModifier::read(&root);
@@ -520,11 +520,14 @@ mod custom_tint_tests {
             slots: vec![(entry, 0)],
             ..Default::default()
         };
-        let biome = |biome_index| SampleContext {
-            biome_index,
+        let biome = |biome| SampleContext {
+            biome,
             ..SampleContext::default()
         };
-        assert_ne!(custom.sample(0, &biome(0)), custom.sample(0, &biome(255)));
+        assert_ne!(
+            custom.sample(0, &biome("minecraft:plains")),
+            custom.sample(0, &biome("minecraft:desert"))
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -556,19 +559,20 @@ mod custom_tint_tests {
     }
 
     #[test]
-    fn resolver_slots_keep_the_built_in_four_apart_from_custom_ones() {
+    fn resolver_slots_keep_the_built_in_five_apart_from_custom_ones() {
         let slots: Vec<usize> = [
             Resolver::Grass,
             Resolver::Foliage,
             Resolver::Dry,
             Resolver::Water,
+            Resolver::FlowingWater,
             Resolver::Custom(0),
             Resolver::Custom(3),
         ]
         .into_iter()
         .map(Resolver::slot)
         .collect();
-        assert_eq!(slots, [0, 1, 2, 3, 4, 7]);
+        assert_eq!(slots, [0, 1, 2, 3, 4, 5, 8]);
     }
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1345,6 +1349,7 @@ enum Resolver {
     Foliage,
     Dry,
     Water,
+    FlowingWater,
     Custom(u16),
 }
 impl Resolver {
@@ -1354,7 +1359,8 @@ impl Resolver {
             Resolver::Foliage => 1,
             Resolver::Dry => 2,
             Resolver::Water => 3,
-            Resolver::Custom(slot) => 4 + usize::from(slot),
+            Resolver::FlowingWater => 4,
+            Resolver::Custom(slot) => 5 + usize::from(slot),
         }
     }
 }
@@ -1406,7 +1412,7 @@ impl<'a> Tints<'a> {
         let layer = self.layers[y as usize].get_or_insert_with(|| {
             Box::new(Layer {
                 zoomed: vec![NO_BIOME; dim * dim],
-                colors: vec![[UNSET; 256]; 4 + self.custom.len()],
+                colors: vec![[UNSET; 256]; 5 + self.custom.len()],
             })
         });
         let slot = (z * 16 + x) as usize;
@@ -1445,6 +1451,7 @@ impl<'a> Tints<'a> {
                     Resolver::Foliage => self.biomes.get(biome).foliage,
                     Resolver::Dry => self.biomes.get(biome).dry_foliage,
                     Resolver::Water => self.biomes.get(biome).water,
+                    Resolver::FlowingWater => self.biomes.get(biome).flowing_water,
                     Resolver::Custom(slot) => self.custom.color(
                         slot,
                         self.biomes.get(biome),
@@ -1568,7 +1575,12 @@ impl Mesher<'_> {
                         continue;
                     }
                     if state.fluid.kind() != FluidKind::Empty {
-                        let water = tints.get(Resolver::Water, x, y, z);
+                        let resolver = if state.fluid.kind() == FluidKind::FlowingWater {
+                            Resolver::FlowingWater
+                        } else {
+                            Resolver::Water
+                        };
+                        let water = tints.get(resolver, x, y, z);
                         let shade = (self.nether_shading, self.shader_pack_lighting);
                         fluid::tesselate(self.tables, shade, pad, water, &mut out, [x, y, z]);
                     }

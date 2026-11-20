@@ -80,47 +80,137 @@ pub struct SampleContext<'a> {
 
 struct Sampler<'a> {
     at: &'a SampleContext<'a>,
-    mapper: Option<&'a BiomeMapper>,
+    mapper: &'a BiomeMapper,
 }
 
-#[derive(Debug, Default)]
-struct BiomeMapper {
-    values: BTreeMap<String, f64>,
-    size: f64,
+const LEGACY_BIOME_IDS: [&str; 65] = [
+    "the_void",
+    "plains",
+    "sunflower_plains",
+    "snowy_plains",
+    "ice_spikes",
+    "desert",
+    "swamp",
+    "mangrove_swamp",
+    "forest",
+    "flower_forest",
+    "birch_forest",
+    "dark_forest",
+    "old_growth_birch_forest",
+    "old_growth_pine_taiga",
+    "old_growth_spruce_taiga",
+    "taiga",
+    "snowy_taiga",
+    "savanna",
+    "savanna_plateau",
+    "windswept_hills",
+    "windswept_gravelly_hills",
+    "windswept_forest",
+    "windswept_savanna",
+    "jungle",
+    "sparse_jungle",
+    "bamboo_jungle",
+    "badlands",
+    "eroded_badlands",
+    "wooded_badlands",
+    "meadow",
+    "cherry_grove",
+    "grove",
+    "snowy_slopes",
+    "frozen_peaks",
+    "jagged_peaks",
+    "stony_peaks",
+    "river",
+    "frozen_river",
+    "beach",
+    "snowy_beach",
+    "stony_shore",
+    "warm_ocean",
+    "lukewarm_ocean",
+    "deep_lukewarm_ocean",
+    "ocean",
+    "deep_ocean",
+    "cold_ocean",
+    "deep_cold_ocean",
+    "frozen_ocean",
+    "deep_frozen_ocean",
+    "mushroom_fields",
+    "dripstone_caves",
+    "lush_caves",
+    "deep_dark",
+    "nether_wastes",
+    "warped_forest",
+    "crimson_forest",
+    "soul_sand_valley",
+    "basalt_deltas",
+    "the_end",
+    "end_highlands",
+    "end_midlands",
+    "small_end_islands",
+    "end_barrens",
+    "pale_garden",
+];
+
+#[derive(Debug, Clone, Default)]
+enum BiomeMapper {
+    #[default]
+    Legacy,
+    Custom {
+        values: BTreeMap<String, f64>,
+        size: f64,
+    },
 }
 
 impl BiomeMapper {
-    fn parse(json: Option<&Json>) -> Result<Option<Self>, String> {
-        let Some(json) = json.filter(|v| !v.is_null()) else {
-            return Ok(None);
-        };
+    fn custom(json: &Json) -> Result<Self, String> {
         let object = json
             .as_object()
             .ok_or("a biome_id_mapper is an object of biome ids to numbers")?;
-        let mut mapper = Self {
-            values: BTreeMap::new(),
-            size: 1.0,
-        };
+        let mut values = BTreeMap::new();
+        let mut size = 1.0;
         for (key, value) in object {
             let number = value
                 .as_f64()
                 .ok_or_else(|| format!("biome_id_mapper {key} is a number"))?;
-            if key == "texture_size" {
-                if number <= 0.0 {
-                    return Err("texture_size is above zero".to_owned());
-                }
-                mapper.size = number;
+            if normalize(key) == "minecraft:texture_size" {
+                size = number;
             } else {
-                mapper.values.insert(normalize(key), number);
+                values.insert(normalize(key), number);
             }
         }
-        Ok(Some(mapper))
+        Ok(Self::Custom { values, size })
     }
 
-    fn value(&self, biome: &str) -> f64 {
-        self.values.get(&normalize(biome)).copied().unwrap_or(0.0) / self.size
+    fn parse(json: Option<&Json>, named: &Mappers) -> Result<Self, String> {
+        match json.filter(|v| !v.is_null()) {
+            None => Ok(Self::Legacy),
+            Some(Json::String(name)) => named
+                .get(&normalize(name))
+                .cloned()
+                .ok_or_else(|| format!("no biome_id_mapper {name}")),
+            Some(other) => Self::custom(other),
+        }
+    }
+
+    fn index(&self, biome: &str) -> f64 {
+        match self {
+            Self::Legacy => {
+                let name = biome.strip_prefix("minecraft:").unwrap_or(biome);
+                let id = LEGACY_BIOME_IDS
+                    .iter()
+                    .position(|known| *known == name)
+                    .unwrap_or(0);
+                (id as f64 + 1.0) / 256.0
+            }
+            Self::Custom { values, size } => {
+                let denominator = if *size > 1.0 { size - 1.0 } else { 1.0 };
+                values.get(&normalize(biome)).copied().unwrap_or(0.0) / denominator
+            }
+        }
     }
 }
+
+type Mappers = BTreeMap<String, BiomeMapper>;
 
 fn spell_samplers(source: &str) -> String {
     let mut out = String::with_capacity(source.len());
@@ -155,10 +245,13 @@ impl Sampler<'_> {
             "z" => at.z,
             "temperature" => at.temperature,
             "downfall" => at.downfall,
-            "biomeId" => match self.mapper {
-                Some(mapper) => mapper.value(at.biome),
-                None => f64::from(at.biome_index) / 255.0,
-            },
+            "biomeId" => {
+                if at.biome.is_empty() {
+                    0.0
+                } else {
+                    1.0 - self.mapper.index(at.biome)
+                }
+            }
             "itemDamage" => at.item_damage,
             "legacyTemperature" => {
                 if at.y > 64.0 {
@@ -318,7 +411,7 @@ fn modify(programs: &[Option<Program>; 3], color: u32) -> u32 {
 #[derive(Debug)]
 pub struct Colormap {
     per_biome: bool,
-    mapper: Option<BiomeMapper>,
+    mapper: BiomeMapper,
     modifier: Option<[Option<Program>; 3]>,
     x: Program,
     y: Program,
@@ -332,6 +425,14 @@ pub struct Colormap {
 
 impl Colormap {
     pub fn new(json: Option<&Json>, textures: BTreeMap<i32, Texture>) -> Result<Self, String> {
+        Self::with_mappers(json, textures, &Mappers::new())
+    }
+
+    fn with_mappers(
+        json: Option<&Json>,
+        textures: BTreeMap<i32, Texture>,
+        named: &Mappers,
+    ) -> Result<Self, String> {
         if textures.is_empty() {
             return Err("no texture".to_owned());
         }
@@ -340,8 +441,8 @@ impl Colormap {
             None => None,
         };
         let mapper = match json {
-            Some(json) => BiomeMapper::parse(json.get("biome_id_mapper"))?,
-            None => None,
+            Some(json) => BiomeMapper::parse(json.get("biome_id_mapper"), named)?,
+            None => BiomeMapper::Legacy,
         };
         let (x, y, triangular, rounds, blend, default_color) = match json {
             None => (
@@ -402,7 +503,6 @@ impl Colormap {
             .all(|p| p.reads_only(&channels));
         let biome_only = x.reads_only(&only_biome)
             && y.reads_only(&only_biome)
-            && mapper.is_none()
             && modifier_ok;
         let per_biome =
             x.reads_only(&per_biome_reads) && y.reads_only(&per_biome_reads) && modifier_ok;
@@ -476,7 +576,7 @@ impl Colormap {
         let texture = self.texture(tint)?;
         let mut host = Sampler {
             at,
-            mapper: self.mapper.as_ref(),
+            mapper: &self.mapper,
         };
         let u = unit(self.x.eval(&mut host).ok()?.num());
         let mut v = unit(self.y.eval(&mut host).ok()?.num());
@@ -597,12 +697,13 @@ impl Colormaps {
                 &mut found,
             );
         }
+        let named = Self::read_mappers(root);
         let mut maps = BTreeMap::new();
         for (id, files) in found {
             if files.textures.is_empty() {
                 continue;
             }
-            match Self::build(&files) {
+            match Self::build(&files, &named) {
                 Ok(map) => {
                     maps.insert(id, map);
                 }
@@ -612,7 +713,62 @@ impl Colormaps {
         Self { maps }
     }
 
-    fn build(files: &Files) -> Result<Colormap, String> {
+    fn read_mappers(root: &Path) -> Mappers {
+        let mut out = Mappers::new();
+        let mut namespaces: Vec<_> = std::fs::read_dir(root.join("assets"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .collect();
+        namespaces.sort_by_key(|e| e.file_name());
+        for namespace in namespaces {
+            let name = namespace.file_name().to_string_lossy().into_owned();
+            let base = namespace.path().join("polytone/biome_id_mappers");
+            let mut stack = vec![base.clone()];
+            while let Some(dir) = stack.pop() {
+                let mut entries: Vec<_> = std::fs::read_dir(&dir)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|e| e.path())
+                    .collect();
+                entries.sort();
+                for path in entries {
+                    if path.is_dir() {
+                        stack.push(path);
+                        continue;
+                    }
+                    if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                        continue;
+                    }
+                    let Ok(relative) = path.strip_prefix(&base) else {
+                        continue;
+                    };
+                    let id = format!(
+                        "{name}:{}",
+                        relative
+                            .with_extension("")
+                            .to_string_lossy()
+                            .replace('\\', "/")
+                    );
+                    let parsed = std::fs::read_to_string(&path)
+                        .map_err(|e| e.to_string())
+                        .and_then(|t| serde_json::from_str::<Json>(&t).map_err(|e| e.to_string()))
+                        .and_then(|j| BiomeMapper::custom(&j));
+                    match parsed {
+                        Ok(mapper) => {
+                            out.insert(id, mapper);
+                        }
+                        Err(e) => log::warn!("biome_id_mapper {id}: {e}"),
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn build(files: &Files, named: &Mappers) -> Result<Colormap, String> {
         let json = match &files.json {
             None => None,
             Some(path) => {
@@ -627,7 +783,7 @@ impl Colormaps {
                 Texture::decode_png(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
             textures.insert(*tint, texture);
         }
-        Colormap::new(json.as_ref(), textures)
+        Colormap::with_mappers(json.as_ref(), textures, named)
     }
 
     pub fn get(&self, id: &str) -> Option<&Colormap> {
@@ -886,39 +1042,97 @@ mod tests {
     }
 
     #[test]
-    fn the_biome_id_sampler_reads_the_registry_index_or_a_mapper() {
-        let by_index = Colormap::new(
+    fn the_biome_id_sampler_defaults_to_the_legacy_table_and_inverts_the_index() {
+        let map = Colormap::new(
             Some(&json!({"x_axis": "biome_id", "y_axis": 0})),
             only(gradient()),
         )
         .unwrap();
-        let at = |index: u32, biome: &'static str| SampleContext {
+        let at = |biome: &'static str| SampleContext {
             biome,
-            biome_index: index,
             ..Default::default()
         };
-        assert_ne!(
-            by_index.sample(ALL_TINTS, &at(10, "minecraft:plains")),
-            by_index.sample(ALL_TINTS, &at(200, "minecraft:plains"))
-        );
-        let mapped = Colormap::new(
+        let plains = map.sample(ALL_TINTS, &at("minecraft:plains")).unwrap();
+        let desert = map.sample(ALL_TINTS, &at("minecraft:desert")).unwrap();
+        assert_eq!(xy(plains).0, 2);
+        assert_eq!(xy(desert).0, 6);
+        assert_eq!(xy(map.sample(ALL_TINTS, &at("")).unwrap()).0, 255);
+        assert!(!map.depends_only_on_biome());
+    }
+
+    #[test]
+    fn a_biome_id_mapper_scales_by_the_texture_size_and_may_be_named() {
+        let inline = Colormap::new(
             Some(&json!({
                 "x_axis": "biome_id",
                 "y_axis": 0,
-                "biome_id_mapper": {"plains": 0, "minecraft:desert": 255, "texture_size": 255}
+                "biome_id_mapper": {"plains": 0, "minecraft:desert": 100, "texture_size": 101}
             })),
             only(gradient()),
         )
         .unwrap();
-        assert_eq!(
-            mapped.sample(ALL_TINTS, &at(99, "minecraft:plains")),
-            mapped.sample(ALL_TINTS, &at(1, "minecraft:plains"))
+        let at = |biome: &'static str| SampleContext {
+            biome,
+            ..Default::default()
+        };
+        assert_eq!(xy(inline.sample(ALL_TINTS, &at("minecraft:plains")).unwrap()).0, 0);
+        assert_eq!(xy(inline.sample(ALL_TINTS, &at("minecraft:desert")).unwrap()).0, 255);
+        assert_eq!(xy(inline.sample(ALL_TINTS, &at("minecraft:swamp")).unwrap()).0, 0);
+
+        let named = Mappers::from([(
+            "foo:ids".to_owned(),
+            BiomeMapper::custom(&json!({"plains": 50, "texture_size": 101})).unwrap(),
+        )]);
+        let by_name = Colormap::with_mappers(
+            Some(&json!({"x_axis": "biome_id", "y_axis": 0, "biome_id_mapper": "foo:ids"})),
+            only(gradient()),
+            &named,
+        )
+        .unwrap();
+        assert_eq!(xy(by_name.sample(ALL_TINTS, &at("minecraft:plains")).unwrap()).0, 128);
+        assert!(
+            Colormap::new(
+                Some(&json!({"biome_id_mapper": "foo:missing"})),
+                only(gradient())
+            )
+            .is_err()
         );
-        assert_ne!(
-            mapped.sample(ALL_TINTS, &at(99, "minecraft:plains")),
-            mapped.sample(ALL_TINTS, &at(99, "minecraft:desert"))
+    }
+
+    #[test]
+    fn named_biome_id_mappers_are_read_from_the_pack() {
+        let root = scratch("mappers");
+        let write = |relative: &str, bytes: Vec<u8>| {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        };
+        write(
+            "assets/foo/polytone/biome_id_mappers/ids.json",
+            br#"{"plains": 3, "texture_size": 4}"#.to_vec(),
         );
-        assert!(!mapped.depends_only_on_biome());
+        write(
+            "assets/foo/polytone/colormaps/ids.json",
+            br#"{"x_axis": "biome_id", "y_axis": 0, "biome_id_mapper": "foo:ids"}"#.to_vec(),
+        );
+        write(
+            "assets/foo/polytone/colormaps/ids.png",
+            png_bytes(
+                4,
+                1,
+                png::ColorType::Rgb,
+                &[1, 0, 0, 2, 0, 0, 3, 0, 0, 4, 0, 0],
+            ),
+        );
+        let maps = Colormaps::read(&root);
+        let map = maps.get("foo:ids").unwrap();
+        let at = |biome: &'static str| SampleContext {
+            biome,
+            ..Default::default()
+        };
+        assert_eq!(map.sample(ALL_TINTS, &at("minecraft:plains")).unwrap() >> 16 & 0xFF, 4);
+        assert_eq!(map.sample(ALL_TINTS, &at("minecraft:desert")).unwrap() >> 16 & 0xFF, 1);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

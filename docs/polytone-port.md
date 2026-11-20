@@ -68,10 +68,11 @@ Work only in this repository.
 - Particle modifiers (`particle_modifiers/`): `color`, `red/green/blue/alpha`, `size`, `life` and `speed` expressions run
   once when a particle is created, with `o`, `p`, `g` and `r` answered (no biome/light/colormap/config yet).
   `horizon_height` (the dark disc's height) and `water_fog_brightening_time` (ticks to full water vision) apply too.
-- Colormap samplers `biome_id` (registry index / 255, or `biome_id_mapper` values / `texture_size`), `item_damage`,
-  `legacy_temperature` (cools above y 64, without the noise term) and the `type` shortcuts `grid`, `damage`, `fixed` read
-  for block custom tints and item bars. `colors.json` biome tables and the water fluid tint read `biome_id` (a biome's
-  registry index in its table) but not `legacy_temperature`, which needs a height.
+- Colormap samplers `biome_id` (as Polytone: `1 - mapper.getIndex(biome)`; the mapper is the `biome_id_mapper` key, an
+  inline object of biome ids to values with `texture_size`, or the name of a `biome_id_mappers/<name>.json`; none given
+  uses Polytone's legacy OptiFine biome table, `(id + 1) / 256`; no biome gives 0), `item_damage`, `legacy_temperature`
+  (cools above y 64, without the noise term) and the `type` shortcuts `grid`, `damage`, `fixed` read for block custom
+  tints, item bars and the `colors.json` biome tables and water tint (not `legacy_temperature`, which needs a height).
 - `config('ns:id')` answers in colormap axes and `color_modifier`, from the loaded pack's entries and the player's
   choices, alongside particle modifiers and conditions. A biome-table colormap that calls it is not read.
 - Particle modifiers re-run colour and `size` (as a multiple of the spawn size) every tick on the particles they target;
@@ -80,9 +81,11 @@ Work only in this repository.
   neighbours behind the block and stops it being a solid render, `true` restores the shape's own occlusion. The client light
   engine's dampening is unchanged. `spawn_particles_on_break: false` removes a block's terrain particles (breaking, mining,
   landing) and `tinted_breaking_particles: false` leaves them untinted. Tag targets never match, as for block tints.
-- Read but not applied: flowing-water-only tints,
-  `sprites` offsets and overlays,
-  nothing else reads `config(...)`: every expression host that exists now does.
+- Fluid modifiers targeting `minecraft:flowing_water` tint flowing water only; `minecraft:water` tints both unless a
+  flowing one exists.
+- Screen sprite modifiers apply `x_inc`/`y_inc`/`width_inc`/`height_inc` and `overlays` (drawn under the sprite, from
+  its original box, tinted by the modifier colour) to `sprite`, `sprite_scaled`, `sprite_part`, `sprite_region`,
+  `blit_sprite` and `nine_slice` draws.
 
 ## Next, in rough order
 

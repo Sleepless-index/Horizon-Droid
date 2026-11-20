@@ -160,6 +160,7 @@ pub fn nine_slice(
     color: u32,
 ) {
     if let Some(r) = atlas.sprites.get(sprite) {
+        let [x, y, w, h] = batch.with_sprite_extras(atlas, sprite, [x, y, w, h], color, false);
         draw_nine_slice(batch, *r, scaling(sprite, r), [x, y, w, h], color);
     }
 }
@@ -177,6 +178,7 @@ pub fn blit_sprite(
     color: u32,
 ) {
     if let Some(r) = atlas.sprites.get(sprite) {
+        let [x, y, w, h] = batch.with_sprite_extras(atlas, sprite, [x, y, w, h], color, false);
         draw_sprite(batch, *r, nine_slice_metadata(sprite), [x, y, w, h], color);
     }
 }

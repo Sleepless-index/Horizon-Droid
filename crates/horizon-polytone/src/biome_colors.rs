@@ -20,29 +20,34 @@ pub struct BiomeOverrides {
     foliage: Option<Choice>,
     dry_foliage: Option<Choice>,
     water: Option<Choice>,
-    fluid_water: Option<Tint>,
+    fluid_water: [Option<Tint>; 2],
     maps: Colormaps,
 }
 
 impl BiomeOverrides {
     pub fn read(root: &Path) -> Self {
         let colors = PackColors::read(root);
-        let fluids = FluidModifier::read(root);
-        if colors.is_empty() && fluids.is_empty() {
+        if colors.is_empty() && FluidModifier::read(root).is_empty() {
             return Self::default();
         }
         let maps = Colormaps::read(root);
         let mut overrides = Self::from_parts(&colors, maps);
-        overrides.fluid_water = fluids
-            .into_resolved("minecraft:water", &water_tag)
-            .and_then(|m| m.tint)
-            .filter(|tint| {
-                let biome_only = tint.depends_on_biome_alone(&overrides.maps);
-                if !biome_only {
-                    log::warn!("fluid_modifiers: the tint of minecraft:water reads the position, which isn't applied yet");
-                }
-                biome_only
-            });
+        let maps = &overrides.maps;
+        let resolve = |id: &str| {
+            FluidModifier::read(root)
+                .into_resolved(id, &water_tag)
+                .and_then(|m| m.tint)
+                .filter(|tint| {
+                    let biome_only = tint.depends_on_biome_alone(maps);
+                    if !biome_only {
+                        log::warn!("fluid_modifiers: the tint of {id} reads the position, which isn't applied yet");
+                    }
+                    biome_only
+                })
+        };
+        let still = resolve("minecraft:water");
+        let flowing = resolve("minecraft:flowing_water");
+        overrides.fluid_water = [still, flowing];
         overrides
     }
 
@@ -74,7 +79,7 @@ impl BiomeOverrides {
             foliage: choose("foliage"),
             dry_foliage: choose("dry_foliage"),
             water: choose("water"),
-            fluid_water: None,
+            fluid_water: Default::default(),
             maps,
         }
     }
@@ -84,7 +89,7 @@ impl BiomeOverrides {
             && self.foliage.is_none()
             && self.dry_foliage.is_none()
             && self.water.is_none()
-            && self.fluid_water.is_none()
+            && self.fluid_water.iter().all(Option::is_none)
     }
 
     fn resolve(
@@ -133,8 +138,17 @@ impl BiomeOverrides {
         self.resolve(&self.dry_foliage, climate, biome)
     }
 
+    pub fn flowing_water_in(&self, climate: [f64; 2], biome: (&str, u32)) -> Option<u32> {
+        if let Some(tint) = &self.fluid_water[1] {
+            if let Some(color) = tint.biome_color_in(TINT, &self.maps, climate, biome) {
+                return Some(color);
+            }
+        }
+        self.water_in(climate, biome)
+    }
+
     pub fn water_in(&self, climate: [f64; 2], biome: (&str, u32)) -> Option<u32> {
-        if let Some(tint) = &self.fluid_water {
+        if let Some(tint) = &self.fluid_water[0] {
             if let Some(color) = tint.biome_color_in(TINT, &self.maps, climate, biome) {
                 return Some(color);
             }
@@ -201,6 +215,24 @@ mod tests {
         let overrides = BiomeOverrides::read(&root);
         assert!(!overrides.is_empty());
         assert_eq!(overrides.water(0.5, 0.5), Some(0x0000FF));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_flowing_only_fluid_modifier_leaves_still_water_alone() {
+        let root = scratch("flowing");
+        std::fs::create_dir_all(root.join("assets/foo/polytone/fluid_modifiers")).unwrap();
+        write(
+            &root,
+            "assets/foo/polytone/fluid_modifiers/flow.json",
+            r##"{"targets": "minecraft:flowing_water", "colormap": "#00FF00"}"##,
+        );
+        let overrides = BiomeOverrides::read(&root);
+        assert_eq!(overrides.water(0.5, 0.5), None);
+        assert_eq!(
+            overrides.flowing_water_in([0.5, 0.5], ("minecraft:plains", 0)),
+            Some(0x00FF00)
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

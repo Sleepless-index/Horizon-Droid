@@ -26,6 +26,15 @@ pub struct Rect {
     pub w: u32,
     pub h: u32,
 }
+/// What a pack's screen sprite modifier adds at draw time: the sprite moved by `offset`
+/// (`x_inc`, `y_inc`, `width_inc`, `height_inc`) and the overlays drawn under it, each with its
+/// own offset from the sprite's original box.
+#[derive(Clone, Debug, Default)]
+pub struct SpriteExtras {
+    pub offset: [i32; 4],
+    pub overlays: Vec<(Rect, [i32; 4])>,
+    pub color: Option<u32>,
+}
 impl Rect {
     /// The region's size in texels of an atlas this large.
     pub fn texels(&self, (width, height): (u32, u32)) -> (u32, u32) {
@@ -61,6 +70,7 @@ pub struct HudAtlas {
     pub width: u32,
     pub height: u32,
     pub sprites: HashMap<String, Rect>,
+    pub sprite_extras: HashMap<String, SpriteExtras>,
     /// Resolved player-profile names and UUIDs for inline head components.
     pub object_skins: HashMap<String, String>,
     /// Sprites with a 0 < alpha < 255 texel (`SpriteContents.transparency().hasTranslucent`),
@@ -418,6 +428,25 @@ impl HudAtlas {
                 let [_, _, width, height] = change.offset;
                 rect.w = (rect.w as i32 + width).max(1) as u32;
                 rect.h = (rect.h as i32 + height).max(1) as u32;
+                let overlays: Vec<(Rect, [i32; 4])> = modifier
+                    .overlays
+                    .iter()
+                    .filter_map(|overlay| {
+                        let texture = overlay.texture.as_deref()?;
+                        let rect = *self
+                            .sprites
+                            .get(&key(&horizon_polytone::sprites::sprite_id(texture)))?;
+                        Some((rect, overlay.offset))
+                    })
+                    .collect();
+                if change.offset[..2] != [0, 0] || !overlays.is_empty() {
+                    let extras = self.sprite_extras.entry(name.clone()).or_default();
+                    for (total, by) in extras.offset.iter_mut().zip(change.offset) {
+                        *total += by;
+                    }
+                    extras.overlays.extend(overlays);
+                    extras.color = change.color.or(extras.color);
+                }
                 self.sprites.insert(name, rect);
             }
         }
@@ -547,6 +576,7 @@ impl HudAtlas {
             translucent: HashSet::new(),
             flags: HashMap::new(),
             object_skins: HashMap::new(),
+            sprite_extras: HashMap::new(),
             sprite_animations: Vec::new(),
             glint: (vec![0; 4], 1, 1),
             glint_armor: (vec![0; 4], 1, 1),
@@ -996,6 +1026,7 @@ impl HudAtlas {
             height,
             sprites,
             object_skins: HashMap::new(),
+            sprite_extras: HashMap::new(),
             translucent,
             flags,
             sprite_animations,
@@ -1313,9 +1344,51 @@ impl HudBatch {
             color,
         );
     }
+    pub fn with_sprite_extras(
+        &mut self,
+        atlas: &HudAtlas,
+        name: &str,
+        [x, y, w, h]: [f32; 4],
+        color: u32,
+        grown: bool,
+    ) -> [f32; 4] {
+        let Some(extras) = atlas.sprite_extras.get(name) else {
+            return [x, y, w, h];
+        };
+        let [dx, dy, dw, dh] = extras.offset.map(|v| v as f32);
+        let (base_w, base_h) = if grown { (w - dw, h - dh) } else { (w, h) };
+        let tint = match extras.color {
+            Some(argb) if color == u32::MAX => rgba(
+                (argb >> 16) as u8,
+                (argb >> 8) as u8,
+                argb as u8,
+                (argb >> 24) as u8,
+            ),
+            _ => color,
+        };
+        for (rect, [ox, oy, ow, oh]) in &extras.overlays {
+            self.rect_uv(
+                x + *ox as f32,
+                y + *oy as f32,
+                (base_w + *ow as f32).max(0.0),
+                (base_h + *oh as f32).max(0.0),
+                *rect,
+                tint,
+            );
+        }
+        let (w, h) = if grown { (w, h) } else { (w + dw, h + dh) };
+        [x + dx, y + dy, w.max(0.0), h.max(0.0)]
+    }
     pub fn sprite(&mut self, atlas: &HudAtlas, name: &str, x: f32, y: f32) {
         if let Some(r) = atlas.sprites.get(name).copied() {
-            self.rect_uv(x, y, r.w as f32, r.h as f32, r, u32::MAX);
+            let [x, y, w, h] = self.with_sprite_extras(
+                atlas,
+                name,
+                [x, y, r.w as f32, r.h as f32],
+                u32::MAX,
+                true,
+            );
+            self.rect_uv(x, y, w, h, r, u32::MAX);
         }
     }
     pub fn sprite_scaled(
@@ -1329,6 +1402,7 @@ impl HudBatch {
         color: u32,
     ) {
         if let Some(r) = atlas.sprites.get(name).copied() {
+            let [x, y, w, h] = self.with_sprite_extras(atlas, name, [x, y, w, h], color, false);
             self.rect_uv(x, y, w, h, r, color);
         }
     }
@@ -1337,7 +1411,9 @@ impl HudBatch {
         if let Some(mut r) = atlas.sprites.get(name).copied() {
             let w = r.w as f32 * fraction;
             r.u1 = r.u0 + (r.u1 - r.u0) * fraction;
-            self.rect_uv(x, y, w, r.h as f32, r, u32::MAX);
+            let [x, y, w, h] =
+                self.with_sprite_extras(atlas, name, [x, y, w, r.h as f32], u32::MAX, true);
+            self.rect_uv(x, y, w, h, r, u32::MAX);
         }
     }
     /// Clip the quads drawn since `start` to `[x0, x1) x [y0, y1)` (the
@@ -1452,6 +1528,7 @@ impl HudBatch {
         if let Some(mut r) = atlas.sprites.get(name).copied() {
             r.u1 = r.u0 + (r.u1 - r.u0) * w / tw;
             r.v1 = r.v0 + (r.v1 - r.v0) * h / th;
+            let [x, y, w, h] = self.with_sprite_extras(atlas, name, [x, y, w, h], u32::MAX, false);
             self.rect_uv(x, y, w, h, r, u32::MAX);
         }
     }
@@ -2411,6 +2488,39 @@ mod tests {
         let swapped = atlas.sprites["gui/sprites/hud/b"];
         assert_eq!((swapped.u0, swapped.u1, swapped.w), (0.5, 0.9, 8));
         assert_eq!(atlas.sprites["gui/sprites/hud/c"].u1, 0.75);
+    }
+
+    #[test]
+    fn a_sprite_modifier_moves_the_sprite_and_draws_overlays_under_it() {
+        use horizon_polytone::sprites::SpriteModifier;
+        let mut atlas = HudAtlas::boot();
+        let white = atlas.sprites["horizon/white"];
+        let glow = Rect {
+            u0: 0.25,
+            v0: 0.25,
+            u1: 0.5,
+            v1: 0.5,
+            w: 4,
+            h: 4,
+        };
+        atlas.sprites.insert("gui/sprites/hud/a".into(), white);
+        atlas.sprites.insert("gui/sprites/hud/glow".into(), glow);
+        let modifier = SpriteModifier::parse(&serde_json::json!({
+            "texture": "minecraft:hud/a",
+            "x_inc": 3,
+            "y_inc": -2,
+            "overlays": [{"texture": "minecraft:hud/glow", "x_inc": -1, "width_inc": 2}]
+        }))
+        .unwrap();
+        atlas.apply_sprite_modifiers(&[modifier]);
+        let mut batch = HudBatch::new([1280, 720]);
+        batch.sprite_scaled(&atlas, "gui/sprites/hud/a", 10.0, 20.0, 8.0, 6.0, u32::MAX);
+        assert_eq!(batch.vertices.len(), 12);
+        let corner = |at: usize| batch.vertices[at].pos;
+        assert_eq!(corner(0), [9.0, 20.0]);
+        assert_eq!(corner(1), [19.0, 20.0]);
+        assert_eq!(corner(6), [13.0, 18.0]);
+        assert_eq!(corner(7), [21.0, 18.0]);
     }
 
     use super::*;

@@ -103,6 +103,7 @@ pub struct BiomeInfo {
     pub foliage: u32,
     pub dry_foliage: u32,
     pub water: u32,
+    pub flowing_water: u32,
     pub sky: Option<u32>,
     /// The biome's own fog colour attribute; otherwise the dimension's applies.
     pub fog: Option<u32>,
@@ -265,6 +266,11 @@ impl BiomeInfo {
             water: maps
                 .polytone
                 .water_in([f64::from(temperature), f64::from(downfall)], (&name, id))
+                .or_else(|| color(&effects["water_color"]))
+                .unwrap_or(0x3F76E4),
+            flowing_water: maps
+                .polytone
+                .flowing_water_in([f64::from(temperature), f64::from(downfall)], (&name, id))
                 .or_else(|| color(&effects["water_color"]))
                 .unwrap_or(0x3F76E4),
             sky: visuals
@@ -723,7 +729,7 @@ mod pack_tests {
         std::fs::write(dir.join("ids.png"), png).unwrap();
         std::fs::write(
             dir.join("ids.json"),
-            r#"{"x_axis": "1 - biome_id * 255 / 3", "y_axis": 1}"#,
+            r#"{"x_axis": "biome_id", "y_axis": 1, "biome_id_mapper": {"plains": 0, "desert": 3, "texture_size": 4}}"#,
         )
         .unwrap();
         std::fs::write(
@@ -739,11 +745,12 @@ mod pack_tests {
             visuals: Default::default(),
             tags: Default::default(),
         };
-        let at = |id| BiomeInfo::from_json_at("minecraft:plains".to_owned(), id, &json!({}), &maps);
-        assert_eq!(at(0).grass, 0x0000FF);
-        assert_eq!(at(3).grass, 0xB4004B);
-        assert_ne!(at(1).grass, at(2).grass);
-        let _ = std::fs::remove_dir_all(&root);
+        let at = |name: &str| {
+            BiomeInfo::from_json_at(format!("minecraft:{name}"), 7, &json!({}), &maps)
+        };
+        assert_eq!(at("plains").grass, 0x0000FF);
+        assert_eq!(at("desert").grass, 0xB4004B);
+        assert_eq!(at("swamp").grass, 0x0000FF);
     }
 
     /// A column keeps the ids of the table it was decoded with. When a
