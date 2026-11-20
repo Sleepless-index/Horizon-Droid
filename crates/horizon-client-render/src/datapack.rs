@@ -1,5 +1,4 @@
-//! Data packs (`<world>/datapacks` and the game folder's `datapacks`: folders and zips with
-//! `pack.mcmeta`) and
+//! Data packs (`<world>/datapacks`: folders and zips with `pack.mcmeta`) and
 //! the parts of them commands use: `.mcfunction` functions (with macros and
 //! line continuation), function tags and predicates.
 use crate::zip::Zip;
@@ -120,42 +119,9 @@ impl DataPack {
         }
     }
 }
-/// The game folder's own `datapacks` folder (Horizon-only): packs there apply to every
-/// world, new ones included, so a worldgen pack can be there before the world exists.
-pub fn global_dir() -> PathBuf {
-    std::env::current_dir().unwrap_or_default().join("datapacks")
-}
-
-/// The packs in `<world>/datapacks` and in the global folder (`global_dir`), sorted by
-/// name. A world's own pack replaces a global one of the same name.
+/// The packs in `<world>/datapacks`, sorted by name.
 pub fn discover(world: &Path) -> Vec<DataPack> {
-    discover_in(world, &global_dir())
-}
-
-fn discover_in(world: &Path, global: &Path) -> Vec<DataPack> {
-    let mut packs = discover_local(world);
-    for pack in scan(global) {
-        if !packs.iter().any(|p| p.id == pack.id) {
-            packs.push(pack);
-        }
-    }
-    packs.sort_by(|a, b| a.id.cmp(&b.id));
-    packs
-}
-
-/// The ids of the global folder's packs, sorted by name.
-pub fn global_ids() -> Vec<String> {
-    scan(&global_dir()).into_iter().map(|p| p.id).collect()
-}
-
-/// Only the packs in `<world>/datapacks`, sorted by name.
-pub fn discover_local(world: &Path) -> Vec<DataPack> {
-    scan(&world.join("datapacks"))
-}
-
-/// The packs (folders and zips with a `pack.mcmeta`) in `dir`, sorted by name.
-fn scan(dir: &Path) -> Vec<DataPack> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = std::fs::read_dir(world.join("datapacks")) else {
         return Vec::new();
     };
     let mut packs = Vec::new();
@@ -212,6 +178,29 @@ pub fn discover_with_features(world_root: &Path, resources: &Path) -> Vec<DataPa
 
 // ---- Create World ------------------------------------------------------------
 
+/// The game folder's own `datapacks` folder (Horizon-only), beside `saves/` and
+/// `resourcepacks/`: a library of packs every Create World screen offers.
+pub fn global_dir() -> PathBuf {
+    std::env::current_dir().unwrap_or_default().join("datapacks")
+}
+
+/// The packs of Create World's folder `dir`, then those of the global folder it does not
+/// have by name.
+fn offered_packs(dir: &Path) -> Vec<crate::packs::Pack> {
+    offered_in(dir, &global_dir())
+}
+
+fn offered_in(dir: &Path, global: &Path) -> Vec<crate::packs::Pack> {
+    let format = horizon_core::version::DATA_PACK_FORMAT;
+    let mut packs = crate::packs::folder(dir, format);
+    for pack in crate::packs::folder(global, format) {
+        if !packs.iter().any(|p| p.id == pack.id) {
+            packs.push(pack);
+        }
+    }
+    packs
+}
+
 /// Create World's Data Packs screen (`PackSelectionScreen` on vanilla's
 /// `mcworld-` folder): the folder's packs (`PackSource.WORLD`), the
 /// built-in one (`resources` holds its `pack.png`), and the feature packs
@@ -224,7 +213,7 @@ pub fn screen_packs(dir: &Path, resources: &Path) -> Vec<crate::pack_screen::Pac
         text::{Style, Text},
     };
     let format = horizon_core::version::DATA_PACK_FORMAT;
-    let mut infos: Vec<PackInfo> = crate::packs::folder(dir, format)
+    let mut infos: Vec<PackInfo> = offered_packs(dir)
         .into_iter()
         .map(|p| PackInfo {
             icon: p.icon_png().as_deref().and_then(load_icon),
@@ -340,8 +329,9 @@ pub fn copy_pack(path: &Path, dir: &Path) -> bool {
 /// What's in a folder of packs, to notice packs added or removed while the
 /// screen shows it (`PackSelectionScreen.Watcher`).
 pub fn folder_stamp(dir: &Path) -> Vec<(String, Option<std::time::SystemTime>)> {
-    let mut stamp: Vec<_> = std::fs::read_dir(dir)
-        .into_iter()
+    let mut stamp: Vec<_> = [dir.to_path_buf(), global_dir()]
+        .iter()
+        .flat_map(std::fs::read_dir)
         .flatten()
         .flatten()
         .map(|e| {
@@ -353,15 +343,23 @@ pub fn folder_stamp(dir: &Path) -> Vec<(String, Option<std::time::SystemTime>)> 
     stamp
 }
 /// Create World's packs into the new world before it opens
-/// (`copyTempDataPackDirToNewWorld`): every pack of `dir` goes to
+/// (`copyTempDataPackDirToNewWorld`): every pack of `dir` and of the global folder goes to
 /// `<world>/datapacks`, and `datapacks.json` enables those `selected`
 /// (lowest priority first) and disables the rest.
 pub fn install(dir: &Path, world: &Path, selected: &[String]) -> Result<(), String> {
+    install_packs(offered_packs(dir), world, selected)
+}
+
+fn install_packs(
+    packs: Vec<crate::packs::Pack>,
+    world: &Path,
+    selected: &[String],
+) -> Result<(), String> {
     let err = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
     let target = world.join("datapacks");
     std::fs::create_dir_all(&target).map_err(|e| err(&target, e))?;
     let mut disabled = Vec::new();
-    for pack in crate::packs::folder(dir, horizon_core::version::DATA_PACK_FORMAT) {
+    for pack in packs {
         let (crate::packs::Source::Dir(from) | crate::packs::Source::Zip(from)) = &pack.source;
         copy(from, &target.join(pack.id.trim_start_matches("file/")))?;
         if !selected.contains(&pack.id) {
@@ -381,8 +379,7 @@ pub fn install(dir: &Path, world: &Path, selected: &[String]) -> Result<(), Stri
 /// priority first (`WorldOpenFlows.recreateWorldData` keeps the world's `DataConfiguration`).
 /// The built-in pack is selected unless the world turned it off.
 pub fn for_recreate(world: &Path) -> (Option<PathBuf>, Vec<String>) {
-    // The global folder's packs apply on their own; they are not the world's to copy.
-    let packs = discover_local(world);
+    let packs = discover(world);
     // No flags here: the recreated world keeps the original's
     // `enabled_features`, and the flag-aware load re-adds the feature packs
     // it asks for (`for_recreate`'s selection only seeds the new world's
@@ -916,27 +913,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn global_folder_packs_join_every_world_and_the_worlds_own_win() {
-        let root = std::env::temp_dir().join(format!("hz-datapack-global-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let pack = |dir: &Path, name: &str| {
-            std::fs::create_dir_all(dir.join(name)).unwrap();
-            std::fs::write(dir.join(name).join("pack.mcmeta"), "{}").unwrap();
-        };
-        let global = root.join("global");
-        pack(&global, "shared");
-        pack(&global, "both");
-        let world = root.join("world");
-        pack(&world.join("datapacks"), "both");
-        pack(&world.join("datapacks"), "own");
-        let packs = discover_in(&world, &global);
-        let ids: Vec<&str> = packs.iter().map(|p| p.id.as_str()).collect();
-        assert_eq!(ids, ["file/both", "file/own", "file/shared"]);
-        assert!(matches!(&packs[0].source, Source::Dir(d) if d.starts_with(&world)));
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
     fn enabled_packs_override_worldgen_in_order() {
         let dir = std::env::temp_dir().join(format!("hz-datapack-worldgen-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1185,6 +1161,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn global_folder_packs_are_offered_and_installed_when_picked() {
+        let root = std::env::temp_dir().join(format!("hz-datapack-global-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let meta = r#"{"pack":{"min_format":121,"max_format":121}}"#;
+        let pack = |dir: &Path, name: &str, marker: &str| {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+            std::fs::write(dir.join(name).join("pack.mcmeta"), meta).unwrap();
+            std::fs::write(dir.join(name).join("marker"), marker).unwrap();
+        };
+        let (dir, global, world) = (root.join("mcworld"), root.join("global"), root.join("world"));
+        std::fs::create_dir_all(&dir).unwrap();
+        pack(&global, "library", "global");
+        pack(&global, "both", "global");
+        pack(&dir, "both", "dropped");
+        let offered = offered_in(&dir, &global);
+        let ids: Vec<&str> = offered.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["file/both", "file/library"]);
+        install_packs(offered, &world, &["vanilla".into(), "file/library".into()]).unwrap();
+        // Both were copied, the one dropped on the screen beating the global one of its name.
+        let read = |p: &str| std::fs::read_to_string(world.join("datapacks").join(p)).unwrap();
+        assert_eq!(read("library/marker"), "global");
+        assert_eq!(read("both/marker"), "dropped");
+        // Only the picked one is on: the other is listed as disabled, so it stays off.
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(world.join("datapacks.json")).unwrap()).unwrap();
+        assert_eq!(saved["disabled"], serde_json::json!(["file/both"]));
+        let _ = std::fs::remove_dir_all(&root);
+    }
     #[test]
     fn create_world_installs_its_packs() {
         let root = std::env::temp_dir().join(format!("hz-datapack-install-{}", std::process::id()));

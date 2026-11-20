@@ -85,10 +85,10 @@ force loads the same chunks and compares the saved blocks. Without packs it
 measures what 26.3 itself changed, which the upgrade cannot be blamed for.
 The server logs must hold no data pack or registry errors.
 
-## A data pack for every world
+## A folder of data packs for Create New World
 
-Packs (folders or `.zip`s with a `pack.mcmeta`) in the game folder's `datapacks/` apply to
-every world, including one not made yet, so a worldgen pack can be in place before Create
-New World. The folder sits beside `saves/` and `resourcepacks/` and is made at start. A pack
-of the same name in a world's own `datapacks/` replaces the global one, and `/datapack
-disable file/<name>` turns a global pack off for that world.
+Packs (folders or `.zip`s with a `pack.mcmeta`) in the game folder's `datapacks/`, beside `saves/`
+and `resourcepacks/`, are listed on Create New World's Data Packs screen as Available, like resource
+packs; Open Pack Folder opens it. Pick one to enable it: it is copied into the new world's own
+`datapacks/` before the world opens, so worldgen packs apply from the first chunk. A pack dropped on
+the screen replaces a global one of the same name.

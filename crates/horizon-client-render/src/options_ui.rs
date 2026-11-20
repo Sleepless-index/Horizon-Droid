@@ -4293,7 +4293,8 @@ impl OptionsUi {
             }
             match action {
                 crate::pack_screen::Action::OpenFolder => events.push(match &self.data_pack_dir {
-                    Some(dir) => Event::OpenDataPackFolder(dir.clone()),
+                    // The global folder, where packs stay: the screen's own folder is temporary.
+                    Some(_) => Event::OpenDataPackFolder(crate::datapack::global_dir()),
                     None => Event::OpenPackFolder,
                 }),
                 crate::pack_screen::Action::Done => events.extend(self.back(s)),
