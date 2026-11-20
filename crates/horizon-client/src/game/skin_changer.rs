@@ -1,8 +1,8 @@
 //! Options > Skin Customization > Skin Changer: a grid of the launcher wardrobe's skins on a
-//! translucent black panel, a draggable 3D preview beside it, and Apply / Remove / Arms stacked
-//! under the preview. It reads and writes the same wardrobe the launcher's Skins tab uses
-//! (`horizon-wardrobe.json` in the game folder points at it), and applies the pick to the local
-//! player at once.
+//! translucent black panel, a draggable 3D preview beside it, and Apply + Remove side by side
+//! with Arms below them, under the preview. It reads and writes the same wardrobe the launcher's
+//! Skins tab uses (`horizon-wardrobe.json` in the game folder points at it), and applies the pick
+//! to the local player at once.
 use super::Game;
 #[cfg(target_os = "android")]
 use super::Screen;
@@ -49,6 +49,10 @@ enum Grab {
         scroll: f32,
         moved: bool,
     },
+    /// The scrollbar's thumb is held; `offset` is how far below its top the pointer grabbed it.
+    Bar {
+        offset: f32,
+    },
 }
 
 #[cfg(target_os = "android")]
@@ -78,6 +82,7 @@ const FOOTER: f32 = 30.0;
 #[cfg(target_os = "android")]
 const MARGIN: f32 = 8.0;
 #[cfg(target_os = "android")]
+/// The smallest a tile gets; the grid stretches the tiles to fill its width.
 const TILE: [f32; 2] = [58.0, 90.0];
 #[cfg(target_os = "android")]
 const TILE_GAP: f32 = 4.0;
@@ -102,6 +107,8 @@ struct Layout {
     buttons: [[f32; 4]; 3],
     done: [f32; 4],
     columns: usize,
+    /// One tile, stretched from `TILE` so the columns fill the grid's width.
+    tile: [f32; 2],
 }
 
 #[cfg(target_os = "android")]
@@ -112,18 +119,18 @@ impl Layout {
         let height = (h - HEADER - FOOTER).max(60.0);
         let side = [w - side_w - MARGIN, top, side_w, height];
         let grid = [MARGIN, top, (side[0] - 2.0 * MARGIN).max(TILE[0]), height];
-        let stack = 3.0 * BUTTON + 2.0 * BUTTON_GAP;
+        // Apply and Remove share a row, Arms has the one below: the preview gets the rest.
+        let stack = 2.0 * BUTTON + BUTTON_GAP;
         let button_x = side[0] + 6.0;
         let button_w = side_w - 12.0;
+        let half_w = ((button_w - BUTTON_GAP) / 2.0).floor();
         let first = top + height - 6.0 - stack;
-        let buttons = std::array::from_fn(|i| {
-            [
-                button_x,
-                first + i as f32 * (BUTTON + BUTTON_GAP),
-                button_w,
-                BUTTON,
-            ]
-        });
+        let second = first + BUTTON + BUTTON_GAP;
+        let buttons = [
+            [button_x, first, half_w, BUTTON],
+            [button_x + button_w - half_w, first, half_w, BUTTON],
+            [button_x, second, button_w, BUTTON],
+        ];
         let stage = [
             side[0] + 6.0,
             top + 6.0,
@@ -131,7 +138,13 @@ impl Layout {
             (first - top - 6.0 - 14.0).max(40.0),
         ];
         let done = [((w - 200.0) / 2.0).floor(), h - FOOTER + 5.0, 200.0, BUTTON];
-        let columns = changer::columns(grid[2] - 10.0, TILE[0], TILE_GAP);
+        // Room for the tiles: inside the frame, and left of the scrollbar.
+        let avail = (grid[2] - 14.0).max(TILE[0]);
+        let columns = changer::columns(avail, TILE[0], TILE_GAP);
+        let tile_w = ((avail + TILE_GAP) / columns as f32 - TILE_GAP)
+            .floor()
+            .max(TILE[0]);
+        let tile = [tile_w, (tile_w * TILE[1] / TILE[0]).floor()];
         Self {
             grid,
             side,
@@ -139,7 +152,39 @@ impl Layout {
             buttons,
             done,
             columns,
+            tile,
         }
+    }
+
+    /// Where the scrollbar can be pressed: its column, a little wider than what is drawn.
+    fn bar_zone(&self) -> [f32; 4] {
+        [
+            self.grid[0] + self.grid[2] - 14.0,
+            self.grid[1] + 4.0,
+            13.0,
+            self.view_height(),
+        ]
+    }
+
+    /// The scrollbar thumb's top and height (what `ui::scrollbar` draws), or `None` when
+    /// everything fits. `limit` is the most the grid scrolls.
+    fn bar_thumb(&self, limit: f32, scroll: f32) -> Option<(f32, f32)> {
+        if limit <= 0.0 {
+            return None;
+        }
+        let top = self.grid[1] + 4.0;
+        let height = self.view_height();
+        let content = height + limit;
+        let bar = (height * height / content)
+            .clamp(32.0, height - 8.0)
+            .floor();
+        Some((top + ((scroll / limit) * (height - bar)).floor(), bar))
+    }
+
+    /// The scroll amount that puts the thumb's grab point under pointer height `y`.
+    fn bar_scroll(&self, limit: f32, bar: f32, y: f32, offset: f32) -> f32 {
+        let travel = (self.view_height() - bar).max(1.0);
+        (((y - offset - (self.grid[1] + 4.0)) / travel) * limit).clamp(0.0, limit)
     }
 
     fn origin(&self) -> [f32; 2] {
@@ -539,7 +584,7 @@ impl Game<'_> {
         let limit = changer::max_scroll(
             count,
             layout.columns,
-            TILE[1],
+            layout.tile[1],
             TILE_GAP,
             layout.view_height(),
         );
@@ -557,8 +602,14 @@ impl Game<'_> {
         let active = state.changer.active();
         let origin = layout.origin();
         for index in 0..count {
-            let rect =
-                changer::tile_rect(index, layout.columns, TILE, TILE_GAP, origin, state.scroll);
+            let rect = changer::tile_rect(
+                index,
+                layout.columns,
+                layout.tile,
+                TILE_GAP,
+                origin,
+                state.scroll,
+            );
             if rect[1] + rect[3] < layout.grid[1] || rect[1] > layout.grid[1] + layout.grid[3] {
                 continue;
             }
@@ -573,7 +624,12 @@ impl Game<'_> {
             };
             let edge = if selected { 0xFFFF_FFFF } else { 0xFF2A_2A2A };
             frame(batch, atlas, rect, fill, edge);
-            let model_rect = [rect[0] + 3.0, rect[1] + 3.0, TILE[0] - 6.0, TILE[1] - 18.0];
+            let model_rect = [
+                rect[0] + 3.0,
+                rect[1] + 3.0,
+                layout.tile[0] - 6.0,
+                layout.tile[1] - 18.0,
+            ];
             let pixels = if index == 0 {
                 None
             } else {
@@ -588,13 +644,13 @@ impl Game<'_> {
                 yaw: 25.0,
                 zoom: 1.0,
             });
-            let name = fit(atlas, state.changer.title(index), TILE[0] - 6.0);
+            let name = fit(atlas, state.changer.title(index), layout.tile[0] - 6.0);
             let nw = atlas.font.width_text(&name);
             batch.text_styled(
                 atlas,
                 &name,
-                rect[0] + ((TILE[0] - nw) / 2.0).floor(),
-                rect[1] + TILE[1] - 12.0,
+                rect[0] + ((layout.tile[0] - nw) / 2.0).floor(),
+                rect[1] + layout.tile[1] - 12.0,
                 if index == active {
                     0xFF55_FF55
                 } else {
@@ -606,8 +662,8 @@ impl Game<'_> {
                 batch.fill(
                     atlas,
                     rect[0] + 1.0,
-                    rect[1] + TILE[1] - 3.0,
-                    TILE[0] - 2.0,
+                    rect[1] + layout.tile[1] - 3.0,
+                    layout.tile[0] - 2.0,
                     2.0,
                     0xFF55_FF55,
                 );
@@ -754,7 +810,7 @@ impl Game<'_> {
                     [start.0, start.1],
                     state.changer.count(),
                     layout.columns,
-                    TILE,
+                    layout.tile,
                     TILE_GAP,
                     layout.origin(),
                     state.scroll,
@@ -797,7 +853,25 @@ impl Game<'_> {
             self.publish_skin_changer();
             return;
         }
-        if inside(cursor, layout.stage) {
+        let limit = changer::max_scroll(
+            state.changer.count(),
+            layout.columns,
+            layout.tile[1],
+            TILE_GAP,
+            layout.view_height(),
+        );
+        if inside(cursor, layout.bar_zone())
+            && let Some((y, bar)) = layout.bar_thumb(limit, state.scroll)
+        {
+            // On the thumb: hold it where it was grabbed. On the track: it jumps there.
+            let offset = if cursor.1 >= y && cursor.1 <= y + bar {
+                cursor.1 - y
+            } else {
+                bar / 2.0
+            };
+            state.scroll = layout.bar_scroll(limit, bar, cursor.1, offset);
+            state.grab = Grab::Bar { offset };
+        } else if inside(cursor, layout.stage) {
             state.grab = Grab::Stage { last: cursor };
         } else if inside(cursor, layout.grid) {
             state.grab = Grab::Grid {
@@ -831,7 +905,7 @@ impl Game<'_> {
                     let limit = changer::max_scroll(
                         state.changer.count(),
                         layout.columns,
-                        TILE[1],
+                        layout.tile[1],
                         TILE_GAP,
                         layout.view_height(),
                     );
@@ -842,6 +916,18 @@ impl Game<'_> {
                     scroll,
                     moved,
                 };
+            }
+            Grab::Bar { offset } => {
+                let limit = changer::max_scroll(
+                    state.changer.count(),
+                    layout.columns,
+                    layout.tile[1],
+                    TILE_GAP,
+                    layout.view_height(),
+                );
+                if let Some((_, bar)) = layout.bar_thumb(limit, state.scroll) {
+                    state.scroll = layout.bar_scroll(limit, bar, cursor.1, offset);
+                }
             }
             Grab::None => {}
         }
@@ -861,7 +947,7 @@ impl Game<'_> {
         let limit = changer::max_scroll(
             state.changer.count(),
             layout.columns,
-            TILE[1],
+            layout.tile[1],
             TILE_GAP,
             layout.view_height(),
         );

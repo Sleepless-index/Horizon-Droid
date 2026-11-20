@@ -396,6 +396,8 @@ pub(super) enum Action {
     ToggleSuperPerf,
     ToggleBatteryPerf,
     ToggleMaxFpsMode,
+    /// The Home page's three-dot drawer for the Renderer / Frame rate / Controls tiles.
+    ToggleChipDrawer,
     ToggleZeroLatencyTouch,
     ToggleFastChunkUpload,
     // Controls & Control Editor actions
@@ -1379,8 +1381,10 @@ impl Launcher {
             .profile
             .clone()
             .unwrap_or_else(|| self.catalog.config.name.clone());
-        let account_text_w = ui.measure(Face::Medium, 13.5, &account_name).min(136.0);
-        let pill_w = (account_text_w + 64.0).clamp(114.0, 204.0);
+        // Top right: the profile picker (the account button moved to the Play row).
+        let profile_name = format!("Profile {}", self.catalog.config.profile + 1);
+        let profile_text_w = ui.measure(Face::Medium, 13.5, &profile_name);
+        let pill_w = (profile_text_w + 52.0).clamp(104.0, 190.0);
         let pill_x = (w - 18.0 - pill_w).max(190.0);
         let pill_y = 11.0;
         let pill_h = 36.0;
@@ -1424,47 +1428,39 @@ impl Launcher {
             &fitted_version,
         );
 
-        // Top-right Account Selector with avatar head, username, and chevron.
         ui.rounded(pill_x, pill_y, pill_w, pill_h, 9.0, my3_surface());
         ui.border(pill_x, pill_y, pill_w, pill_h, 9.0, my3_border());
-        ui.avatar_head_2d(pill_x + 6.0, pill_y + 4.0, 28.0, &account_name);
-        if self.login.signed_in {
-            ui.rounded(pill_x + 26.0, pill_y + 24.0, 9.0, 9.0, 4.5, my3_bg());
-            ui.rounded(
-                pill_x + 27.0,
-                pill_y + 25.0,
-                7.0,
-                7.0,
-                3.5,
-                color::hex(0x59D98E, 255),
-            );
-        }
-        let fitted_acct = ui.fit_text(Face::Medium, 13.5, &account_name, pill_w - 62.0);
+        let fitted_profile = ui.fit_text(Face::Medium, 13.5, &profile_name, pill_w - 44.0);
         ui.text(
             Face::Medium,
             13.5,
-            pill_x + 37.0,
+            pill_x + 14.0,
             pill_y + 8.0,
             my3_text(),
-            &fitted_acct,
+            &fitted_profile,
         );
         ui.icon(
             Icon::ChevronDown,
-            pill_x + pill_w - 22.0,
+            pill_x + pill_w - 24.0,
             pill_y + 12.0,
             12.0,
             my3_muted(),
         );
         self.targets
-            .push(([pill_x, pill_y, pill_w, pill_h], Action::Account));
+            .push(([pill_x, pill_y, pill_w, pill_h], Action::Profile));
 
         // ---- Left Jetpack Compose Material You NavigationRail + Stadium Active Indicator ----
-        let sidebar_w = if w < 560.0 { 136.0 } else { 184.0 };
+        // Icons only: a slim rail, the items spread evenly down it.
+        let sidebar_w = 72.0;
+        let rail_x = 6.0;
+        let rail_w = sidebar_w - 8.0;
         let rail_h = (h - 64.0).max(40.0);
-        ui.m3_tonal_card(6.0, 54.0, sidebar_w - 8.0, rail_h, 18.0, false);
-        let nav_start_y = 60.0;
-        let nav_step = ((h - nav_start_y - 12.0) / Page::ALL.len() as f32).clamp(31.0, 43.0);
-        let nav_h = (nav_step - 4.0).clamp(27.0, 38.0);
+        ui.m3_tonal_card(rail_x, 54.0, rail_w, rail_h, 18.0, false);
+        let nav_start_y = 64.0;
+        let nav_step = ((h - nav_start_y - 16.0) / Page::ALL.len() as f32).clamp(30.0, 48.0);
+        let nav_h = (nav_step - 6.0).clamp(26.0, 40.0);
+        let nav_w = 48.0;
+        let nav_x = rail_x + ((rail_w - nav_w) * 0.5).floor();
         let selected_idx = Page::ALL
             .iter()
             .position(|p| *p == self.catalog.page)
@@ -1497,37 +1493,28 @@ impl Launcher {
             0.0,
         );
         ui.rounded(
-            12.0,
+            nav_x,
             pill_draw_y,
-            sidebar_w - 24.0,
+            nav_w,
             pill_draw_h,
             pill_rad,
             my3_nav_active(),
         );
 
         for (i, page) in Page::ALL.iter().enumerate() {
-            let nx = 10.0;
             let ny = nav_start_y + i as f32 * nav_step;
-            let nw = sidebar_w - 20.0;
             let selected = *page == self.catalog.page;
             let ic_col = if selected { my3_accent() } else { my3_muted() };
-            let fg = if selected { my3_text() } else { my3_muted() };
+            let icon_s = 20.0;
             ui.icon(
                 page_icon(*page),
-                nx + 16.0,
-                ny + (nav_h - 17.0) * 0.5,
-                17.0,
+                nav_x + (nav_w - icon_s) * 0.5,
+                ny + (nav_h - icon_s) * 0.5,
+                icon_s,
                 ic_col,
             );
-            let face = if selected {
-                Face::SemiBold
-            } else {
-                Face::Medium
-            };
-            let label = ui.fit_text(face, 13.5, page.name(), nw - 44.0);
-            ui.text(face, 13.5, nx + 41.0, ny + (nav_h - 19.0) * 0.5, fg, &label);
             self.targets
-                .push(([nx, ny, nw, nav_h], Action::Page(*page)));
+                .push(([nav_x, ny, nav_w, nav_h], Action::Page(*page)));
         }
 
         // ---- Main Content Area (with spatial staggered entrance & glassmorphism) ----
@@ -1664,24 +1651,16 @@ impl Launcher {
                     Action::CancelInstall,
                 );
             } else {
-                let game_home = self.catalog.config.game_home(&self.home);
-                let touch_cfg = horizon_client::touch::Settings::load_from(
-                    &game_home.join("horizon-touch.json"),
-                );
                 let card_y = 58.0 + slide_y;
                 let bottom_reserve = if self.error.is_some() || !self.catalog.status.is_empty() {
                     46.0
                 } else {
                     16.0
                 };
-                let chip_h = 46.0;
-                let total_avail_h = (h - card_y - bottom_reserve).clamp(210.0, 360.0);
-                let hero_h = (total_avail_h - chip_h - 10.0).max(120.0);
-                // Renderer / Frame rate / Controls tiles sit at the top, the hero banner below.
-                let chip_y = card_y;
-                let card_y = card_y + chip_h + 10.0;
+                let hero_h = (h - card_y - bottom_reserve).clamp(210.0, 360.0);
 
-                // 1. Hero banner: the Horizon sunset behind the title, one compact Play split button.
+                // 1. Hero banner: the Horizon sunset, with one row along the bottom: the game
+                // title far left, Play centred, the account far right.
                 ui.m3_tonal_card(content_x, card_y, content_w, hero_h, 18.0, true);
                 // The art sits 6dp inside the card so its square corners stay within the rounded ones.
                 let art = [
@@ -1693,8 +1672,8 @@ impl Launcher {
                 ui.clipped(art, |ui| {
                     ui.draw_horizon_sunset(art[0], art[1], art[2], art[3]);
                 });
-                // Scrim: fades the art into the page colour so the title and button keep their contrast.
-                let scrim_y = art[1] + art[3] * 0.30;
+                // Scrim: fades the art into the page colour so the bottom row keeps its contrast.
+                let scrim_y = art[1] + art[3] * 0.45;
                 ui.fill_gradient(
                     art[0],
                     scrim_y,
@@ -1707,36 +1686,16 @@ impl Launcher {
                     16,
                 );
 
-                // Play split button, bottom-left of the hero.
+                // Play, centred along the bottom of the hero.
                 let is_launching = self.launching;
-                let split_total_w = match (installed, compact) {
-                    (true, true) => 176.0,
-                    (true, false) => 208.0,
-                    (false, true) => 214.0,
-                    (false, false) => 240.0,
-                };
-                let split_h = 44.0;
-                let split_x = content_x + 18.0;
-                let split_y = card_y + hero_h - 16.0 - split_h;
+                let play_w = if compact { 150.0 } else { 188.0 };
+                let play_h = 44.0;
+                let play_x = content_x + ((content_w - play_w) * 0.5).floor();
+                let play_y = card_y + hero_h - 18.0 - play_h;
 
                 if is_launching && installed {
-                    ui.rounded(
-                        split_x,
-                        split_y,
-                        split_total_w,
-                        split_h,
-                        12.0,
-                        my3_surface_high(),
-                    );
-                    ui.stroke_rounded(
-                        split_x,
-                        split_y,
-                        split_total_w,
-                        split_h,
-                        12.0,
-                        1.25,
-                        my3_accent(),
-                    );
+                    ui.rounded(play_x, play_y, play_w, play_h, 12.0, my3_surface_high());
+                    ui.stroke_rounded(play_x, play_y, play_w, play_h, 12.0, 1.25, my3_accent());
                     let started = *self
                         .anim
                         .launch_started
@@ -1751,13 +1710,13 @@ impl Launcher {
                     ui.centered_fit(
                         Face::SemiBold,
                         14.0,
-                        [split_x + 12.0, split_y + 4.0, split_total_w - 24.0, 24.0],
+                        [play_x + 12.0, play_y + 4.0, play_w - 24.0, 24.0],
                         my3_text(),
                         "Starting",
                     );
-                    let bar_x = split_x + 14.0;
-                    let bar_w = split_total_w - 28.0;
-                    let bar_y = split_y + split_h - 14.0;
+                    let bar_x = play_x + 14.0;
+                    let bar_w = play_w - 28.0;
+                    let bar_y = play_y + play_h - 14.0;
                     ui.rounded(bar_x, bar_y, bar_w, 6.0, 3.0, my3_track());
                     ui.rounded(
                         bar_x,
@@ -1775,144 +1734,239 @@ impl Launcher {
                     } else {
                         "Download"
                     };
-                    let prof_label = format!("Profile {} v", self.catalog.config.profile + 1);
-                    let (lead_r, trail_r) = ui.m3_split_button(
-                        split_x,
-                        split_y,
-                        split_total_w,
-                        split_h,
-                        Some(Icon::Play),
-                        play_label,
-                        &prof_label,
-                        true,
+                    let font = 14.5;
+                    let icon_s = 18.0;
+                    ui.rounded(play_x, play_y, play_w, play_h, 14.0, my3_accent());
+                    let fitted =
+                        ui.fit_text(Face::SemiBold, font, play_label, play_w - icon_s - 36.0);
+                    let text_w = ui.measure(Face::SemiBold, font, &fitted);
+                    let group_x = play_x + ((play_w - (icon_s + 8.0 + text_w)) * 0.5).max(10.0);
+                    ui.icon(
+                        Icon::Play,
+                        group_x,
+                        play_y + (play_h - icon_s) * 0.5,
+                        icon_s,
+                        my3_on_accent(),
                     );
-                    self.targets.push((lead_r, Action::Play));
-                    self.targets.push((trail_r, Action::Profile));
+                    ui.text(
+                        Face::SemiBold,
+                        font,
+                        group_x + icon_s + 8.0,
+                        play_y + ((play_h - font * 1.45) * 0.5).max(2.0),
+                        my3_on_accent(),
+                        &fitted,
+                    );
+                    self.targets
+                        .push(([play_x, play_y, play_w, play_h], Action::Play));
                 }
 
-                // Title and subtitle sit above the button.
-                let hero_text_w = (content_w - 36.0).max(110.0);
-                let sub_y = split_y - 8.0 - 16.0;
-                let title_y = sub_y - 4.0 - 34.0;
-                let hero_title = ui.fit_text(Face::SemiBold, 30.0, "Minecraft 26.3", hero_text_w);
+                // The game title, far left of the row.
+                let side_gap = 14.0;
+                let title_size = if compact { 17.0 } else { 22.0 };
+                let title_w = (play_x - side_gap - (content_x + 18.0)).max(60.0);
+                let hero_title = ui.fit_text(Face::SemiBold, title_size, "Minecraft 26.3", title_w);
                 ui.text(
                     Face::SemiBold,
-                    30.0,
+                    title_size,
                     content_x + 18.0,
-                    title_y,
+                    play_y + ((play_h - title_size * 1.3) * 0.5).max(0.0),
                     my3_text(),
                     &hero_title,
                 );
-                let hero_sub = ui.fit_text(
-                    Face::Regular,
-                    12.5,
-                    &if installed {
-                        format!("Profile {}", self.catalog.config.profile + 1)
-                    } else {
-                        "Your Java worlds, on Android".to_owned()
-                    },
-                    hero_text_w,
-                );
-                ui.text(
-                    Face::Regular,
-                    12.5,
-                    content_x + 18.0,
-                    sub_y,
-                    my3_muted(),
-                    &hero_sub,
-                );
 
-                let renderer_value = match self.catalog.config.renderer {
-                    crate::catalog::RendererMode::Vulkan => "Vulkan",
-                    crate::catalog::RendererMode::OpenGl => "OpenGL ES",
-                    crate::catalog::RendererMode::VulkanCompatibility => "Vulkan compat",
-                };
-                let fps_value = if self.catalog.config.battery_perf_mode {
-                    "60 Hz · Battery"
-                } else if self.catalog.config.max_fps_mode {
-                    "Uncapped"
-                } else {
-                    "120 Hz · Balanced"
-                };
-                let controls_value = format!(
-                    "{} · {}",
-                    match touch_cfg.control_style {
-                        horizon_client::touch::ControlStyle::Mcpe => "MCPE",
-                        horizon_client::touch::ControlStyle::GoyControl => "GoyControl",
-                    },
-                    touch_cfg.preset_name
-                );
-                let tile_gap = 8.0;
-                let tile_w = ((content_w - tile_gap * 2.0) / 3.0).max(80.0);
-                for (i, (caption, value, act, hi, ic)) in [
-                    (
-                        "Renderer",
-                        renderer_value.to_owned(),
-                        Action::Renderer,
-                        false,
-                        Icon::Monitor,
-                    ),
-                    (
-                        "Frame rate",
-                        fps_value.to_owned(),
-                        Action::ToggleMaxFpsMode,
-                        self.catalog.config.max_fps_mode,
-                        Icon::Play,
-                    ),
-                    (
-                        "Controls",
-                        controls_value,
-                        Action::SettingsCat(SettingsCategory::Controls),
-                        false,
-                        Icon::Gamepad,
-                    ),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    let tx = content_x + i as f32 * (tile_w + tile_gap);
-                    let cr = [tx, chip_y, tile_w, chip_h];
-                    self.targets.push((cr, act));
-                    ui.rounded(tx, chip_y, tile_w, chip_h, 14.0, my3_surface_high());
-                    if hi {
-                        ui.rounded(tx, chip_y, tile_w, chip_h, 14.0, my3_accent_soft());
-                    }
-                    ui.stroke_rounded(
-                        tx,
-                        chip_y,
-                        tile_w,
-                        chip_h,
-                        14.0,
-                        1.0,
-                        if hi { my3_accent() } else { my3_border() },
-                    );
-                    ui.icon(
-                        ic,
-                        tx + 10.0,
-                        chip_y + (chip_h - 18.0) * 0.5,
-                        18.0,
-                        my3_accent(),
-                    );
-                    let text_x = tx + 36.0;
-                    let text_w = (tile_w - 44.0).max(24.0);
-                    ui.text(
-                        Face::Medium,
-                        10.5,
-                        text_x,
-                        chip_y + 6.0,
-                        my3_muted(),
-                        caption,
-                    );
-                    let fitted = ui.fit_text(Face::SemiBold, 12.5, &value, text_w);
-                    ui.text(
-                        Face::SemiBold,
-                        12.5,
-                        text_x,
-                        chip_y + 22.0,
-                        my3_text(),
-                        &fitted,
+                // The account (skin head and name), far right of the row.
+                let acct_zone_w =
+                    (content_x + content_w - 18.0 - (play_x + play_w + side_gap)).max(60.0);
+                let acct_text_w = ui.measure(Face::Medium, 13.5, &account_name);
+                let acct_w = (acct_text_w + 64.0).clamp(104.0, 210.0).min(acct_zone_w);
+                let acct_h = 40.0;
+                let acct_x = content_x + content_w - 18.0 - acct_w;
+                let acct_y = play_y + (play_h - acct_h) * 0.5;
+                ui.rounded(acct_x, acct_y, acct_w, acct_h, 12.0, my3_surface_high());
+                ui.stroke_rounded(acct_x, acct_y, acct_w, acct_h, 12.0, 1.0, my3_border());
+                ui.avatar_head_2d(acct_x + 6.0, acct_y + 6.0, 28.0, &account_name);
+                if self.login.signed_in {
+                    ui.rounded(acct_x + 26.0, acct_y + 26.0, 9.0, 9.0, 4.5, my3_bg());
+                    ui.rounded(
+                        acct_x + 27.0,
+                        acct_y + 27.0,
+                        7.0,
+                        7.0,
+                        3.5,
+                        color::hex(0x59D98E, 255),
                     );
                 }
+                let fitted_acct = ui.fit_text(Face::Medium, 13.5, &account_name, acct_w - 62.0);
+                ui.text(
+                    Face::Medium,
+                    13.5,
+                    acct_x + 40.0,
+                    acct_y + 11.0,
+                    my3_text(),
+                    &fitted_acct,
+                );
+                ui.icon(
+                    Icon::ChevronDown,
+                    acct_x + acct_w - 22.0,
+                    acct_y + 14.0,
+                    12.0,
+                    my3_muted(),
+                );
+                self.targets
+                    .push(([acct_x, acct_y, acct_w, acct_h], Action::Account));
+
+                // 2. The three-dot drawer, top right of the hero. Closed it is just the dots;
+                // open it adds Renderer / Frame rate / Controls to its left.
+                let chip_h = 44.0;
+                let pad = 12.0;
+                let dots = [
+                    content_x + content_w - pad - chip_h,
+                    card_y + pad,
+                    chip_h,
+                    chip_h,
+                ];
+                let drawer_open = self.chip_drawer;
+                if drawer_open {
+                    let game_home = self.catalog.config.game_home(&self.home);
+                    let touch_cfg = horizon_client::touch::Settings::load_from(
+                        &game_home.join("horizon-touch.json"),
+                    );
+                    let renderer_value = match self.catalog.config.renderer {
+                        crate::catalog::RendererMode::Vulkan => "Vulkan",
+                        crate::catalog::RendererMode::OpenGl => "OpenGL ES",
+                        crate::catalog::RendererMode::VulkanCompatibility => "Vulkan compat",
+                    };
+                    let fps_value = if self.catalog.config.battery_perf_mode {
+                        "60 Hz · Battery"
+                    } else if self.catalog.config.max_fps_mode {
+                        "Uncapped"
+                    } else {
+                        "120 Hz · Balanced"
+                    };
+                    let controls_value = format!(
+                        "{} · {}",
+                        match touch_cfg.control_style {
+                            horizon_client::touch::ControlStyle::Mcpe => "MCPE",
+                            horizon_client::touch::ControlStyle::GoyControl => "GoyControl",
+                        },
+                        touch_cfg.preset_name
+                    );
+                    let tile_gap = 8.0;
+                    let room = content_w - 2.0 * pad - chip_h - tile_gap;
+                    let tile_w = ((room - tile_gap * 2.0) / 3.0).clamp(80.0, 184.0);
+                    let row_x = dots[0] - tile_gap - (tile_w * 3.0 + tile_gap * 2.0);
+                    for (i, (caption, value, act, hi, ic)) in [
+                        (
+                            "Renderer",
+                            renderer_value.to_owned(),
+                            Action::Renderer,
+                            false,
+                            Icon::Monitor,
+                        ),
+                        (
+                            "Frame rate",
+                            fps_value.to_owned(),
+                            Action::ToggleMaxFpsMode,
+                            self.catalog.config.max_fps_mode,
+                            Icon::Play,
+                        ),
+                        (
+                            "Controls",
+                            controls_value,
+                            Action::SettingsCat(SettingsCategory::Controls),
+                            false,
+                            Icon::Gamepad,
+                        ),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let tx = row_x + i as f32 * (tile_w + tile_gap);
+                        let chip_y = dots[1];
+                        self.targets.push(([tx, chip_y, tile_w, chip_h], act));
+                        ui.rounded(tx, chip_y, tile_w, chip_h, 14.0, my3_surface_high());
+                        if hi {
+                            ui.rounded(tx, chip_y, tile_w, chip_h, 14.0, my3_accent_soft());
+                        }
+                        ui.stroke_rounded(
+                            tx,
+                            chip_y,
+                            tile_w,
+                            chip_h,
+                            14.0,
+                            1.0,
+                            if hi { my3_accent() } else { my3_border() },
+                        );
+                        ui.icon(
+                            ic,
+                            tx + 10.0,
+                            chip_y + (chip_h - 18.0) * 0.5,
+                            18.0,
+                            my3_accent(),
+                        );
+                        let text_x = tx + 36.0;
+                        let text_w = (tile_w - 44.0).max(24.0);
+                        ui.text(
+                            Face::Medium,
+                            10.5,
+                            text_x,
+                            chip_y + 6.0,
+                            my3_muted(),
+                            caption,
+                        );
+                        let fitted = ui.fit_text(Face::SemiBold, 12.5, &value, text_w);
+                        ui.text(
+                            Face::SemiBold,
+                            12.5,
+                            text_x,
+                            chip_y + 22.0,
+                            my3_text(),
+                            &fitted,
+                        );
+                    }
+                }
+                ui.rounded(
+                    dots[0],
+                    dots[1],
+                    dots[2],
+                    dots[3],
+                    14.0,
+                    if drawer_open {
+                        my3_accent_soft()
+                    } else {
+                        my3_surface_high()
+                    },
+                );
+                ui.stroke_rounded(
+                    dots[0],
+                    dots[1],
+                    dots[2],
+                    dots[3],
+                    14.0,
+                    1.0,
+                    if drawer_open {
+                        my3_accent()
+                    } else {
+                        my3_border()
+                    },
+                );
+                for k in 0..3 {
+                    let cx = dots[0] + dots[2] * 0.5 + (k as f32 - 1.0) * 8.0;
+                    let cy = dots[1] + dots[3] * 0.5;
+                    ui.rounded(
+                        cx - 2.5,
+                        cy - 2.5,
+                        5.0,
+                        5.0,
+                        2.5,
+                        if drawer_open {
+                            my3_accent()
+                        } else {
+                            my3_text()
+                        },
+                    );
+                }
+                self.targets.push((dots, Action::ToggleChipDrawer));
             }
         } else if page == Page::Skins {
             self.wardrobe.draw(
@@ -7320,6 +7374,9 @@ impl Launcher {
                     "Battery Performance Mode disabled."
                 }
                 .into();
+            }
+            Some(Action::ToggleChipDrawer) => {
+                self.chip_drawer = !self.chip_drawer;
             }
             Some(Action::ToggleMaxFpsMode) => {
                 self.catalog.config.max_fps_mode = !self.catalog.config.max_fps_mode;
