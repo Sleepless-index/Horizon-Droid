@@ -1,4 +1,5 @@
-//! Data packs (`<world>/datapacks`: folders and zips with `pack.mcmeta`) and
+//! Data packs (`<world>/datapacks` and the game folder's `datapacks`: folders and zips with
+//! `pack.mcmeta`) and
 //! the parts of them commands use: `.mcfunction` functions (with macros and
 //! line continuation), function tags and predicates.
 use crate::zip::Zip;
@@ -119,9 +120,42 @@ impl DataPack {
         }
     }
 }
-/// The packs in `<world>/datapacks`, sorted by name.
+/// The game folder's own `datapacks` folder (Horizon-only): packs there apply to every
+/// world, new ones included, so a worldgen pack can be there before the world exists.
+pub fn global_dir() -> PathBuf {
+    std::env::current_dir().unwrap_or_default().join("datapacks")
+}
+
+/// The packs in `<world>/datapacks` and in the global folder (`global_dir`), sorted by
+/// name. A world's own pack replaces a global one of the same name.
 pub fn discover(world: &Path) -> Vec<DataPack> {
-    let Ok(entries) = std::fs::read_dir(world.join("datapacks")) else {
+    discover_in(world, &global_dir())
+}
+
+fn discover_in(world: &Path, global: &Path) -> Vec<DataPack> {
+    let mut packs = discover_local(world);
+    for pack in scan(global) {
+        if !packs.iter().any(|p| p.id == pack.id) {
+            packs.push(pack);
+        }
+    }
+    packs.sort_by(|a, b| a.id.cmp(&b.id));
+    packs
+}
+
+/// The ids of the global folder's packs, sorted by name.
+pub fn global_ids() -> Vec<String> {
+    scan(&global_dir()).into_iter().map(|p| p.id).collect()
+}
+
+/// Only the packs in `<world>/datapacks`, sorted by name.
+pub fn discover_local(world: &Path) -> Vec<DataPack> {
+    scan(&world.join("datapacks"))
+}
+
+/// The packs (folders and zips with a `pack.mcmeta`) in `dir`, sorted by name.
+fn scan(dir: &Path) -> Vec<DataPack> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut packs = Vec::new();
@@ -347,7 +381,8 @@ pub fn install(dir: &Path, world: &Path, selected: &[String]) -> Result<(), Stri
 /// priority first (`WorldOpenFlows.recreateWorldData` keeps the world's `DataConfiguration`).
 /// The built-in pack is selected unless the world turned it off.
 pub fn for_recreate(world: &Path) -> (Option<PathBuf>, Vec<String>) {
-    let packs = discover(world);
+    // The global folder's packs apply on their own; they are not the world's to copy.
+    let packs = discover_local(world);
     // No flags here: the recreated world keeps the original's
     // `enabled_features`, and the flag-aware load re-adds the feature packs
     // it asks for (`for_recreate`'s selection only seeds the new world's
@@ -879,6 +914,27 @@ pub fn worldgen_overrides(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn global_folder_packs_join_every_world_and_the_worlds_own_win() {
+        let root = std::env::temp_dir().join(format!("hz-datapack-global-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let pack = |dir: &Path, name: &str| {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+            std::fs::write(dir.join(name).join("pack.mcmeta"), "{}").unwrap();
+        };
+        let global = root.join("global");
+        pack(&global, "shared");
+        pack(&global, "both");
+        let world = root.join("world");
+        pack(&world.join("datapacks"), "both");
+        pack(&world.join("datapacks"), "own");
+        let packs = discover_in(&world, &global);
+        let ids: Vec<&str> = packs.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["file/both", "file/own", "file/shared"]);
+        assert!(matches!(&packs[0].source, Source::Dir(d) if d.starts_with(&world)));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn enabled_packs_override_worldgen_in_order() {

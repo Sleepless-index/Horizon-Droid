@@ -527,9 +527,15 @@ pub(super) fn creation_worldgen_overrides(
     let empty = std::path::PathBuf::new();
     let packs =
         horizon_client::datapack::discover_with_features(pack_dir.unwrap_or(&empty), resources);
-    let enabled: Vec<_> = data_packs
+    // The global folder's packs come first (lowest priority); the Create screen does not list
+    // them, so the selection never names them.
+    let global = horizon_client::datapack::global_ids();
+    let enabled: Vec<_> = global
         .iter()
-        .filter_map(|id| packs.iter().find(|p| &p.id == id))
+        .chain(data_packs.iter())
+        .enumerate()
+        .filter(|(i, id)| *i < global.len() || !global.contains(id))
+        .filter_map(|(_, id)| packs.iter().find(|p| &p.id == id))
         .collect();
     let (overrides, _) =
         horizon_client::datapack::worldgen_overrides(&enabled, |b| biomes.contains(b));

@@ -590,6 +590,8 @@ impl Options {
                 .map_err(|e| format!("game folder {}: {e}", dir.display()))?;
         }
         horizon_client::skins::appearance::configure(std::path::Path::new("."))?;
+        // The global data pack folder, so players can see where to drop packs.
+        let _ = std::fs::create_dir_all(horizon_client::datapack::global_dir());
         // Vanilla's quick play (Main, QuickPlay.joinSingleplayerWorld): only a
         // world that exists opens; else the title screen. --world also creates one.
         if let Some(world) = o.quick_play.take() {
