@@ -37,7 +37,7 @@ Work only in this repository.
   alone. A tab's `name` isn't applied.
 - Screen sprite modifiers (`overlay_modifiers`, applied once when the atlas builds, `HudAtlas::apply_sprite_modifiers`):
   `color` (a multiply on the sprite's texels), `new_texture` (the sprite draws another's region), `u0` to `v1` and
-  `width_inc`, `height_inc`. Not applied: `x_inc`, `y_inc`, `overlays`, and `color` together with `new_texture`.
+  `width_inc`, `height_inc`. Not applied: `color` together with `new_texture`.
 - `colors.json` / `color.properties` custom colours: `environment.*` (`powder_snow_fog`, `blindness_fog_distance`,
   `darkness_fog_distance`, `boss_fog_distance`, `water_fog_brightening`) in `FogTables`, and `redstone.<power>` for the
   wire's tint, `effect.*` (mob effect colours in the effect table), `dye.*` diffuse colours (mobs, shulker/banner
@@ -61,8 +61,10 @@ Work only in this repository.
   cache keys on the player's choices).
 - Textured `bar_color`: a `<item>_bar.png` (or a `bar_color` colormap) colours the durability bar, sampled with the remaining
   durability (1 = full) as `x`, `y`, `temperature` and `downfall`. The bar only shows on a damaged item.
+- Colormap `state_prop(i)` (position of the state's i-th property, by name order, over its value count) and `state_prop_i(i)`
+  (the position itself) give a block tint one slot per distinct state.
 - Colormap `color_modifier`: `red`/`green`/`blue` expressions over `RED`, `GREEN`, `BLUE` (0-255) rewrite the sampled colour;
-  `legacy_temperature` samples like `temperature`. `biome_id` is still refused.
+  `legacy_temperature` samples like `temperature`.
 - `fog_fade` (water and lava fog): the fog starts at `end - (end - start) * fade`, so 1 is vanilla and 0 is a hard edge.
   Block `map_color` (a `MapColor` name, with or without `map.`) recolours that block on filled maps.
 - Particle modifiers (`particle_modifiers/`): `color`, `red/green/blue/alpha`, `size`, `life` and `speed` expressions run
@@ -91,9 +93,9 @@ Work only in this repository.
 
 1. Custom `offset_type` objects.
 3. Position-dependent colormaps for fluid tints (blocks and items already read the position).
-4. Colormap `state_prop`.
-5. Biome layers: `blend_to_gray`, `REMOVE`, colormap and expression arguments, other attributes; weather groups and the other dimension attributes; fog distances and cloud colour.
-6. Custom particle tickers.
+4. Biome layers: `blend_to_gray`, `REMOVE`, colormap and expression arguments, other attributes; weather groups and the other dimension attributes; fog distances and cloud colour.
+5. Custom particle types (`custom_particles/`: initializer, ticker, render mode, sound and particle emitters) and block
+   `particle_emitters`; the engine's particle type is a closed vanilla list, so this needs a custom variant first.
 
 ## Rules
 
