@@ -63,6 +63,7 @@ impl Game<'_> {
         self.extras.fps.record(now, elapsed.as_secs_f32() * 1000.0);
         self.native_frame(elapsed);
         self.pvp_frame();
+        self.recipes_received_now();
     }
     /// The frame counter for mods: fps, min, 1% low.
     pub(super) fn frame_reading(&self) -> (u32, u32, u32) {

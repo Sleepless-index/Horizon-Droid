@@ -28,10 +28,13 @@ pub fn install(
 
 static MODS_BUILT_IN: AtomicBool = AtomicBool::new(false);
 
+/// The game was built with native mods (the game sets it at start): one of them may draw in
+/// [`native_world_drawn`], so the first-person hand keeps its own pass after it.
 pub fn set_mods_built_in(on: bool) {
     MODS_BUILT_IN.store(on, Ordering::Relaxed);
 }
 
+/// Whether [`native_world_drawn`] may draw ([`set_mods_built_in`]).
 pub fn world_drawn_hooked() -> bool {
     MODS_BUILT_IN.load(Ordering::Relaxed)
         || RENDERERS

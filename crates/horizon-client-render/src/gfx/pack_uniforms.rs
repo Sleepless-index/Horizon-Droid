@@ -35,6 +35,20 @@ pub struct PackInputs {
     /// `heldItemId`, `heldItemId2` (item.properties, 5.3) and `heldBlockLightValue(2)`.
     pub held_items: [i32; 2],
     pub held_light: [i32; 2],
+    /// `isRightHanded` (the Main Hand option) and `is_on_ground`.
+    pub right_handed: bool,
+    pub on_ground: bool,
+    /// The dimension type's lowest block (`bedrockLevel`), build height (`heightLimit`),
+    /// logical height, sky light and ceiling.
+    pub min_y: i32,
+    pub height: i32,
+    pub logical_height: i32,
+    pub has_skylight: bool,
+    pub has_ceiling: bool,
+    /// `isElytraFlying`: the player is fall flying.
+    pub elytra_flying: bool,
+    /// `cloudHeight`, see [`cloud_height`].
+    pub cloud_height: f32,
     /// The values native mods hand their packs (`frame.mods`, `native_shader_params`).
     pub mod_params: [[f32; 4]; 8],
     /// The local player's state for Iris's status uniforms (`currentPlayerHealth`, `is_hurt`, etc.).
@@ -83,6 +97,17 @@ impl Default for PlayerStatus {
             sprinting: false,
             elytra_flying: false,
         }
+    }
+}
+
+/// The `cloudHeight` uniform. Vanilla reads `visual/cloud_height` only while the cloud color
+/// has alpha (`LevelExtractor`); a dimension without clouds has no height, which the uniform
+/// reports as NaN. NaN is not vanilla's own value: packs map it to "no clouds".
+pub fn cloud_height(cloud_color_alpha: f32, height: f32) -> f32 {
+    if crate::clouds::has_color(cloud_color_alpha) {
+        height
+    } else {
+        f32::NAN
     }
 }
 
@@ -488,6 +513,13 @@ impl FrameUniforms {
                 "relativeEyePosition" => v3((frame.camera - frame.eye).as_vec3()),
                 "playerLookVector" | "playerBodyVector" => v3(look),
                 "firstPersonCamera" => Value::i(&[i32::from(frame.first_person)]),
+                "isRightHanded" => Value::i(&[i32::from(inputs.right_handed)]),
+                "is_on_ground" => Value::i(&[i32::from(inputs.on_ground)]),
+                "bedrockLevel" => Value::i(&[inputs.min_y]),
+                "heightLimit" => Value::i(&[inputs.height]),
+                "logicalHeightLimit" => Value::i(&[inputs.logical_height]),
+                "hasSkylight" => Value::i(&[i32::from(inputs.has_skylight)]),
+                "hasCeiling" => Value::i(&[i32::from(inputs.has_ceiling)]),
                 "eyeAltitude" => Value::f(&[frame.camera.y as f32]),
                 "upPosition" => v3(to_view(Vec3::new(0.0, 100.0, 0.0))),
                 "sunPosition" => v3(sun),
@@ -550,9 +582,7 @@ impl FrameUniforms {
                 "heldBlockLightValue2" => Value::i(&[inputs.held_light[1]]),
                 "endFlashIntensity" => Value::f(&[0.0]),
                 "endFlashPosition" => Value::f(&[0.0, 100.0, 0.0]),
-                "bedrockLevel" => Value::i(&[-64]),
-                "cloudHeight" => Value::f(&[192.0]),
-                "isRightHanded" => Value::i(&[1]),
+                "cloudHeight" => Value::f(&[inputs.cloud_height]),
                 "dhNearPlane" => Value::f(&[frame.depth_far * 0.5]),
                 "dhFarPlane" => Value::f(&[frame.depth_far * 4.0]),
                 "dhRenderDistance" => Value::i(&[frame.depth_far as i32]),
@@ -585,7 +615,9 @@ impl FrameUniforms {
                 )]),
                 "is_sneaking" => Value::i(&[i32::from(inputs.status.sneaking)]),
                 "is_sprinting" => Value::i(&[i32::from(inputs.status.sprinting)]),
-                "isElytraFlying" => Value::i(&[i32::from(inputs.status.elytra_flying)]),
+                "isElytraFlying" => Value::i(&[i32::from(
+                    inputs.elytra_flying || inputs.status.elytra_flying,
+                )]),
                 "ambientLight" => Value::f(&[if inputs.biome_category == 16 {
                     0.1
                 } else {
@@ -620,12 +652,6 @@ impl FrameUniforms {
                 "lightningBoltPosition" => Value::f(&[0.0, 10000.0, 0.0, 0.0]),
                 "normalMatrix" => m4(view),
                 "isNether" => Value::i(&[i32::from(inputs.biome_category == 16)]),
-                "is_on_ground" => Value::i(&[1]),
-                "heightLimit" | "logicalHeightLimit" => Value::i(&[384]),
-                "hasSkylight" => Value::i(&[i32::from(
-                    inputs.biome_category != 16 && inputs.biome_category != 8,
-                )]),
-                "hasCeiling" => Value::i(&[i32::from(inputs.biome_category == 16)]),
                 // renderStage is NONE outside gbuffers draws.
                 _ => Value::i(&[0]),
             }
@@ -747,6 +773,25 @@ mod tests {
         assert_eq!(i32::from_ne_bytes(out[16..20].try_into().unwrap()), 1);
         Value::f(&[1.0; 16]).write("mat4", &mut out, 60);
         assert_eq!(out[60..64], [0; 4], "a value past the block is dropped");
+    }
+
+    #[test]
+    fn cloud_height_needs_a_cloud_color() {
+        assert_eq!(cloud_height(0.8, 192.33), 192.33);
+        assert_eq!(cloud_height(0.8, 120.0), 120.0);
+        assert!(cloud_height(0.0, 192.33).is_nan());
+    }
+
+    #[test]
+    fn elytra_and_cloud_height_uniforms_are_written() {
+        assert!(NAMES.contains(&"isElytraFlying") && NAMES.contains(&"cloudHeight"));
+        let mut out = vec![0u8; 16];
+        Value::i(&[1]).write("bool", &mut out, 0);
+        assert_eq!(i32::from_ne_bytes(out[0..4].try_into().unwrap()), 1);
+        Value::f(&[192.33]).write("float", &mut out, 4);
+        assert_eq!(f32::from_ne_bytes(out[4..8].try_into().unwrap()), 192.33);
+        Value::f(&[f32::NAN]).write("float", &mut out, 8);
+        assert!(f32::from_ne_bytes(out[8..12].try_into().unwrap()).is_nan());
     }
 
     #[test]

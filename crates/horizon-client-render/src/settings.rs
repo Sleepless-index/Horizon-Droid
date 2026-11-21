@@ -348,10 +348,11 @@ impl Settings {
             .parent()
             .and_then(|dir| fs::read_to_string(dir.join(crate::extras::FILE)).ok())
             .unwrap_or_default();
-        let mut extras = crate::extras::Extras::parse(&extras_text);
+        let extras = crate::extras::Extras::parse(&extras_text);
+        // The enabled mods are the game folder's, shared by its players (`--player-dir`).
         let mods = path
             .parent()
-            .map(crate::mod_list::ModList::load)
+            .map(|dir| crate::mod_list::ModList::load(&crate::logging::shared_dir(dir)))
             .unwrap_or_default();
         let keypad = crate::keypad::Settings::load(&path.with_file_name("horizon-keypad.json"));
         let touch = crate::touch::Settings::load_from(&path.with_file_name("horizon-touch.json"));
@@ -676,7 +677,7 @@ impl Settings {
             #[cfg(target_os = "android")]
             let _ = self.touch.save_to(&dir.join("horizon-touch.json"));
             self.extras.save(dir);
-            self.mods.save(dir);
+            self.mods.save(&crate::logging::shared_dir(dir));
         }
     }
     /// Volume of a sound source (master excluded).

@@ -12,7 +12,7 @@ pub mod breathing;
 pub mod skin_head;
 pub use horizon_client_render::{
     assets, atlas_sources, audio, auth, ban_notice, bidi, biome, block_entities, block_entity_anim,
-    block_entity_render, border_render, breaking, brewing, camera, chat, chunk, chunk_map, clouds,
+    block_entity_render, border_render, breaking, brewing, camera, chat, chunk, chunk_map, cit, clouds,
     collisions, command_block, containers, crash, datapack, dynamic_light, effects, environment,
     extras, fast_hash, fog, font, gfx, graphics, graphics_style, graphics_ui, hdr_calibration, hud,
     hud_layout, hud_overlays, inventory_effects, java_text, jigsaw_block, level_loading, light,
@@ -85,6 +85,7 @@ pub mod jar_transpiler;
 pub mod lan;
 pub mod landing;
 pub mod locator_bar;
+pub mod lod_net;
 pub mod menu;
 pub mod merchant;
 pub mod mobs;
@@ -124,6 +125,7 @@ pub mod scoreboard_cmd;
 pub mod screen_layout;
 pub mod screen_narrator;
 pub mod touch_ui;
+pub mod social_screen;
 pub use horizon_server_files as server;
 pub mod server_packs;
 pub mod shadows;

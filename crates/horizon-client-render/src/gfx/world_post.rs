@@ -447,14 +447,15 @@ impl Post {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         screen: &wgpu::TextureView,
+        mut timing: Option<&mut super::pack_timing::PassTiming>,
     ) {
         let Some(target) = &self.target else { return };
         let Some(taa) = target.taa.as_ref().filter(|_| self.taa_previous.is_some()) else {
-            self.finish_with(encoder, screen, &target.group);
+            self.finish_with(encoder, screen, &target.group, timing.as_deref_mut());
             return;
         };
         let Some(res) = &self.taa_resources else {
-            self.finish_with(encoder, screen, &target.group);
+            self.finish_with(encoder, screen, &target.group, timing.as_deref_mut());
             return;
         };
         let i = (self.taa_frame % 2) as usize;
@@ -470,6 +471,7 @@ impl Post {
         })];
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Horizon TAA"),
+            timestamp_writes: timing.as_deref_mut().and_then(|t| t.writes("TAA")),
             color_attachments: &attachments,
             ..Default::default()
         });
@@ -477,7 +479,7 @@ impl Post {
         pass.set_bind_group(0, &taa.resolve[i], &[]);
         pass.draw(0..3, 0..1);
         drop(pass);
-        self.finish_with(encoder, screen, &taa.show[i]);
+        self.finish_with(encoder, screen, &taa.show[i], timing);
     }
 
     /// Draw what `group` binds (`bind`) onto `screen`.
@@ -486,8 +488,9 @@ impl Post {
         encoder: &mut wgpu::CommandEncoder,
         screen: &wgpu::TextureView,
         group: &wgpu::BindGroup,
+        timing: Option<&mut super::pack_timing::PassTiming>,
     ) {
-        self.finish_in_rect(encoder, screen, group, None);
+        self.finish_in_rect(encoder, screen, group, None, timing);
     }
     pub fn finish_in_rect(
         &self,
@@ -495,6 +498,7 @@ impl Post {
         screen: &wgpu::TextureView,
         group: &wgpu::BindGroup,
         rect: Option<[u32; 4]>,
+        timing: Option<&mut super::pack_timing::PassTiming>,
     ) {
         let attachments = [Some(wgpu::RenderPassColorAttachment {
             view: screen,
@@ -507,6 +511,7 @@ impl Post {
         })];
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Horizon post"),
+            timestamp_writes: timing.and_then(|t| t.writes("Post")),
             color_attachments: &attachments,
             ..Default::default()
         });

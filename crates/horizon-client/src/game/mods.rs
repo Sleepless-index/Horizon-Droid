@@ -679,7 +679,7 @@ impl Game<'_> {
 #[cfg(not(feature = "mods"))]
 impl Game<'_> {
     pub(super) fn start_mods(&mut self) {
-        let dir = Self::options_path().with_file_name(mod_list::DIR);
+        let dir = Self::game_dir().join(mod_list::DIR);
         let mut paths = horizon_mods::find(&dir);
         let home_dir = horizon_client::logging::private_home().join(mod_list::DIR);
         for found in horizon_mods::find(&home_dir) {

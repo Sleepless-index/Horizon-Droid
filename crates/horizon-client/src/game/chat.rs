@@ -1207,6 +1207,11 @@ impl Game<'_> {
         if self.ui.hide_gui && !focused {
             return;
         }
+        self.ui.chat.smooth = self.settings.extras.chat_animation;
+        self.ui.chat.hide_indicator = !self.settings.extras.chat_indicator;
+        // The fractional tick makes the smooth chat extra's slide move every
+        // frame; vanilla's fade reads it too.
+        let now = self.ticks as f32 + self.clock.fraction() as f32;
         // While the chat screen is open on Android, the on-screen keyboard
         // overlays the bottom of the window instead of resizing it (immersive
         // mode), so the history must move up with the input below. Clamp the
@@ -1217,7 +1222,7 @@ impl Game<'_> {
         }
         self.ui
             .chat
-            .draw(batch, &self.gui.atlas, self.ticks, focused);
+            .draw(batch, &self.gui.atlas, now, focused);
         batch.height = original_height;
     }
     /// `HoverEvent.EntityTooltipInfo.getTooltipLines`: the name when the
@@ -1553,9 +1558,7 @@ impl Game<'_> {
     }
     /// F2: ScreenShot.grab into `screenshots/` with vanilla's file name.
     pub(super) fn take_screenshot(&mut self) {
-        let dir = std::env::current_dir()
-            .unwrap_or_default()
-            .join("screenshots");
+        let dir = horizon_client::logging::player_dir().join("screenshots");
         if std::fs::create_dir_all(&dir).is_err() {
             return;
         }

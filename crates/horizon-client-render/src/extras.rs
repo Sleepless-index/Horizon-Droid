@@ -101,8 +101,13 @@ pub struct Extras {
     pub minimap_rotate: bool,
     /// Retry lost multiplayer connections (`reconnect`).
     pub auto_reconnect: bool,
+    /// Positional sounds leave a few static sound channels free for UI sounds
+    /// and others played to the listener (`sound_engine::HEARD_RESERVE`).
+    pub ui_sound_reserve: bool,
     /// The player's own name tag over its model in third person.
     pub own_name_tag: bool,
+    /// No particles from breaking or mining a block (other particles stay).
+    pub hide_block_particles: bool,
     /// Mouse Tweaks-style drags in the inventory and storage containers.
     pub mouse_tweaks: bool,
     /// With them, the wheel over a slot moves its items one at a time.
@@ -111,6 +116,10 @@ pub struct Extras {
     pub sort: bool,
     /// A vanilla key name: sorts the part under the cursor.
     pub sort_key: String,
+    /// A new chat line slides in from the left while it fades in (`Chat::layout`).
+    pub chat_animation: bool,
+    /// The indicator bar at the left of a chat line (on by default, as vanilla).
+    pub chat_indicator: bool,
     /// No AI: every AI feature hidden and off (`horizon_core::no_ai`; the launcher writes it too).
     pub no_ai: bool,
     /// Agents may control the game the player starts: it opens its control socket for
@@ -118,6 +127,8 @@ pub struct Extras {
     pub agent_control: bool,
     /// The PvP & HUD page's options (`pvp`).
     pub pvp: crate::pvp::Pvp,
+    /// Another controller can join P1's world (`splitscreen`, off by default).
+    pub splitscreen: bool,
 }
 impl Default for Extras {
     fn default() -> Self {
@@ -144,14 +155,19 @@ impl Default for Extras {
             minimap_zoom: 1.0,
             minimap_rotate: false,
             auto_reconnect: false,
+            ui_sound_reserve: false,
             own_name_tag: false,
+            hide_block_particles: false,
             mouse_tweaks: false,
             mouse_tweaks_wheel: true,
             sort: false,
             sort_key: "key.keyboard.unknown".into(),
+            chat_animation: false,
+            chat_indicator: true,
             no_ai: false,
             agent_control: false,
             pvp: Default::default(),
+            splitscreen: false,
         }
     }
 }
@@ -220,13 +236,18 @@ impl Extras {
                 }
                 "minimapRotate" => e.minimap_rotate = flag(e.minimap_rotate),
                 "autoReconnect" => e.auto_reconnect = flag(e.auto_reconnect),
+                "uiSoundReserve" => e.ui_sound_reserve = flag(e.ui_sound_reserve),
                 "ownNameTag" => e.own_name_tag = flag(e.own_name_tag),
+                "hideBlockParticles" => e.hide_block_particles = flag(e.hide_block_particles),
                 "mouseTweaks" => e.mouse_tweaks = flag(e.mouse_tweaks),
                 "mouseTweaksWheel" => e.mouse_tweaks_wheel = flag(e.mouse_tweaks_wheel),
                 "sort" => e.sort = flag(e.sort),
                 "sortKey" if value.starts_with("key.") => e.sort_key = value.to_owned(),
+                "chatAnimation" => e.chat_animation = flag(e.chat_animation),
+                "chatIndicator" => e.chat_indicator = flag(e.chat_indicator),
                 horizon_core::no_ai::KEY => e.no_ai = flag(e.no_ai),
                 "agentControl" => e.agent_control = flag(e.agent_control),
+                "splitscreen" => e.splitscreen = flag(e.splitscreen),
                 key => {
                     e.pvp.parse_line(key, value);
                 }
@@ -236,7 +257,7 @@ impl Extras {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "packBrowser:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nownNameTag:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\n{}:{}\nagentControl:{}\n",
+            "packBrowser:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nsplitscreen:{}\n",
             bool_text(self.pack_browser),
             bool_text(self.fullbright),
             bool_text(self.dynamic_lights),
@@ -263,14 +284,19 @@ impl Extras {
             self.minimap_zoom,
             bool_text(self.minimap_rotate),
             bool_text(self.auto_reconnect),
+            bool_text(self.ui_sound_reserve),
             bool_text(self.own_name_tag),
+            bool_text(self.hide_block_particles),
             bool_text(self.mouse_tweaks),
             bool_text(self.mouse_tweaks_wheel),
             bool_text(self.sort),
             self.sort_key,
+            bool_text(self.chat_animation),
+            bool_text(self.chat_indicator),
             horizon_core::no_ai::KEY,
             bool_text(self.no_ai),
             bool_text(self.agent_control),
+            bool_text(self.splitscreen),
         );
         self.pvp.serialize(&mut text);
         text
@@ -394,11 +420,17 @@ pub enum Item {
     Fullbright,
     DynamicLights,
     OwnNameTag,
+    HideBlockParticles,
     AutoReconnect,
+    UiSoundReserve,
     MouseTweaks,
     MouseTweaksWheel,
     Sort,
     SortKey,
+    /// A new chat line slides in and fades in (`Chat::layout`).
+    ChatAnimation,
+    /// The coloured bar at the left of a chat line.
+    ChatIndicator,
     /// Not on the Extras page: Horizon Settings shows No AI, its AI Agent page Agent Control.
     NoAi,
     AgentControl,
@@ -407,6 +439,8 @@ pub enum Item {
     PackBrowser,
     /// On the PvP & HUD page (`pvp::rows`).
     Pvp(crate::pvp::Opt),
+    /// On the Splitscreen settings page.
+    Splitscreen,
 }
 /// The Extras page: headers and items.
 pub fn rows() -> Vec<Result<Item, &'static str>> {
@@ -417,13 +451,20 @@ pub fn rows() -> Vec<Result<Item, &'static str>> {
         Ok(DynamicLights),
         Err("Third person"),
         Ok(OwnNameTag),
+        Err("Particles"),
+        Ok(HideBlockParticles),
         Err("Inventory"),
         Ok(MouseTweaks),
         Ok(MouseTweaksWheel),
         Ok(Sort),
         Ok(SortKey),
+        Err("Chat"),
+        Ok(ChatAnimation),
+        Ok(ChatIndicator),
         Err("Multiplayer"),
         Ok(AutoReconnect),
+        Err("Sound"),
+        Ok(UiSoundReserve),
         Err("Menus"),
         Ok(PackBrowser),
     ]
@@ -434,15 +475,20 @@ impl Item {
             Item::Fullbright => "Fullbright",
             Item::DynamicLights => "Dynamic lights",
             Item::OwnNameTag => "Own name tag",
+            Item::HideBlockParticles => "Hide block-break particles",
             Item::AutoReconnect => "Auto-reconnect",
+            Item::UiSoundReserve => "Keep channels for UI sounds",
             Item::MouseTweaks => "Mouse Tweaks controls",
             Item::MouseTweaksWheel => "Scroll wheel moves items",
             Item::Sort => "Sort buttons",
             Item::SortKey => "Sort key",
+            Item::ChatAnimation => "Smooth chat",
+            Item::ChatIndicator => "Message indicator",
             Item::NoAi => "No AI",
             Item::AgentControl => "Agent Control",
             Item::PackBrowser => "Resource pack browser",
             Item::Pvp(o) => o.caption(),
+            Item::Splitscreen => "Splitscreen",
         }
     }
     /// The switch this setting belongs to: it does nothing while that is off.
@@ -450,10 +496,12 @@ impl Item {
         use Item::*;
         Some(match self {
             Pvp(o) => return o.parent().map(Pvp),
+            UiSoundReserve => return None,
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
-            Fullbright | DynamicLights | OwnNameTag | MouseTweaks | Sort | AutoReconnect | NoAi
-            | AgentControl | PackBrowser => {
+            ChatIndicator => ChatAnimation,
+            Fullbright | DynamicLights | OwnNameTag | HideBlockParticles | MouseTweaks | Sort
+            | AutoReconnect | NoAi | AgentControl | PackBrowser | Splitscreen | ChatAnimation => {
                 return None;
             }
         })
@@ -468,8 +516,14 @@ impl Item {
             Item::OwnNameTag => {
                 "Shows your name above your head in third person, as other players see it. Hidden when the server hides your team's names or you're invisible."
             }
+            Item::HideBlockParticles => {
+                "Hides the debris particles that burst from a broken block and crumble off the one you mine. Other particles stay."
+            }
             Item::AutoReconnect => {
                 "Rejoins a server after a lost connection or a restart, never after a kick or ban."
+            }
+            Item::UiSoundReserve => {
+                "Sounds in the world leave 16 of the 247 sound channels free, so a flood of them (a big explosion) can't silence menu clicks."
             }
             Item::MouseTweaks => {
                 "Right-drag places one per slot, left-drag gathers the held item, Shift + left-drag moves every slot."
@@ -483,6 +537,10 @@ impl Item {
             Item::SortKey => {
                 "Sorts the part under the cursor. Click, then press a key; Escape unbinds it."
             }
+            Item::ChatAnimation => {
+                "A new chat line slides in from the left while it fades in, instead of appearing whole."
+            }
+            Item::ChatIndicator => "The coloured bar at the left of a chat line.",
             Item::NoAi => {
                 "Hides and turns off every AI feature: agent control, horizon-ctl and the MCP servers. The launcher's switch too."
             }
@@ -490,6 +548,9 @@ impl Item {
                 "Select Resource Packs gets an Add button that searches Modrinth and installs a pack into your packs folder. Off, the game never contacts Modrinth."
             }
             Item::Pvp(o) => o.description(),
+            Item::Splitscreen => {
+                "In a world, another controller can join as a new player: press A when it asks, then pick a profile and where to play."
+            }
             Item::AgentControl => {
                 "Your own AI agent can play this game through horizon-ctl or an MCP client, on this computer only."
             }
@@ -500,12 +561,16 @@ impl Item {
         use crate::graphics_style::Cost;
         match self {
             Item::Fullbright => Some(Cost::None),
+            Item::UiSoundReserve => Some(Cost::None),
             Item::DynamicLights => Some(Cost::Low),
+            Item::ChatAnimation => Some(Cost::None),
             Item::OwnNameTag
+            | Item::HideBlockParticles
             | Item::AutoReconnect
             | Item::MouseTweaks
             | Item::Sort
-            | Item::PackBrowser => Some(Cost::None),
+            | Item::PackBrowser
+            | Item::Splitscreen => Some(Cost::None),
             _ => None,
         }
     }
@@ -515,14 +580,19 @@ impl Item {
             Item::Fullbright => e.fullbright,
             Item::DynamicLights => e.dynamic_lights,
             Item::OwnNameTag => e.own_name_tag,
+            Item::HideBlockParticles => e.hide_block_particles,
             Item::AutoReconnect => e.auto_reconnect,
+            Item::UiSoundReserve => e.ui_sound_reserve,
             Item::MouseTweaks => e.mouse_tweaks,
             Item::MouseTweaksWheel => e.mouse_tweaks_wheel,
             Item::Sort => e.sort,
+            Item::ChatAnimation => e.chat_animation,
+            Item::ChatIndicator => e.chat_indicator,
             Item::NoAi => e.no_ai,
             Item::AgentControl => e.agent_control,
             Item::PackBrowser => e.pack_browser,
             Item::Pvp(o) => return o.switch(&e.pvp),
+            Item::Splitscreen => e.splitscreen,
             _ => return None,
         })
     }
@@ -556,14 +626,19 @@ impl Item {
             Item::Fullbright => e.fullbright = !e.fullbright,
             Item::DynamicLights => e.dynamic_lights = !e.dynamic_lights,
             Item::OwnNameTag => e.own_name_tag = !e.own_name_tag,
+            Item::HideBlockParticles => e.hide_block_particles = !e.hide_block_particles,
             Item::AutoReconnect => e.auto_reconnect = !e.auto_reconnect,
+            Item::UiSoundReserve => e.ui_sound_reserve = !e.ui_sound_reserve,
             Item::MouseTweaks => e.mouse_tweaks = !e.mouse_tweaks,
             Item::MouseTweaksWheel => e.mouse_tweaks_wheel = !e.mouse_tweaks_wheel,
             Item::Sort => e.sort = !e.sort,
+            Item::ChatAnimation => e.chat_animation = !e.chat_animation,
+            Item::ChatIndicator => e.chat_indicator = !e.chat_indicator,
             Item::NoAi => e.no_ai = !e.no_ai,
             Item::AgentControl => e.agent_control = !e.agent_control,
             Item::PackBrowser => e.pack_browser = !e.pack_browser,
             Item::Pvp(o) => o.cycle(&mut e.pvp, _back),
+            Item::Splitscreen => e.splitscreen = !e.splitscreen,
             Item::SortKey => {}
         }
     }
@@ -586,7 +661,8 @@ mod tests {
         let d = Extras::default();
         assert!(!d.fullbright && !d.dynamic_lights);
         assert!(!d.zoom && !d.fps && !d.keystrokes && !d.minimap && !d.auto_reconnect);
-        assert!(!d.mouse_tweaks && !d.sort && !d.own_name_tag);
+        assert!(!d.mouse_tweaks && !d.sort && !d.own_name_tag && !d.ui_sound_reserve);
+        assert!(!d.hide_block_particles);
         assert_eq!(Extras::parse(""), d);
         assert_eq!(Extras::parse(&d.serialize()), d);
         let mut e = d.clone();
@@ -611,10 +687,21 @@ mod tests {
         e.auto_reconnect = true;
         Item::OwnNameTag.cycle(&mut e, false);
         assert_eq!(Item::OwnNameTag.switch(&e), Some(true));
+        assert_eq!(Item::HideBlockParticles.switch(&e), Some(false));
+        Item::HideBlockParticles.cycle(&mut e, false);
+        assert!(e.hide_block_particles);
+        assert_eq!(Item::HideBlockParticles.switch(&e), Some(true));
+        let only = Extras::parse("hideBlockParticles:true\n");
+        assert!(only.hide_block_particles && !only.own_name_tag);
         e.mouse_tweaks = true;
         e.mouse_tweaks_wheel = false;
         e.sort = true;
         e.sort_key = "key.keyboard.r".into();
+        e.chat_animation = true;
+        e.chat_indicator = false;
+        assert!(!e.splitscreen);
+        Item::Splitscreen.cycle(&mut e, false);
+        assert_eq!(Item::Splitscreen.switch(&e), Some(true));
         assert_eq!(Extras::parse(&e.serialize()), e);
     }
 

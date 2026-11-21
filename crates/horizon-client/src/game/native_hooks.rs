@@ -273,18 +273,21 @@
 //! Bodies have no `cfg` and no macros: horizon-mixins refuses a target with
 //! either (`tests::hook_points_stay_hookable`).
 use super::{
-    Game, GameLevel, LevelDimension, Screen, execution_role::ExecutionRole,
-    native_block_entity_draw::BlockEntityDraw, native_panel_recipes::RecipePage,
+    Game, GameLevel, LevelDimension, Screen,
+    execution_role::ExecutionRole,
+    native_block_entity_draw::BlockEntityDraw,
+    native_mob_draw::NativeMobRender,
+    native_panel_recipes::RecipePage,
 };
 use horizon_assets::item_model::StackView;
 pub(crate) use horizon_client::mod_api::{
-    self, AttachmentResult, Attachments, BiomeColors, BlockProperties, ClientboundPlayPacket,
+    self, AttachmentResult, Attachments, BlockProperties, ClientboundPlayPacket,
     EntityDataValue, EquipmentSlot, Holder, HudMode, ItemEnergyBuffer, LayerDefinition,
-    ModEnergyBuffer, Music, MusicLayer, NativeBlockRim, NativeBossBar, NativeCamera, NativeClock,
+    ModEnergyBuffer, NativeBlockRim, NativeBossBar, NativeCamera, NativeClock,
     NativeColoredLight, NativeCommand, NativeConfig, NativeConfigFile, NativeDataMapType,
     NativeDispensed, NativeFishingMedium, NativeFluidAction, NativeFluidDrain, NativeFluidStack,
     NativeFluidTankView, NativeInventoryKind, NativeLifecycleContext, NativeLootDrops,
-    NativeLootOdds, NativeMapDecoration, NativeMapInfo, NativeMinimap, NativeMobRender, NativeMod,
+    NativeLootOdds, NativeMapDecoration, NativeMapInfo, NativeMinimap, NativeMod,
     NativeNoteBlockChange, NativePanelEvent, NativePlayerRender, NativeRecipeCategory,
     NativeRecipeLookup, NativeReloadListener, NativeScreen, NativeScreenView, NativeServerPlayer,
     NativeShake, NativeStack, NativeTextField, NativeWorldDraw, NativeZoom, RecipeBookCategory,
@@ -299,6 +302,7 @@ use horizon_client::{
 
 use horizon_client::{
     atlas_sources::qualified,
+    biome::BiomeColors,
     block_entities::Pos,
     chat::ChatSource,
     containers::{BlockEntity, MOD_MENUS, ModBlockEntity, ModContainer, ModFluidTanks},
@@ -313,6 +317,7 @@ use horizon_client::{
     keybinds,
     mobs::{Damage, Who},
     mod_list::{self, Installed, NativePage},
+    music::{Music, MusicLayer},
     particles::{ParticleOptions, ParticleType},
     text::Text,
 };
@@ -1413,7 +1418,34 @@ impl Game<'_> {
             image.height as f32,
         ]
     }
-
+    pub(super) fn track_drag_button(&mut self, button: MouseButton, pressed: bool) {
+        // Any release ends the drag, as vanilla's `MouseHandler.onButton` clears `activeButton`:
+        // left down, right down, left up sends no drag while right is still held.
+        self.drag_button = pressed.then_some(button);
+    }
+    pub(super) fn screen_mouse_dragged(&self, previous: (f32, f32)) -> bool {
+        if self.pad_synthetic_input() || self.cursor == previous {
+            return false;
+        }
+        let Some(button) = self
+            .drag_button
+            .filter(|b| self.physical_buttons.contains(b))
+        else {
+            return false;
+        };
+        let Some(screen) = self.screen_view_now() else {
+            return false;
+        };
+        let mut canceled = false;
+        self.native_screen_mouse_dragged_pre(
+            &screen,
+            super::glfw_button(button),
+            [self.cursor.0 - previous.0, self.cursor.1 - previous.1],
+            super::glfw_modifiers(self.modifiers),
+            &mut canceled,
+        );
+        canceled
+    }
     /// A screen the native mods' input hooks are for is open: the window has a
     /// renderer, `Screen::Playing` is behind it (so not the title screen, nor a
     /// book, a sign editor, a server dialog or a prompt drawn over gameplay)
@@ -1463,7 +1495,22 @@ impl Game<'_> {
         );
         canceled
     }
-
+    pub(super) fn screen_key_released(&self, key: KeyCode) -> bool {
+        let Some(name) = keybinds::key_name(key) else {
+            return false;
+        };
+        let Some(screen) = self.screen_view_now() else {
+            return false;
+        };
+        let mut canceled = false;
+        self.native_screen_key_released_pre(
+            &screen,
+            name,
+            super::glfw_modifiers(self.modifiers),
+            &mut canceled,
+        );
+        canceled
+    }
     /// Text on its way to a text box after the open screen's character hooks
     /// (`native_screen_char_typed_pre` per printable character): the cancelled
     /// characters are gone and every other one stays, control characters
@@ -2551,7 +2598,18 @@ impl Game<'_> {
     /// still applies to the grass set here; the swamp's noise colours
     /// replace it. API 107.
     pub(super) fn native_biome_colors(&self, biome: &str, colors: &mut BiomeColors) {
-        mod_api::dispatch_biome_colors(self, mod_api::mods(), biome, colors);
+        let mut api = mod_api::BiomeColors {
+            grass: colors.grass,
+            foliage: colors.foliage,
+            dry_foliage: colors.dry_foliage,
+            water: colors.water,
+            water_fog: 0,
+        };
+        mod_api::dispatch_biome_colors(self, mod_api::mods(), biome, &mut api);
+        colors.grass = api.grass;
+        colors.foliage = api.foliage;
+        colors.dry_foliage = api.dry_foliage;
+        colors.water = api.water;
     }
 
     /// Choose this client's music, once a client tick: `music` and `volume`
@@ -2576,7 +2634,12 @@ impl Game<'_> {
     /// fuller arrangement as a village grows). Their sound events should be
     /// `stream: true` in `sounds.json`. API 119.
     pub(super) fn native_music_layers(&self, layers: &mut Vec<MusicLayer>) {
-        mod_api::dispatch_music_layers(self, mod_api::mods(), layers);
+        let mut api = Vec::new();
+        mod_api::dispatch_music_layers(self, mod_api::mods(), &mut api);
+        layers.extend(api.into_iter().map(|l| MusicLayer {
+            sound: l.sound,
+            volume: l.volume,
+        }));
     }
 
     /// The values native mods hand their shader packs in this frame,
@@ -3169,7 +3232,13 @@ impl Game<'_> {
             game_time: draw.game_time,
             light: draw.light,
         };
-        mod_api::dispatch_mob_submit(self, mod_api::mods(), mob, &mut api_draw, drawn);
+        mod_api::dispatch_mob_submit(
+            self,
+            mod_api::mods(),
+            &api_mob_render(mob, draw.light),
+            &mut api_draw,
+            drawn,
+        );
         draw.light = api_draw.light;
     }
 
@@ -3201,7 +3270,14 @@ impl Game<'_> {
             game_time: draw.game_time,
             light: draw.light,
         };
-        mod_api::dispatch_player_submit(self, mod_api::mods(), player, who, &mut api_draw, drawn);
+        mod_api::dispatch_player_submit(
+            self,
+            mod_api::mods(),
+            &api_mob_render(player, draw.light),
+            who,
+            &mut api_draw,
+            drawn,
+        );
         draw.light = api_draw.light;
     }
 
@@ -3225,7 +3301,13 @@ impl Game<'_> {
             game_time: draw.game_time,
             light: draw.light,
         };
-        mod_api::dispatch_mob_layer(self, mod_api::mods(), mob, who, &mut api_draw);
+        mod_api::dispatch_mob_layer(
+            self,
+            mod_api::mods(),
+            &api_mob_render(mob, draw.light),
+            who,
+            &mut api_draw,
+        );
         draw.light = api_draw.light;
     }
 
@@ -10048,6 +10130,94 @@ impl Game<'_> {
         batch.scale_since(start, at[0], at[1], size / 16.0, size / 16.0);
         true
     }
+    /// Item `item`'s icon drawn with model `model` (`minecraft:paper` as
+    /// `mymod:wheel_icon`, an `item_model` of a content mod's), as `native_item`
+    /// draws one; false for an unknown item. API @API:native_mod_screen@.
+    pub(super) fn native_item_model(
+        &self,
+        batch: &mut HudBatch,
+        item: &str,
+        model: &str,
+        at: [f32; 2],
+        size: f32,
+    ) -> bool {
+        if self.res.items().get(item).is_none() {
+            return false;
+        }
+        let mut stack = ItemStack::new(item, 1);
+        let mut data = horizon_client::item_data::StackData::default();
+        data.set_other(
+            "minecraft:item_model",
+            Some(horizon_world::nbt::Tag::String(model.into())),
+        );
+        stack.extra = Some(Box::new(data));
+        let start = batch.vertices.len();
+        self.draw_item_model(batch, &stack, at[0], at[1]);
+        batch.scale_since(start, at[0], at[1], size / 16.0, size / 16.0);
+        true
+    }
+    /// A quad of corners `points` (in order round it) in GUI pixels, `argb`:
+    /// a wedge, a slanted bar, what `native_fill`'s rectangles can't draw.
+    /// API @API:native_mod_screen@.
+    pub(super) fn native_quad(&self, batch: &mut HudBatch, points: [[f32; 2]; 4], argb: u32) {
+        let [a, r, g, b] = argb.to_be_bytes();
+        batch.fill_quad(&self.gui.atlas, points, rgba(r, g, b, a));
+    }
+    /// Opens a screen of mod `mod_id`'s own over the world: the screen hooks
+    /// fire over it as over any other, so the mod draws it in
+    /// `native_screen_render_post` and takes its clicks, scroll, keys and
+    /// typing there; the mouse is freed, and Escape closes it. Every mod's own
+    /// screen has the `NativeScreenView.id` `mod`, so a mod's screen hooks
+    /// check `native_mod_screen()` is its own before drawing. It doesn't pause
+    /// a single-player game (as the inventory doesn't). True when it is open:
+    /// false while another screen is (or another mod's), over the title
+    /// screen, a book, a sign editor, a dialog or a prompt, while the world
+    /// loads, and anywhere but the window's own client (the server thread, a
+    /// dedicated server). A gamepad can close it (B, Start) but not click on
+    /// it: its clicks don't reach the mouse hooks. API @API:native_mod_screen@.
+    pub(super) fn native_mod_screen_open(&mut self, mod_id: &str) -> bool {
+        // What `screen_hooks_open` would refuse over the world: the mod's
+        // screen would be up with no hook to draw or click it.
+        let blocked = self.title.is_some()
+            || self.renderer.is_none()
+            || self.lan_acting.is_some()
+            || self.player.is_none()
+            || self.screen_over_playing()
+            || self.remote_loading();
+        let owner = self.native_mod_screen();
+        if let Some(open) = mod_screen_opens(self.screen, blocked, owner, mod_id) {
+            return open;
+        }
+        self.native_mod_screen = Some(mod_id.to_owned());
+        self.screen = Screen::Mod;
+        self.keys.clear();
+        self.left = false;
+        self.right = false;
+        self.mining = None;
+        self.capture(false);
+        true
+    }
+    /// Closes mod `mod_id`'s own screen, if it is open. API @API:native_mod_screen@.
+    pub(super) fn native_mod_screen_close(&mut self, mod_id: &str) {
+        if self.native_mod_screen().is_some_and(|id| id == mod_id) {
+            self.close_native_mod_screen();
+        }
+    }
+    /// The mod whose own screen is open, if one is (Escape, or another screen
+    /// replacing it, closes it). API @API:native_mod_screen@.
+    pub(super) fn native_mod_screen(&self) -> Option<&str> {
+        self.native_mod_screen
+            .as_deref()
+            .filter(|_| self.screen == Screen::Mod)
+    }
+    /// A mod's own screen closes (Escape, or `native_mod_screen_close`).
+    pub(super) fn close_native_mod_screen(&mut self) {
+        self.native_mod_screen = None;
+        if self.screen == Screen::Mod {
+            self.screen = Screen::Playing;
+            self.capture(true);
+        }
+    }
     /// The open menu's title (the block's name, or the one it was given),
     /// as plain text. API 20.
     pub(super) fn native_screen_title(&self) -> Option<String> {
@@ -10183,7 +10353,7 @@ impl Game<'_> {
     /// where the WebAssembly mod of the same id kept its storage, so a
     /// player's settings carry over. Not created here.
     pub(super) fn native_data_dir(&self, mod_id: &str) -> PathBuf {
-        let mods = Self::options_path().with_file_name(mod_list::DIR);
+        let mods = Self::game_dir().join(mod_list::DIR);
         mods.join(".horizon-mod-data").join(mod_id)
     }
     /// The folder mod `mod_id`'s post-build step wrote into when the launcher built the game
@@ -10210,7 +10380,7 @@ impl Game<'_> {
     /// `self`, so it works from any hook (`Game::native_config_dir()`), the
     /// level's too. API 26.
     pub(super) fn native_config_dir() -> Result<PathBuf, String> {
-        config_dir(&Self::options_path())
+        config_dir(&Self::game_dir())
     }
     /// Shows the panel beside container screens with these items (at most
     /// 8192), as the game's own slots in pages, with a search box; the
@@ -10244,7 +10414,8 @@ impl Game<'_> {
     /// nobody uses and outside a world. These are the server's table on the
     /// server thread, a dedicated server or a LAN host; a client, the
     /// single-player window included, sees only the content mods' recipes, not
-    /// the world's data packs'. API 36.
+    /// the world's data packs', unless a mod had the server send it the type
+    /// (`native_datapack_sync`). API 36.
     pub(super) fn native_recipes_of_type(&self, kind: &str) -> &[CustomRecipe] {
         if self.outside_world() {
             return &[];
@@ -10303,9 +10474,10 @@ impl Game<'_> {
         self.player.is_none() && self.options.execution_role.is_client()
     }
     /// Every item and recipe the game knows, made once (the same for every
-    /// call); none outside a world. They are the window's own: the world's
-    /// in single player, vanilla's on a server, which sends a client no
-    /// others.
+    /// call); none outside a world. They are the window's own (the content
+    /// mods' and vanilla's), with the server's recipes of the types a mod had
+    /// it send (`native_datapack_sync`) in their place; made again when those
+    /// arrive (`native_recipes_received`).
     pub(super) fn native_recipes(&mut self) -> Option<Arc<NativeRecipes>> {
         self.player.as_ref()?;
         self.made_recipes()
@@ -11215,8 +11387,9 @@ fn property_change(
 }
 
 /// `config/` beside `options`, made when missing.
-fn config_dir(options: &Path) -> Result<PathBuf, String> {
-    let dir = options.with_file_name("config");
+/// `config/` in the game folder, shared by its players.
+fn config_dir(game_dir: &Path) -> Result<PathBuf, String> {
+    let dir = game_dir.join("config");
     fs::create_dir_all(&dir).map_err(|e| dir.display().to_string() + ": " + &e.to_string())?;
     Ok(dir)
 }
@@ -11372,6 +11545,43 @@ fn dimension_id(dimension: LevelDimension) -> &'static str {
     }
 }
 
+/// What `native_mod_screen_open(mod_id)` does over `screen` (`blocked`: an
+/// overlay, the title screen, no window or no player; `owner`'s own screen
+/// open): `None` opens it, `Some` answers without changing anything (true:
+/// `mod_id`'s is already open).
+fn mod_screen_opens(
+    screen: Screen,
+    blocked: bool,
+    owner: Option<&str>,
+    mod_id: &str,
+) -> Option<bool> {
+    if screen == Screen::Mod {
+        return Some(owner == Some(mod_id));
+    }
+    if screen != Screen::Playing || blocked {
+        return Some(false);
+    }
+    None
+}
+
+/// The render state the bundled mods' API takes (`mod_api::NativeMobRender`),
+/// from the engine's richer one.
+fn api_mob_render<'a>(mob: &NativeMobRender<'a>, light: u32) -> mod_api::NativeMobRender<'a> {
+    mod_api::NativeMobRender {
+        id: mob.id,
+        kind: mob.kind,
+        pos: [0.0; 3],
+        yaw: mob.head_yaw,
+        pitch: mob.pitch,
+        body_yaw: mob.body_yaw,
+        partial_tick: mob.partial,
+        light,
+        baby: mob.baby,
+        invisible: false,
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     /// Exercise the gameplay constructor, where name-based entities compete
@@ -11475,6 +11685,35 @@ mod tests {
             Some(super::BlockEntity::Banner(_))
         ));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A mod's own screen opens only over the world, never over another
+    /// screen, an overlay (the title screen, a book, loading, no window) or
+    /// another mod's; opening it again is a no-op.
+    #[test]
+    fn a_mod_screen_opens_only_over_the_world() {
+        use super::{Screen, mod_screen_opens};
+        assert_eq!(mod_screen_opens(Screen::Playing, false, None, "a"), None);
+        assert_eq!(
+            mod_screen_opens(Screen::Playing, true, None, "a"),
+            Some(false)
+        );
+        for other in [
+            Screen::Paused,
+            Screen::Inventory,
+            Screen::Chat,
+            Screen::Options,
+        ] {
+            assert_eq!(mod_screen_opens(other, false, None, "a"), Some(false));
+        }
+        assert_eq!(
+            mod_screen_opens(Screen::Mod, false, Some("a"), "a"),
+            Some(true)
+        );
+        assert_eq!(
+            mod_screen_opens(Screen::Mod, false, Some("b"), "a"),
+            Some(false)
+        );
     }
 
     /// The characters a `ScreenEvent.CharacterTyped.Pre` sees are the
@@ -11731,7 +11970,11 @@ mod tests {
         // From its doc comment's last line, so an attribute above it counts.
         let hook = source.find("pub fn native_loot_table_load(").unwrap();
         let start = source[..hook].rfind("///").unwrap();
-        let body = &source[start..start + source[start..].find("\n}\n").unwrap()];
+        let end = source[start..]
+            .find("\n}\n")
+            .or_else(|| source[start..].find("\r\n}\r\n"))
+            .unwrap();
+        let body = &source[start..start + end];
         for line in body.lines() {
             assert!(
                 !line.contains("cfg"),
@@ -11908,18 +12151,17 @@ mod tests {
     /// The config folder is `config/` beside `options.txt`, made when
     /// missing.
     #[test]
-    fn config_dir_is_config_beside_options() {
+    fn config_dir_is_config_in_the_game_folder() {
         // Callable without a game, from any hook.
         let _: fn() -> Result<std::path::PathBuf, String> = super::Game::native_config_dir;
         use super::config_dir;
         let root = std::env::temp_dir().join(format!("horizon-config-dir-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let options = root.join("options.txt");
         assert!(!root.join("config").exists());
-        let dir = config_dir(&options).unwrap();
+        let dir = config_dir(&root).unwrap();
         assert_eq!(dir, root.join("config"));
         assert!(dir.is_dir());
-        assert_eq!(config_dir(&options).unwrap(), dir);
+        assert_eq!(config_dir(&root).unwrap(), dir);
         let _ = std::fs::remove_dir_all(&root);
     }
 
