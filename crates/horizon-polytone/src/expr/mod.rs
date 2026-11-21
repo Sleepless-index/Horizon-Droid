@@ -188,6 +188,35 @@ impl Program {
         Ok(Self { body, locals, fast })
     }
 
+    /// Whether the program calls the game function `name`.
+    pub fn calls(&self, name: &str) -> bool {
+        fn expr(e: &Expr, name: &str) -> bool {
+            match e {
+                Expr::Const(_) | Expr::Local(_) | Expr::Root(_) => false,
+                Expr::Neg(a) | Expr::Not(a) => expr(a, name),
+                Expr::Binary(_, a, b) | Expr::And(a, b) | Expr::Or(a, b) => {
+                    expr(a, name) || expr(b, name)
+                }
+                Expr::Cond(c, a, b) => expr(c, name) || expr(a, name) || expr(b, name),
+                Expr::Call(_, args) => args.iter().any(|a| expr(a, name)),
+                Expr::Host(host, args) => &**host == name || args.iter().any(|a| expr(a, name)),
+                Expr::Method(target, _, args) => {
+                    expr(target, name) || args.iter().any(|a| expr(a, name))
+                }
+            }
+        }
+        fn block(body: &[Stmt], name: &str) -> bool {
+            body.iter().any(|s| match s {
+                Stmt::Expr(e) | Stmt::Assign(_, _, e) => expr(e, name),
+                Stmt::If(branches, otherwise) => {
+                    branches.iter().any(|(c, b)| expr(c, name) || block(b, name))
+                        || block(otherwise, name)
+                }
+            })
+        }
+        block(&self.body, name)
+    }
+
     /// Whether the program reads nothing of its context but the `root.name()` methods `allowed`
     /// accepts (with any arguments): no other method, no context object passed on or kept, and
     /// no game function. A host can then share one value between contexts that agree on those.

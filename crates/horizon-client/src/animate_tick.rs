@@ -579,6 +579,16 @@ fn do_animate_tick(
     }
     let state = ctx.state(pos);
     block_animate_tick(tables, engine, ctx, state, pos, center);
+    if engine.has_block_emitters()
+        && let Some(block) = ctx.registry.state(state)
+    {
+        let name = if block.name.contains(':') {
+            block.name.clone()
+        } else {
+            format!("minecraft:{}", block.name)
+        };
+        engine.emit_block(&name, &|key| block.properties.get(key).cloned(), pos);
+    }
     let facts = ctx.facts.get(state);
     if facts.fluid != Fluid::None {
         fluid_animate_tick(

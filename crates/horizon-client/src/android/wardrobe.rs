@@ -26,6 +26,50 @@ pub(super) enum CloudAction {
     Cape(usize),
 }
 const TOAST_SECONDS: f32 = 5.5;
+const PREVIEW_SIZE: [u32; 2] = [320, 400];
+const THUMB_SIZE: [u32; 2] = [128, 192];
+const SKIN_THUMB_CAMERA: preview::Camera = preview::Camera {
+    yaw: -25.0,
+    pitch: -8.0,
+    zoom: 1.0,
+};
+const CAPE_THUMB_CAMERA: preview::Camera = preview::Camera {
+    yaw: 155.0,
+    pitch: -6.0,
+    zoom: 1.0,
+};
+
+/// Opaque pixels as rectangles: equal pixels merge across a row, then down the rows.
+fn merged_runs(image: &image::RgbaImage) -> Vec<changer::Run> {
+    let mut out: Vec<changer::Run> = Vec::new();
+    let mut open: std::collections::HashMap<(u32, u32, [u8; 4]), usize> =
+        std::collections::HashMap::new();
+    for y in 0..image.height() {
+        let mut next = std::collections::HashMap::new();
+        let mut x = 0;
+        while x < image.width() {
+            let color = image.get_pixel(x, y).0;
+            let start = x;
+            x += 1;
+            while x < image.width() && image.get_pixel(x, y).0 == color {
+                x += 1;
+            }
+            if color[3] == 0 {
+                continue;
+            }
+            let key = (start, x - start, color);
+            if let Some(&index) = open.get(&key) {
+                out[index].0[3] += 1.0;
+                next.insert(key, index);
+            } else {
+                out.push(([start as f32, y as f32, (x - start) as f32, 1.0], color));
+                next.insert(key, out.len() - 1);
+            }
+        }
+        open = next;
+    }
+    out
+}
 
 pub(super) struct Wardrobe {
     pub root: PathBuf,
@@ -252,7 +296,13 @@ impl Wardrobe {
             .ok()
             .and_then(|b| skins::read_skin(&b).ok())
             .unwrap_or_else(preview::mannequin);
-        let runs = changer::cape_thumbnail(&cape, &skin);
+        let runs = std::sync::Arc::new(merged_runs(&preview::render(
+            &skin,
+            Some(&cape),
+            Model::Classic,
+            CAPE_THUMB_CAMERA,
+            THUMB_SIZE,
+        )));
         self.thumbs.insert(key, runs.clone());
         Some(runs)
     }
@@ -264,7 +314,13 @@ impl Wardrobe {
         let path = Library::image(&self.root, id).ok()?;
         let skin = skins::read_skin(&skins::read_file(&path).ok()?).ok()?;
         let model = if slim { Model::Slim } else { Model::Classic };
-        let runs = changer::thumbnail(&skin, model);
+        let runs = std::sync::Arc::new(merged_runs(&preview::render(
+            &skin,
+            None,
+            model,
+            SKIN_THUMB_CAMERA,
+            THUMB_SIZE,
+        )));
         self.thumbs.insert((id.to_owned(), slim), runs.clone());
         Some(runs)
     }
@@ -316,20 +372,6 @@ impl Wardrobe {
             Model::Classic
         };
         self.save();
-    }
-    pub fn skin_model(&mut self, index: usize) {
-        if self.damaged || crate::documents::busy() {
-            return;
-        }
-        if let Some(id) = self
-            .library
-            .entries
-            .get(index)
-            .filter(|e| e.kind == Kind::Skin)
-            .map(|e| e.id.clone())
-        {
-            self.flip_model(&id);
-        }
     }
     fn flip_model(&mut self, id: &str) {
         let next = match self.library.model_of(id) {
@@ -531,25 +573,11 @@ impl Wardrobe {
                 .and_then(|b| skins::read_cape(&b).ok())
         };
         let model = self.selected_model(&selection);
-        let image = preview::render(&skin, cape.as_ref(), model, self.camera, [160, 200]);
-        self.bitmap.clear();
-        for y in 0..image.height() {
-            let mut x = 0;
-            while x < image.width() {
-                let color = image.get_pixel(x, y).0;
-                let start = x;
-                x += 1;
-                while x < image.width() && image.get_pixel(x, y).0 == color {
-                    x += 1;
-                }
-                if color[3] > 0 {
-                    self.bitmap.push((
-                        [start as f32, y as f32, (x - start) as f32, 1.0],
-                        rgba(color[0], color[1], color[2], color[3]),
-                    ));
-                }
-            }
-        }
+        let image = preview::render(&skin, cape.as_ref(), model, self.camera, PREVIEW_SIZE);
+        self.bitmap = merged_runs(&image)
+            .into_iter()
+            .map(|(rect, c)| (rect, rgba(c[0], c[1], c[2], c[3])))
+            .collect();
     }
     pub fn is_animating(&self) -> bool {
         let now = std::time::Instant::now();
@@ -789,42 +817,39 @@ impl Wardrobe {
         );
         ui.stroke_rounded(px, preview_y, preview_w, preview_h, 10.0, 1.2, theme.border);
 
-        // Top-left status badge inside studio card
-        let badge_txt = if self.capes {
-            if selection.hide_cape {
+        // Top-left status badge for the cape view only
+        if self.capes {
+            let badge_txt = if selection.hide_cape {
                 "Cape Hidden"
             } else {
                 "3D Cape View"
-            }
-        } else if model == Model::Slim {
-            "Slim (3px Arms)"
-        } else {
-            "Classic (4px Arms)"
-        };
-        let badge_w = (ui.measure(Face::SemiBold, 9.5, badge_txt) + 16.0).min(preview_w * 0.55);
-        ui.rounded(
-            px + 10.0,
-            preview_y + 10.0,
-            badge_w,
-            20.0,
-            6.0,
-            theme.surface_selected,
-        );
-        ui.border(
-            px + 10.0,
-            preview_y + 10.0,
-            badge_w,
-            20.0,
-            6.0,
-            theme.accent,
-        );
-        ui.centered_fit(
-            Face::SemiBold,
-            9.5,
-            [px + 10.0, preview_y + 10.0, badge_w, 20.0],
-            theme.text_primary,
-            badge_txt,
-        );
+            };
+            let badge_w =
+                (ui.measure(Face::SemiBold, 9.5, badge_txt) + 16.0).min(preview_w * 0.55);
+            ui.rounded(
+                px + 10.0,
+                preview_y + 10.0,
+                badge_w,
+                20.0,
+                6.0,
+                theme.surface_selected,
+            );
+            ui.border(
+                px + 10.0,
+                preview_y + 10.0,
+                badge_w,
+                20.0,
+                6.0,
+                theme.accent,
+            );
+            ui.centered_fit(
+                Face::SemiBold,
+                9.5,
+                [px + 10.0, preview_y + 10.0, badge_w, 20.0],
+                theme.text_primary,
+                badge_txt,
+            );
+        }
 
         // Top-right orbit & zoom hint
         let hint = format!("{:.0}%", self.camera.zoom * 100.0);
@@ -852,9 +877,10 @@ impl Wardrobe {
 
         // Render 3D character bitmap with subtle selection pop scale
         let pop = 0.97 + 0.03 * sel_t;
-        let scale = ((preview_w / 160.0).min((preview_h - 18.0) / 200.0)) * pop;
-        let ox = px + (preview_w - 160.0 * scale) * 0.5;
-        let oy = preview_y + (preview_h - 14.0 - 200.0 * scale) * 0.5;
+        let (bitmap_w, bitmap_h) = (PREVIEW_SIZE[0] as f32, PREVIEW_SIZE[1] as f32);
+        let scale = ((preview_w / bitmap_w).min((preview_h - 18.0) / bitmap_h)) * pop;
+        let ox = px + (preview_w - bitmap_w * scale) * 0.5;
+        let oy = preview_y + (preview_h - 14.0 - bitmap_h * scale) * 0.5;
         for ([bx, by, bw, bh], col) in &self.bitmap {
             ui.rounded(
                 ox + bx * scale,
@@ -887,9 +913,9 @@ impl Wardrobe {
                 targets,
                 [px, primary_toggle_y, preview_w, 34.0],
                 if model == Model::Slim {
-                    "Arm Model: Alex / Slim (3px)"
+                    "Arm: Slim"
                 } else {
-                    "Arm Model: Steve / Classic (4px)"
+                    "Arm: Classic"
                 },
                 Action::WardrobeModel,
                 false,
@@ -1131,9 +1157,10 @@ impl Wardrobe {
             .collect();
         if !local.is_empty() {
             let gap = 8.0;
-            let columns = changer::columns(lw, 112.0, gap);
+            let columns = changer::columns(lw, 150.0, gap);
             let tile_w = (lw - gap * (columns as f32 - 1.0)) / columns as f32;
-            let tile_h = 140.0;
+            let stage_h = (tile_w - 12.0).clamp(130.0, 190.0);
+            let tile_h = stage_h + 38.0;
             shown_items += local.len();
             for (n, (index, entry)) in local.iter().enumerate() {
                 let r =
@@ -1171,7 +1198,7 @@ impl Wardrobe {
                     },
                 );
                 targets.push((r, Action::WardrobeSelect(*index)));
-                let stage = [r[0] + 6.0, r[1] + 6.0, r[2] - 12.0, 104.0];
+                let stage = [r[0] + 6.0, r[1] + 6.0, r[2] - 12.0, stage_h];
                 ui.rounded(
                     stage[0],
                     stage[1],
@@ -1186,9 +1213,10 @@ impl Wardrobe {
                     self.thumb(&entry.id)
                 };
                 if let Some(runs) = thumb {
-                    let s = (stage[2] / 64.0).min(stage[3] / 96.0);
-                    let ox = stage[0] + (stage[2] - 64.0 * s) * 0.5;
-                    let oy = stage[1] + (stage[3] - 96.0 * s) * 0.5;
+                    let (thumb_w, thumb_h) = (THUMB_SIZE[0] as f32, THUMB_SIZE[1] as f32);
+                    let s = (stage[2] / thumb_w).min(stage[3] / thumb_h);
+                    let ox = stage[0] + (stage[2] - thumb_w * s) * 0.5;
+                    let oy = stage[1] + (stage[3] - thumb_h * s) * 0.5;
                     for ([bx, by, bw, bh], c) in runs.iter() {
                         ui.rounded(
                             ox + bx * s,
@@ -1219,22 +1247,13 @@ impl Wardrobe {
                     } else {
                         ui.icon(Icon::Check, c[0] + 3.0, c[1] + 3.0, 16.0, theme.on_accent);
                     }
-                } else if !self.capes {
-                    let slim = self.library.model_of(&entry.id) == Model::Slim;
-                    let label = if slim { "Slim" } else { "Classic" };
-                    let pw = ui.measure(Face::SemiBold, 9.0, label) + 14.0;
-                    let pill = [stage[0] + stage[2] - pw - 4.0, stage[1] + 4.0, pw, 18.0];
-                    ui.rounded(pill[0], pill[1], pill[2], pill[3], 6.0, theme.surface);
-                    ui.border(pill[0], pill[1], pill[2], pill[3], 6.0, theme.border);
-                    ui.centered_fit(Face::SemiBold, 9.0, pill, theme.text_primary, label);
-                    targets.push((pill, Action::WardrobeSkinModel(*index)));
                 }
-                let title = ui.fit_text(Face::SemiBold, 11.0, &entry.title, r[2] - 16.0);
+                let title = ui.fit_text(Face::SemiBold, 11.5, &entry.title, r[2] - 16.0);
                 ui.text(
                     Face::SemiBold,
-                    11.0,
+                    11.5,
                     r[0] + 8.0,
-                    r[1] + 114.0,
+                    r[1] + stage_h + 14.0,
                     theme.text_primary,
                     &title,
                 );

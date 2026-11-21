@@ -115,7 +115,7 @@ impl Default for AnimState {
             last_page: Page::Play,
             last_category: SettingsCategory::Overview,
             last_has_modal: false,
-            nav_pill_y: 62.0,
+            nav_pill_y: 14.0,
             nav_pill_vel: 0.0,
             target_nav_y: 62.0,
             page_fade: 1.0,
@@ -325,10 +325,12 @@ pub(super) enum Action {
     MicrosoftAccount,
     OfflineAccount,
     SubmitEly,
-    SavedAccounts,
     SavedPage(bool),
     SelectAccount(usize),
     SelectOffline,
+    SelectOfflineAt(usize),
+    RemoveAccount(usize),
+    RemoveOffline(usize),
     WardrobeKind(bool),
     WardrobeSelect(usize),
     WardrobeRemoveMode,
@@ -339,14 +341,12 @@ pub(super) enum Action {
     WardrobeActivateCape(usize),
     WardrobeUseCloud,
     WardrobeModel,
-    WardrobeSkinModel(usize),
     WardrobeZoom(bool),
     WardrobeHideCape,
     DeviceSignIn,
     CopyLoginCode,
     CancelLogin,
     ReviewApp,
-    SignOut,
     LoginLink,
     CloseLogin,
     Renderer,
@@ -396,8 +396,6 @@ pub(super) enum Action {
     ToggleSuperPerf,
     ToggleBatteryPerf,
     ToggleMaxFpsMode,
-    /// The Home page's three-dot drawer for the Renderer / Frame rate / Controls tiles.
-    ToggleChipDrawer,
     ToggleZeroLatencyTouch,
     ToggleFastChunkUpload,
     // Controls & Control Editor actions
@@ -876,6 +874,13 @@ enum SettingControl<'a> {
         minus_action: Action,
         plus_action: Action,
     },
+}
+
+fn page_label(page: Page) -> &'static str {
+    match page {
+        Page::Packs => "Packs",
+        other => other.name(),
+    }
 }
 
 fn page_icon(page: Page) -> Icon {
@@ -1374,28 +1379,32 @@ impl Launcher {
         let active_th = horizon_client::ui_theme::active_theme();
         ui.draw_theme_background(0.0, 0.0, w, h, &active_th);
 
-        // ---- Top Header Bar (brand lockup ... account pill) ----
-        ui.horizon_mark(18.0, 12.0, 28.0);
+        // ---- Top bar: page tabs on the left, controls / account / profile on the right ----
         let account_name = self
             .login
             .profile
             .clone()
             .unwrap_or_else(|| self.catalog.config.name.clone());
-        // Top right: the profile picker (the account button moved to the Play row).
         let profile_name = format!("Profile {}", self.catalog.config.profile + 1);
-        let profile_text_w = ui.measure(Face::Medium, 13.5, &profile_name);
-        let pill_w = (profile_text_w + 52.0).clamp(104.0, 190.0);
-        let pill_x = (w - 18.0 - pill_w).max(190.0);
-        let pill_y = 11.0;
-        let pill_h = 36.0;
+        let margin = 14.0;
+        let gap = 8.0;
+        let bar_y = 9.0;
+        let bar_h = 38.0;
 
-        let eq_btn_rect = [pill_x - 44.0, pill_y, 36.0, pill_h];
+        let profile_text_w = ui.measure(Face::Medium, 13.5, &profile_name);
+        let pill_w = (profile_text_w + 44.0).clamp(96.0, 150.0);
+        let pill_x = w - margin - pill_w;
+        let acct_text_w = ui.measure(Face::Medium, 13.5, &account_name);
+        let acct_w = (acct_text_w + 60.0).clamp(100.0, 160.0);
+        let acct_x = pill_x - gap - acct_w;
+        let eq_btn_rect = [acct_x - gap - bar_h, bar_y, bar_h, bar_h];
+
         ui.rounded(
             eq_btn_rect[0],
             eq_btn_rect[1],
             eq_btn_rect[2],
             eq_btn_rect[3],
-            8.0,
+            10.0,
             my3_surface(),
         );
         ui.border(
@@ -1403,69 +1412,101 @@ impl Launcher {
             eq_btn_rect[1],
             eq_btn_rect[2],
             eq_btn_rect[3],
-            8.0,
+            10.0,
             my3_border(),
         );
         ui.icon(
             Icon::MenuEquals,
-            eq_btn_rect[0] + 9.0,
-            eq_btn_rect[1] + 9.0,
+            eq_btn_rect[0] + 10.0,
+            eq_btn_rect[1] + 10.0,
             18.0,
             my3_accent(),
         );
         self.targets.push((eq_btn_rect, Action::OpenControlEditor));
 
-        let brand_w = (eq_btn_rect[0] - 66.0).max(70.0);
-        ui.text(Face::SemiBold, 16.0, 54.0, 10.0, my3_text(), "Horizon");
-        let version_line = format!("Android {}", crate::backend::VERSION);
-        let fitted_version = ui.fit_text(Face::Regular, 11.0, &version_line, brand_w);
+        ui.rounded(acct_x, bar_y, acct_w, bar_h, 10.0, my3_surface());
+        ui.border(acct_x, bar_y, acct_w, bar_h, 10.0, my3_border());
+        ui.avatar_head_2d(acct_x + 6.0, bar_y + 5.0, 28.0, &account_name);
+        if self.login.signed_in {
+            ui.rounded(acct_x + 26.0, bar_y + 25.0, 9.0, 9.0, 4.5, my3_surface());
+            ui.rounded(
+                acct_x + 27.0,
+                bar_y + 26.0,
+                7.0,
+                7.0,
+                3.5,
+                color::hex(0x59D98E, 255),
+            );
+        }
+        let fitted_acct = ui.fit_text(Face::Medium, 13.5, &account_name, acct_w - 62.0);
         ui.text(
-            Face::Regular,
-            11.0,
-            54.0,
-            30.0,
-            my3_muted(),
-            &fitted_version,
+            Face::Medium,
+            13.5,
+            acct_x + 40.0,
+            bar_y + 10.0,
+            my3_text(),
+            &fitted_acct,
         );
+        ui.icon(
+            Icon::ChevronDown,
+            acct_x + acct_w - 22.0,
+            bar_y + 13.0,
+            12.0,
+            my3_muted(),
+        );
+        self.targets
+            .push(([acct_x, bar_y, acct_w, bar_h], Action::Account));
 
-        ui.rounded(pill_x, pill_y, pill_w, pill_h, 9.0, my3_surface());
-        ui.border(pill_x, pill_y, pill_w, pill_h, 9.0, my3_border());
+        ui.rounded(pill_x, bar_y, pill_w, bar_h, 10.0, my3_surface());
+        ui.border(pill_x, bar_y, pill_w, bar_h, 10.0, my3_border());
         let fitted_profile = ui.fit_text(Face::Medium, 13.5, &profile_name, pill_w - 44.0);
         ui.text(
             Face::Medium,
             13.5,
             pill_x + 14.0,
-            pill_y + 8.0,
+            bar_y + 10.0,
             my3_text(),
             &fitted_profile,
         );
         ui.icon(
             Icon::ChevronDown,
             pill_x + pill_w - 24.0,
-            pill_y + 12.0,
+            bar_y + 13.0,
             12.0,
             my3_muted(),
         );
         self.targets
-            .push(([pill_x, pill_y, pill_w, pill_h], Action::Profile));
+            .push(([pill_x, bar_y, pill_w, bar_h], Action::Profile));
 
-        // ---- Left Jetpack Compose Material You NavigationRail + Stadium Active Indicator ----
-        // Icons only: a slim rail, the items spread evenly down it.
-        let sidebar_w = 72.0;
-        let rail_x = 6.0;
-        let rail_w = sidebar_w - 8.0;
-        let rail_h = (h - 64.0).max(40.0);
-        ui.m3_tonal_card(rail_x, 54.0, rail_w, rail_h, 18.0, false);
-        let nav_start_y = 64.0;
-        let nav_step = ((h - nav_start_y - 16.0) / Page::ALL.len() as f32).clamp(30.0, 48.0);
-        let nav_h = (nav_step - 6.0).clamp(26.0, 40.0);
-        let nav_w = 48.0;
-        let nav_x = rail_x + ((rail_w - nav_w) * 0.5).floor();
+        // Page tabs. When the names do not all fit, only the open page keeps its name.
+        let tabs_avail = (eq_btn_rect[0] - 12.0 - margin).max(80.0);
+        let tab_font = 13.0;
+        let tab_gap = 2.0;
+        let label_w: Vec<f32> = Page::ALL
+            .iter()
+            .map(|p| ui.measure(Face::Medium, tab_font, page_label(*p)))
+            .collect();
+        let all_named_w: f32 = label_w.iter().map(|t| t + 24.0).sum::<f32>()
+            + tab_gap * (Page::ALL.len() as f32 - 1.0);
+        let names_fit = all_named_w <= tabs_avail;
+        let mut tab_rects: Vec<[f32; 4]> = Vec::with_capacity(Page::ALL.len());
+        let mut tab_x = margin;
+        for (i, page) in Page::ALL.iter().enumerate() {
+            let selected = *page == self.catalog.page;
+            let tab_w = if names_fit {
+                label_w[i] + 24.0
+            } else if selected {
+                label_w[i] + 24.0 + 22.0
+            } else {
+                bar_h
+            };
+            tab_rects.push([tab_x, bar_y, tab_w, bar_h]);
+            tab_x += tab_w + tab_gap;
+        }
         let selected_idx = Page::ALL
             .iter()
             .position(|p| *p == self.catalog.page)
             .unwrap_or(0);
-        let target_nav_y = nav_start_y + selected_idx as f32 * nav_step;
         let has_any_modal = self.catalog.project_modal.is_some()
             || self.catalog.fm_modal.is_some()
             || self.catalog.filters_open
@@ -1476,50 +1517,53 @@ impl Launcher {
         self.anim.step(
             self.catalog.page,
             self.catalog.settings_category,
-            target_nav_y,
+            tab_rects[selected_idx][0],
             has_any_modal,
             self.catalog.sections,
         );
-
-        // Jetpack Compose NavigationRailItem stadium active indicator (secondaryContainer fill, no harsh wireframe border)
-        let vel_stretch = (self.anim.nav_pill_vel.abs() * 0.012).clamp(0.0, 4.5);
-        let pill_draw_y = self.anim.nav_pill_y - vel_stretch * 0.5;
-        let pill_draw_h = nav_h + vel_stretch;
-        let pill_rad = horizon_client::ui_theme::motion::morph_radius(
-            pill_draw_h * 0.5,
-            pill_draw_h * 0.42,
-            pill_draw_h * 0.36,
-            (vel_stretch / 4.5).clamp(0.0, 1.0),
-            0.0,
-        );
         ui.rounded(
-            nav_x,
-            pill_draw_y,
-            nav_w,
-            pill_draw_h,
-            pill_rad,
+            self.anim.nav_pill_y,
+            bar_y,
+            tab_rects[selected_idx][2],
+            bar_h,
+            10.0,
             my3_nav_active(),
         );
-
         for (i, page) in Page::ALL.iter().enumerate() {
-            let ny = nav_start_y + i as f32 * nav_step;
-            let selected = *page == self.catalog.page;
-            let ic_col = if selected { my3_accent() } else { my3_muted() };
-            let icon_s = 20.0;
-            ui.icon(
-                page_icon(*page),
-                nav_x + (nav_w - icon_s) * 0.5,
-                ny + (nav_h - icon_s) * 0.5,
-                icon_s,
-                ic_col,
-            );
-            self.targets
-                .push(([nav_x, ny, nav_w, nav_h], Action::Page(*page)));
+            let rect = tab_rects[i];
+            let selected = i == selected_idx;
+            let ink = if selected { my3_text() } else { my3_muted() };
+            if names_fit || selected {
+                let icon_x = rect[0] + 12.0;
+                let mut text_x = rect[0] + 12.0;
+                if !names_fit {
+                    ui.icon(page_icon(*page), icon_x, bar_y + 10.0, 18.0, my3_accent());
+                    text_x += 22.0;
+                }
+                ui.text(
+                    Face::Medium,
+                    tab_font,
+                    text_x,
+                    bar_y + 10.0,
+                    ink,
+                    page_label(*page),
+                );
+            } else {
+                ui.icon(
+                    page_icon(*page),
+                    rect[0] + (rect[2] - 18.0) * 0.5,
+                    bar_y + 10.0,
+                    18.0,
+                    ink,
+                );
+            }
+            self.targets.push((rect, Action::Page(*page)));
         }
+        ui.fill(0.0, bar_y + bar_h + 8.0, w, 1.0, my3_card_border());
 
         // ---- Main Content Area (with spatial staggered entrance & glassmorphism) ----
-        let content_x = sidebar_w + 24.0;
-        let content_w = (w - content_x - 24.0).max(160.0);
+        let content_x = 18.0;
+        let content_w = (w - content_x - 18.0).max(160.0);
         let compact = content_w < 430.0;
         let page = self.catalog.page;
         let slide_y = self.anim.page_slide * 0.35;
@@ -1657,41 +1701,16 @@ impl Launcher {
                 } else {
                     16.0
                 };
-                let hero_h = (h - card_y - bottom_reserve).clamp(210.0, 360.0);
-
-                // 1. Hero banner: the Horizon sunset, with one row along the bottom: the game
-                // title far left, Play centred, the account far right.
+                // 1. Hero card: the game and Play, then the Renderer / Frame rate / Controls tiles.
+                let hero_h = (h - card_y - bottom_reserve).clamp(150.0, 190.0);
                 ui.m3_tonal_card(content_x, card_y, content_w, hero_h, 18.0, true);
-                // The art sits 6dp inside the card so its square corners stay within the rounded ones.
-                let art = [
-                    content_x + 6.0,
-                    card_y + 6.0,
-                    content_w - 12.0,
-                    hero_h - 12.0,
-                ];
-                ui.clipped(art, |ui| {
-                    ui.draw_horizon_sunset(art[0], art[1], art[2], art[3]);
-                });
-                // Scrim: fades the art into the page colour so the bottom row keeps its contrast.
-                let scrim_y = art[1] + art[3] * 0.45;
-                ui.fill_gradient(
-                    art[0],
-                    scrim_y,
-                    art[2],
-                    art[1] + art[3] - scrim_y,
-                    horizon_client::ui_theme::GradientDirection::Vertical,
-                    color::with_alpha(my3_bg(), 0.0),
-                    color::with_alpha(my3_bg(), 0.88),
-                    None,
-                    16,
-                );
 
-                // Play, centred along the bottom of the hero.
+                // Play, top right of the card.
                 let is_launching = self.launching;
-                let play_w = if compact { 150.0 } else { 188.0 };
-                let play_h = 44.0;
-                let play_x = content_x + ((content_w - play_w) * 0.5).floor();
-                let play_y = card_y + hero_h - 18.0 - play_h;
+                let play_w = if compact { 132.0 } else { 176.0 };
+                let play_h = 46.0;
+                let play_x = content_x + content_w - 18.0 - play_w;
+                let play_y = card_y + 18.0;
 
                 if is_launching && installed {
                     ui.rounded(play_x, play_y, play_w, play_h, 12.0, my3_surface_high());
@@ -1760,213 +1779,134 @@ impl Launcher {
                         .push(([play_x, play_y, play_w, play_h], Action::Play));
                 }
 
-                // The game title, far left of the row.
-                let side_gap = 14.0;
-                let title_size = if compact { 17.0 } else { 22.0 };
-                let title_w = (play_x - side_gap - (content_x + 18.0)).max(60.0);
+                // The game title, top left.
+                let title_size = if compact { 18.0 } else { 22.0 };
+                let title_w = (play_x - 14.0 - (content_x + 18.0)).max(60.0);
                 let hero_title = ui.fit_text(Face::SemiBold, title_size, "Minecraft 26.3", title_w);
                 ui.text(
                     Face::SemiBold,
                     title_size,
                     content_x + 18.0,
-                    play_y + ((play_h - title_size * 1.3) * 0.5).max(0.0),
+                    card_y + 16.0,
                     my3_text(),
                     &hero_title,
                 );
-
-                // The account (skin head and name), far right of the row.
-                let acct_zone_w =
-                    (content_x + content_w - 18.0 - (play_x + play_w + side_gap)).max(60.0);
-                let acct_text_w = ui.measure(Face::Medium, 13.5, &account_name);
-                let acct_w = (acct_text_w + 64.0).clamp(104.0, 210.0).min(acct_zone_w);
-                let acct_h = 40.0;
-                let acct_x = content_x + content_w - 18.0 - acct_w;
-                let acct_y = play_y + (play_h - acct_h) * 0.5;
-                ui.rounded(acct_x, acct_y, acct_w, acct_h, 12.0, my3_surface_high());
-                ui.stroke_rounded(acct_x, acct_y, acct_w, acct_h, 12.0, 1.0, my3_border());
-                ui.avatar_head_2d(acct_x + 6.0, acct_y + 6.0, 28.0, &account_name);
-                if self.login.signed_in {
-                    ui.rounded(acct_x + 26.0, acct_y + 26.0, 9.0, 9.0, 4.5, my3_bg());
-                    ui.rounded(
-                        acct_x + 27.0,
-                        acct_y + 27.0,
-                        7.0,
-                        7.0,
-                        3.5,
-                        color::hex(0x59D98E, 255),
-                    );
-                }
-                let fitted_acct = ui.fit_text(Face::Medium, 13.5, &account_name, acct_w - 62.0);
+                let subtitle =
+                    format!("Java Edition · Profile {}", self.catalog.config.profile + 1);
+                let fitted_subtitle = ui.fit_text(Face::Regular, 12.5, &subtitle, title_w);
                 ui.text(
-                    Face::Medium,
-                    13.5,
-                    acct_x + 40.0,
-                    acct_y + 11.0,
-                    my3_text(),
-                    &fitted_acct,
-                );
-                ui.icon(
-                    Icon::ChevronDown,
-                    acct_x + acct_w - 22.0,
-                    acct_y + 14.0,
-                    12.0,
+                    Face::Regular,
+                    12.5,
+                    content_x + 18.0,
+                    card_y + 16.0 + title_size * 1.3 + 4.0,
                     my3_muted(),
+                    &fitted_subtitle,
                 );
-                self.targets
-                    .push(([acct_x, acct_y, acct_w, acct_h], Action::Account));
 
-                // 2. The three-dot drawer, top right of the hero. Closed it is just the dots;
-                // open it adds Renderer / Frame rate / Controls to its left.
+                // The three launch settings, always in reach along the bottom of the card.
                 let chip_h = 44.0;
-                let pad = 12.0;
-                let dots = [
-                    content_x + content_w - pad - chip_h,
-                    card_y + pad,
-                    chip_h,
-                    chip_h,
-                ];
-                let drawer_open = self.chip_drawer;
-                if drawer_open {
-                    let game_home = self.catalog.config.game_home(&self.home);
-                    let touch_cfg = horizon_client::touch::Settings::load_from(
-                        &game_home.join("horizon-touch.json"),
-                    );
-                    let renderer_value = match self.catalog.config.renderer {
-                        crate::catalog::RendererMode::Vulkan => "Vulkan",
-                        crate::catalog::RendererMode::OpenGl => "OpenGL ES",
-                        crate::catalog::RendererMode::VulkanCompatibility => "Vulkan compat",
-                    };
-                    let fps_value = if self.catalog.config.battery_perf_mode {
-                        "60 Hz · Battery"
-                    } else if self.catalog.config.max_fps_mode {
-                        "Uncapped"
-                    } else {
-                        "120 Hz · Balanced"
-                    };
-                    let controls_value = format!(
-                        "{} · {}",
-                        match touch_cfg.control_style {
-                            horizon_client::touch::ControlStyle::Mcpe => "MCPE",
-                            horizon_client::touch::ControlStyle::GoyControl => "GoyControl",
-                        },
-                        touch_cfg.preset_name
-                    );
-                    let tile_gap = 8.0;
-                    let room = content_w - 2.0 * pad - chip_h - tile_gap;
-                    let tile_w = ((room - tile_gap * 2.0) / 3.0).clamp(80.0, 184.0);
-                    let row_x = dots[0] - tile_gap - (tile_w * 3.0 + tile_gap * 2.0);
-                    for (i, (caption, value, act, hi, ic)) in [
-                        (
-                            "Renderer",
-                            renderer_value.to_owned(),
-                            Action::Renderer,
-                            false,
-                            Icon::Monitor,
-                        ),
-                        (
-                            "Frame rate",
-                            fps_value.to_owned(),
-                            Action::ToggleMaxFpsMode,
-                            self.catalog.config.max_fps_mode,
-                            Icon::Play,
-                        ),
-                        (
-                            "Controls",
-                            controls_value,
-                            Action::SettingsCat(SettingsCategory::Controls),
-                            false,
-                            Icon::Gamepad,
-                        ),
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    {
-                        let tx = row_x + i as f32 * (tile_w + tile_gap);
-                        let chip_y = dots[1];
-                        self.targets.push(([tx, chip_y, tile_w, chip_h], act));
-                        ui.rounded(tx, chip_y, tile_w, chip_h, 14.0, my3_surface_high());
-                        if hi {
-                            ui.rounded(tx, chip_y, tile_w, chip_h, 14.0, my3_accent_soft());
-                        }
-                        ui.stroke_rounded(
-                            tx,
-                            chip_y,
-                            tile_w,
-                            chip_h,
-                            14.0,
-                            1.0,
-                            if hi { my3_accent() } else { my3_border() },
-                        );
-                        ui.icon(
-                            ic,
-                            tx + 10.0,
-                            chip_y + (chip_h - 18.0) * 0.5,
-                            18.0,
-                            my3_accent(),
-                        );
-                        let text_x = tx + 36.0;
-                        let text_w = (tile_w - 44.0).max(24.0);
-                        ui.text(
-                            Face::Medium,
-                            10.5,
-                            text_x,
-                            chip_y + 6.0,
-                            my3_muted(),
-                            caption,
-                        );
-                        let fitted = ui.fit_text(Face::SemiBold, 12.5, &value, text_w);
-                        ui.text(
-                            Face::SemiBold,
-                            12.5,
-                            text_x,
-                            chip_y + 22.0,
-                            my3_text(),
-                            &fitted,
-                        );
-                    }
-                }
-                ui.rounded(
-                    dots[0],
-                    dots[1],
-                    dots[2],
-                    dots[3],
-                    14.0,
-                    if drawer_open {
-                        my3_accent_soft()
-                    } else {
-                        my3_surface_high()
-                    },
-                );
-                ui.stroke_rounded(
-                    dots[0],
-                    dots[1],
-                    dots[2],
-                    dots[3],
-                    14.0,
+                let tiles_y = card_y + hero_h - 16.0 - chip_h;
+                ui.fill(
+                    content_x + 18.0,
+                    tiles_y - 12.0,
+                    content_w - 36.0,
                     1.0,
-                    if drawer_open {
-                        my3_accent()
-                    } else {
-                        my3_border()
-                    },
+                    my3_card_border(),
                 );
-                for k in 0..3 {
-                    let cx = dots[0] + dots[2] * 0.5 + (k as f32 - 1.0) * 8.0;
-                    let cy = dots[1] + dots[3] * 0.5;
-                    ui.rounded(
-                        cx - 2.5,
-                        cy - 2.5,
-                        5.0,
-                        5.0,
-                        2.5,
-                        if drawer_open {
-                            my3_accent()
-                        } else {
-                            my3_text()
-                        },
+                let game_home = self.catalog.config.game_home(&self.home);
+                let touch_cfg = horizon_client::touch::Settings::load_from(
+                    &game_home.join("horizon-touch.json"),
+                );
+                let renderer_value = match self.catalog.config.renderer {
+                    crate::catalog::RendererMode::Vulkan => "Vulkan",
+                    crate::catalog::RendererMode::OpenGl => "OpenGL ES",
+                    crate::catalog::RendererMode::VulkanCompatibility => "Vulkan compat",
+                };
+                let fps_value = if self.catalog.config.battery_perf_mode {
+                    "60 Hz · Battery"
+                } else if self.catalog.config.max_fps_mode {
+                    "Uncapped"
+                } else {
+                    "120 Hz · Balanced"
+                };
+                let controls_value = format!(
+                    "{} · {}",
+                    match touch_cfg.control_style {
+                        horizon_client::touch::ControlStyle::Mcpe => "MCPE",
+                        horizon_client::touch::ControlStyle::GoyControl => "GoyControl",
+                    },
+                    touch_cfg.preset_name
+                );
+                let tile_gap = 8.0;
+                let tile_w = ((content_w - 36.0 - tile_gap * 2.0) / 3.0).max(80.0);
+                for (i, (caption, value, act, hi, ic)) in [
+                    (
+                        "Renderer",
+                        renderer_value.to_owned(),
+                        Action::Renderer,
+                        false,
+                        Icon::Monitor,
+                    ),
+                    (
+                        "Frame rate",
+                        fps_value.to_owned(),
+                        Action::ToggleMaxFpsMode,
+                        self.catalog.config.max_fps_mode,
+                        Icon::Play,
+                    ),
+                    (
+                        "Controls",
+                        controls_value,
+                        Action::SettingsCat(SettingsCategory::Controls),
+                        false,
+                        Icon::Gamepad,
+                    ),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let tx = content_x + 18.0 + i as f32 * (tile_w + tile_gap);
+                    self.targets.push(([tx, tiles_y, tile_w, chip_h], act));
+                    ui.rounded(tx, tiles_y, tile_w, chip_h, 12.0, my3_surface_high());
+                    if hi {
+                        ui.rounded(tx, tiles_y, tile_w, chip_h, 12.0, my3_accent_soft());
+                    }
+                    ui.stroke_rounded(
+                        tx,
+                        tiles_y,
+                        tile_w,
+                        chip_h,
+                        12.0,
+                        1.0,
+                        if hi { my3_accent() } else { my3_border() },
+                    );
+                    ui.icon(
+                        ic,
+                        tx + 10.0,
+                        tiles_y + (chip_h - 18.0) * 0.5,
+                        18.0,
+                        my3_accent(),
+                    );
+                    let text_x = tx + 36.0;
+                    let text_w = (tile_w - 44.0).max(24.0);
+                    ui.text(
+                        Face::Medium,
+                        10.5,
+                        text_x,
+                        tiles_y + 6.0,
+                        my3_muted(),
+                        caption,
+                    );
+                    let fitted = ui.fit_text(Face::SemiBold, 12.5, &value, text_w);
+                    ui.text(
+                        Face::SemiBold,
+                        12.5,
+                        text_x,
+                        tiles_y + 22.0,
+                        my3_text(),
+                        &fitted,
                     );
                 }
-                self.targets.push((dots, Action::ToggleChipDrawer));
             }
         } else if page == Page::Skins {
             self.wardrobe.draw(
@@ -5394,7 +5334,7 @@ impl Launcher {
                 (
                     Icon::MicrosoftGrid,
                     "Account",
-                    "Microsoft and Xbox sign-in",
+                    "Saved accounts and sign-in",
                     Action::Account,
                 ),
             ];
@@ -7119,6 +7059,12 @@ impl Launcher {
         }
         self.feedback = action.map(|action| (action, std::time::Instant::now()));
         self.focus = None;
+        if !matches!(
+            action,
+            Some(Action::AddAccount | Action::RemoveAccount(_) | Action::RemoveOffline(_))
+        ) {
+            self.login.clear_pending();
+        }
         if action.is_some() && horizon_client::official_install::ready(&self.home) {
             let audio = self.audio.get_or_insert_with(|| {
                 let mut audio = horizon_client::audio::Audio::new(
@@ -7374,9 +7320,6 @@ impl Launcher {
                     "Battery Performance Mode disabled."
                 }
                 .into();
-            }
-            Some(Action::ToggleChipDrawer) => {
-                self.chip_drawer = !self.chip_drawer;
             }
             Some(Action::ToggleMaxFpsMode) => {
                 self.catalog.config.max_fps_mode = !self.catalog.config.max_fps_mode;
@@ -7833,47 +7776,26 @@ impl Launcher {
             Some(Action::Account) => {
                 self.catalog.editing = None;
                 crate::platform::hide();
-                self.login.refresh_status();
-                self.login.visible = true;
-                self.login.offline = false;
-                self.login.ely = false;
-                if self.login.signed_in {
-                    // Already signed in: open the selector, with the current
-                    // Microsoft/Ely.by account called out, instead of asking
-                    // the player to choose a provider again.
-                    self.login.providers = false;
-                    self.login.choosing = true;
-                    self.login.account_offset = 0;
-                } else {
-                    self.login.providers = true;
-                    self.login.choosing = false;
-                }
+                self.login.seed_offline(&self.catalog.config.name);
+                self.login.open_list();
             }
             Some(Action::AddAccount) => {
-                self.login.choosing = false;
-                self.login.providers = true;
-                self.login.offline = false;
-                self.login.ely = false;
-                self.login.visible = true;
+                self.login.menu_open = !self.login.menu_open;
             }
             Some(Action::OfflineAccount | Action::MicrosoftAccount) => {
-                self.login.providers = false;
                 self.login.offline = matches!(action, Some(Action::OfflineAccount));
                 self.login.ely = false;
                 self.login.choosing = false;
+                self.login.new_offline.clear();
+                self.login.set_message(String::new());
                 self.login.visible = true;
             }
-            Some(Action::SavedAccounts) => {
-                self.login.providers = false;
-                self.login.refresh_status();
-                self.login.choosing = true;
-                self.login.ely = false;
-            }
             Some(Action::SavedPage(next)) => {
-                if next && self.login.account_offset + 3 < self.login.saved_accounts.len() {
-                    self.login.account_offset += 3;
+                let step = login::ROWS_PER_PAGE;
+                if next && self.login.account_offset + step < self.login.row_count() {
+                    self.login.account_offset += step;
                 } else if !next {
-                    self.login.account_offset = self.login.account_offset.saturating_sub(3);
+                    self.login.account_offset = self.login.account_offset.saturating_sub(step);
                 }
             }
             Some(Action::SelectAccount(index)) => {
@@ -7891,23 +7813,60 @@ impl Launcher {
                 self.refresh_wardrobe_account();
             }
             Some(Action::SelectOffline) => {
-                self.catalog.config.save(&self.home)?;
-                self.catalog.editing = None;
                 crate::platform::hide();
-                self.login.hide();
-                let mut accounts = crate::account::Accounts::load();
-                accounts.selected = None;
-                accounts.save()?;
+                self.catalog.editing = None;
+                match self.login.add_offline() {
+                    Ok(name) => {
+                        self.catalog.config.name = name;
+                        self.catalog.config.touch_name_changed();
+                        self.catalog.config.save(&self.home)?;
+                        self.session_ready = false;
+                        self.prepared_session = None;
+                        self.session_worker = None;
+                        self.login.open_list();
+                        self.refresh_wardrobe_account();
+                    }
+                    Err(error) => self.login.set_message(error),
+                }
+            }
+            Some(Action::SelectOfflineAt(index)) => {
+                if let Some(name) = self.login.select_offline(index) {
+                    self.catalog.config.name = name;
+                    self.catalog.config.touch_name_changed();
+                    self.catalog.config.save(&self.home)?;
+                }
                 self.session_ready = false;
                 self.prepared_session = None;
                 self.session_worker = None;
-                self.login.choosing = false;
-                self.login.refresh_status();
                 self.refresh_wardrobe_account();
             }
+            Some(Action::RemoveAccount(index)) => {
+                if self.login.confirm_remove(false, index) {
+                    self.login.remove_account(index);
+                    self.session_ready = false;
+                    self.prepared_session = None;
+                    self.session_worker = None;
+                    self.refresh_wardrobe_account();
+                }
+            }
+            Some(Action::RemoveOffline(index)) => {
+                if self.login.confirm_remove(true, index) {
+                    if let Some(next) = self.login.remove_offline(index, &self.catalog.config.name)
+                    {
+                        self.catalog.config.name = next;
+                        self.catalog.config.touch_name_changed();
+                        self.catalog.config.save(&self.home)?;
+                    }
+                    self.session_ready = false;
+                    self.prepared_session = None;
+                    self.session_worker = None;
+                    self.refresh_wardrobe_account();
+                }
+            }
             Some(Action::ElySignIn) => {
-                self.login.providers = false;
                 self.login.close();
+                self.login.choosing = false;
+                self.login.offline = false;
                 self.login.ely = true;
                 self.login.visible = true;
             }
@@ -7945,13 +7904,6 @@ impl Launcher {
                 self.prepared_session = None;
                 self.session_worker = None;
                 self.login.start(&self.catalog.config.microsoft_client_id);
-            }
-            Some(Action::SignOut) => {
-                self.session_ready = false;
-                self.prepared_session = None;
-                self.session_worker = None;
-                self.login.sign_out();
-                self.refresh_wardrobe_account();
             }
             Some(Action::LoginLink) => self.login.open_link(),
             Some(Action::Page(page)) => {
@@ -7998,7 +7950,6 @@ impl Launcher {
             ),
             Some(Action::WardrobeUseCloud) => self.wardrobe.use_cloud(),
             Some(Action::WardrobeModel) => self.wardrobe.model(),
-            Some(Action::WardrobeSkinModel(index)) => self.wardrobe.skin_model(index),
             Some(Action::WardrobeZoom(inward)) => {
                 self.wardrobe
                     .camera
@@ -8271,7 +8222,7 @@ impl Launcher {
                     && appearance == horizon_client::ui_theme::ThemeAppearance::Dark
                 {
                     self.catalog.config.theme.preset =
-                        horizon_client::ui_theme::ThemePreset::EmeraldForest;
+                        horizon_client::ui_theme::ThemePreset::Charcoal;
                 }
                 horizon_client::ui_theme::set_active_theme(self.catalog.config.theme.resolve());
                 self.anim.trigger_theme_pulse();

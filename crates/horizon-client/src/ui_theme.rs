@@ -3792,9 +3792,10 @@ fn wrapping_lines(ui: &Ui, face: Face, size: f32, text: &str, max_w: f32) -> Vec
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ThemePreset {
+    #[default]
+    Charcoal,
     ObsidianViolet,
     CyberCyan,
-    #[default]
     EmeraldForest,
     CrimsonEmber,
     SolarGold,
@@ -3804,7 +3805,8 @@ pub enum ThemePreset {
 }
 
 impl ThemePreset {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
+        Self::Charcoal,
         Self::ObsidianViolet,
         Self::CyberCyan,
         Self::EmeraldForest,
@@ -3817,6 +3819,7 @@ impl ThemePreset {
 
     pub fn label(self) -> &'static str {
         match self {
+            Self::Charcoal => "Charcoal",
             Self::ObsidianViolet => "Obsidian Violet",
             Self::CyberCyan => "Cyber Cyan",
             Self::EmeraldForest => "Emerald Forest",
@@ -3830,6 +3833,7 @@ impl ThemePreset {
 
     pub fn subtitle(self) -> &'static str {
         match self {
+            Self::Charcoal => "Clean neutral charcoal with green",
             Self::ObsidianViolet => "Signature Horizon dark violet",
             Self::CyberCyan => "Deep slate with electric cyan",
             Self::EmeraldForest => "Woodland moss with emerald mint",
@@ -3844,6 +3848,9 @@ impl ThemePreset {
     /// Returns `(bg_rgb, surface_rgb, accent_rgb, grad_start_rgb, grad_mid_rgb, grad_end_rgb, is_light)`
     pub fn palette_rgb(self) -> (u32, u32, u32, u32, u32, u32, bool) {
         match self {
+            Self::Charcoal => (
+                0x161618, 0x202023, 0x3FB950, 0x1A1A1D, 0x202024, 0x121214, false,
+            ),
             Self::ObsidianViolet | Self::Custom => (
                 0x13111C, 0x1D192B, 0x9A7BFF, 0x161129, 0x1E1638, 0x0E0C16, false,
             ),
@@ -3999,16 +4006,16 @@ pub struct LauncherThemeConfig {
 impl Default for LauncherThemeConfig {
     fn default() -> Self {
         Self {
-            preset: ThemePreset::EmeraldForest,
+            preset: ThemePreset::Charcoal,
             appearance: ThemeAppearance::Dark,
             background_mode: BackgroundMode::Solid,
-            custom_bg_hex: "#0D1714".into(),
-            custom_surface_hex: "#152620".into(),
-            custom_accent_hex: "#34D399".into(),
+            custom_bg_hex: "#161618".into(),
+            custom_surface_hex: "#202023".into(),
+            custom_accent_hex: "#3FB950".into(),
             gradient_direction: GradientDirection::DiagonalDown,
-            gradient_start_hex: "#0F231C".into(),
-            gradient_mid_hex: "#163329".into(),
-            gradient_end_hex: "#0A120F".into(),
+            gradient_start_hex: "#1A1A1D".into(),
+            gradient_mid_hex: "#202024".into(),
+            gradient_end_hex: "#121214".into(),
             gradient_mid_pos: 0.50,
             use_three_stops: true,
         }
@@ -4250,17 +4257,24 @@ impl LauncherThemeConfig {
         } else {
             blend_rgb(bg_rgb, surf_rgb, 0.62)
         };
-        let surf_bright_rgb = if is_light {
+        let neutral = self.preset == ThemePreset::Charcoal && !is_light;
+        let surf_bright_rgb = if neutral {
+            blend_rgb(surf_rgb, 0xFFFFFF, 0.06)
+        } else if is_light {
             blend_rgb(surf_rgb, accent_rgb, 0.11)
         } else {
             blend_rgb(surf_rgb, accent_rgb, 0.14)
         };
-        let surf_sel_rgb = if is_light {
+        let surf_sel_rgb = if neutral {
+            blend_rgb(surf_rgb, 0xFFFFFF, 0.12)
+        } else if is_light {
             blend_rgb(surf_rgb, accent_rgb, 0.22)
         } else {
             blend_rgb(surf_rgb, accent_rgb, 0.28)
         };
-        let border_rgb = if is_light {
+        let border_rgb = if neutral {
+            blend_rgb(surf_rgb, 0xFFFFFF, 0.10)
+        } else if is_light {
             blend_rgb(bg_rgb, accent_rgb, 0.18)
         } else {
             blend_rgb(surf_rgb, accent_rgb, 0.16)
@@ -4275,8 +4289,20 @@ impl LauncherThemeConfig {
         } else {
             0xFFFFFF
         };
-        let text_primary_rgb = if is_light { 0x1A1626 } else { 0xF5F2FC };
-        let text_muted_rgb = if is_light { 0x5E5675 } else { 0xA39BBF };
+        let text_primary_rgb = if is_light {
+            0x1A1626
+        } else if neutral {
+            0xF1F1F2
+        } else {
+            0xF5F2FC
+        };
+        let text_muted_rgb = if is_light {
+            0x5E5675
+        } else if neutral {
+            0x9A9AA2
+        } else {
+            0xA39BBF
+        };
 
         // Solid fallback even if gradient mode is active
         let solid_fallback_rgb = if self.background_mode == BackgroundMode::Gradient {
@@ -4670,7 +4696,7 @@ mod tests {
         cfg.custom_bg_hex = "invalid".into();
         cfg.gradient_mid_pos = 99.0;
         cfg.sanitize();
-        assert_eq!(cfg.custom_bg_hex, "#0D1714");
+        assert_eq!(cfg.custom_bg_hex, "#161618");
         assert_eq!(cfg.gradient_mid_pos, 0.85);
 
         cfg.apply_preset(ThemePreset::DaylightFrost);

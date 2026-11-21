@@ -74,6 +74,14 @@ impl ColorSource {
         }
     }
 
+    pub fn uses_state(&self, maps: &Colormaps) -> bool {
+        match self {
+            Self::Flat(_) => false,
+            Self::Linked(id) => maps.get(id).is_some_and(Colormap::uses_state),
+            Self::Inline(map) => map.uses_state(),
+        }
+    }
+
     pub fn depends_on_biome_alone(&self, maps: &Colormaps) -> bool {
         match self {
             Self::Flat(_) => true,

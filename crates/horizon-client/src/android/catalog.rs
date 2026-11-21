@@ -109,6 +109,8 @@ pub struct Config {
     #[serde(default)]
     pub max_fps_unlocked_v3: bool,
     #[serde(default)]
+    pub charcoal_theme_v1: bool,
+    #[serde(default)]
     pub theme: horizon_client::ui_theme::LauncherThemeConfig,
 }
 
@@ -150,6 +152,7 @@ impl Default for Config {
             preset_edit_mode: String::new(),
             max_fps_unlocked_v2: true,
             max_fps_unlocked_v3: true,
+            charcoal_theme_v1: false,
             theme: horizon_client::ui_theme::LauncherThemeConfig::default(),
         }
     }
@@ -228,6 +231,19 @@ impl Config {
                 config.theme.apply_preset(horizon_client::ui_theme::ThemePreset::EmeraldForest);
             }
             config.apply_experimental_to_game(home);
+            let _ = config.save(home);
+        }
+        if !config.charcoal_theme_v1 {
+            config.charcoal_theme_v1 = true;
+            if matches!(
+                config.theme.preset,
+                horizon_client::ui_theme::ThemePreset::ObsidianViolet
+                    | horizon_client::ui_theme::ThemePreset::EmeraldForest
+            ) {
+                config
+                    .theme
+                    .apply_preset(horizon_client::ui_theme::ThemePreset::Charcoal);
+            }
             let _ = config.save(home);
         }
         config.name = truncate_player_name(&config.name);

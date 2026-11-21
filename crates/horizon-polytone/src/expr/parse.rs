@@ -49,7 +49,9 @@ pub(super) enum Stmt {
 }
 
 /// Global functions the game provides rather than this crate.
-const HOST_FUNCTIONS: [&str; 11] = [
+const HOST_FUNCTIONS: [&str; 13] = [
+    "state_prop",
+    "state_prop_i",
     "colormap",
     "config",
     "modOn",

@@ -1,6 +1,6 @@
 //! Native account panel; authentication is shared with the desktop launcher.
 use super::pages::{Action, button};
-use crate::account::{self, Account, Accounts, Secrets, SignIn, SignInState};
+use crate::account::{self, Account, Accounts, Player, Secrets, SignIn, SignInState};
 use horizon_client::ui_theme::{Face, Icon, Ui, color};
 
 fn login_surface() -> u32 {
@@ -25,12 +25,24 @@ fn login_accent_soft() -> u32 {
     horizon_client::ui_theme::active_theme().accent_soft
 }
 
+pub(super) const ROWS_PER_PAGE: usize = 4;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Row {
+    Account(usize),
+    Offline(usize),
+}
+
 pub(super) struct Login {
     pub choosing: bool,
-    pub providers: bool,
     pub offline: bool,
     pub saved_accounts: Vec<Account>,
+    pub offline_names: Vec<String>,
     pub account_offset: usize,
+    pub menu_open: bool,
+    pub new_offline: String,
+    selected_key: Option<String>,
+    pending_remove: Option<(bool, usize)>,
     pub ely: bool,
     pub username: String,
     pub password: String,
@@ -47,10 +59,14 @@ impl Login {
     pub fn new() -> Self {
         let mut login = Self {
             choosing: false,
-            providers: false,
             offline: false,
             saved_accounts: vec![],
+            offline_names: vec![],
             account_offset: 0,
+            menu_open: false,
+            new_offline: String::new(),
+            selected_key: None,
+            pending_remove: None,
             ely: false,
             username: String::new(),
             password: String::new(),
@@ -69,7 +85,9 @@ impl Login {
     pub(super) fn refresh_status(&mut self) {
         let accounts = Accounts::load();
         let account = accounts.selected().cloned();
+        self.selected_key = account.as_ref().map(|a| a.key());
         self.saved_accounts = accounts.accounts;
+        self.offline_names = accounts.offline;
         self.profile = account.as_ref().map(|a| a.name.clone());
         self.signed_in = account.is_some_and(|a| {
             account::store()
@@ -79,27 +97,127 @@ impl Login {
                 .is_some_and(|s| serde_json::from_str::<Secrets>(&s).is_ok())
         });
     }
-    fn provider_name(&self) -> &'static str {
-        self.profile
-            .as_deref()
-            .and_then(|name| self.saved_accounts.iter().find(|a| a.name == name))
-            .map(|a| match a.provider {
-                account::Provider::Ely => "Ely.by",
-                account::Provider::Microsoft => "Microsoft",
-            })
-            .unwrap_or("Microsoft")
+
+    /// Keeps the offline name already playing in the saved list.
+    pub(super) fn seed_offline(&mut self, name: &str) {
+        let name = name.trim();
+        let mut accounts = Accounts::load();
+        if account::valid_offline_name(name)
+            && !accounts.offline.iter().any(|n| n.eq_ignore_ascii_case(name))
+        {
+            accounts.offline.push(name.to_string());
+            let _ = accounts.save();
+        }
     }
 
-    pub fn status(&self, offline_name: &str) -> String {
-        match (&self.profile, self.signed_in) {
-            (Some(name), true) => {
-                format!("Already signed in as {name} · {}", self.provider_name())
-            }
-            (Some(name), false) => format!("Sign-in required for {name}"),
-            _ if self.pending() => "Signing in...".into(),
-            _ if !offline_name.trim().is_empty() => format!("Offline: {offline_name}"),
-            _ => "Offline / Sign in".into(),
+    pub(super) fn open_list(&mut self) {
+        self.refresh_status();
+        self.visible = true;
+        self.choosing = true;
+        self.offline = false;
+        self.ely = false;
+        self.menu_open = false;
+        self.pending_remove = None;
+        self.new_offline.clear();
+        self.account_offset = 0;
+        self.message.clear();
+    }
+
+    pub(super) fn set_message(&mut self, message: String) {
+        self.message = message;
+    }
+
+    pub(super) fn row_count(&self) -> usize {
+        self.saved_accounts.len() + self.offline_names.len()
+    }
+
+    fn rows(&self) -> Vec<Row> {
+        (0..self.saved_accounts.len())
+            .map(Row::Account)
+            .chain((0..self.offline_names.len()).map(Row::Offline))
+            .collect()
+    }
+
+    /// The second tap on the same remove button confirms it.
+    pub(super) fn confirm_remove(&mut self, offline: bool, index: usize) -> bool {
+        if self.pending_remove == Some((offline, index)) {
+            self.pending_remove = None;
+            return true;
         }
+        self.pending_remove = Some((offline, index));
+        false
+    }
+
+    pub(super) fn clear_pending(&mut self) {
+        self.menu_open = false;
+        self.pending_remove = None;
+    }
+
+    pub(super) fn remove_account(&mut self, index: usize) {
+        let Some(account) = self.saved_accounts.get(index).cloned() else {
+            return;
+        };
+        let mut accounts = Accounts::load();
+        self.message = match accounts
+            .remove_when_idle(account::store(), &account.key())
+            .and_then(|_| accounts.save())
+        {
+            Ok(()) => format!("Removed {}", account.name),
+            Err(e) => e,
+        };
+        self.refresh_status();
+    }
+
+    /// Forgets an offline name. Returns the offline name that plays now when it was the one
+    /// that played (empty: none left).
+    pub(super) fn remove_offline(&mut self, index: usize, active: &str) -> Option<String> {
+        let name = self.offline_names.get(index).cloned()?;
+        let mut accounts = Accounts::load();
+        accounts.offline.retain(|n| !n.eq_ignore_ascii_case(&name));
+        accounts.looks.remove(&name.to_ascii_lowercase());
+        let was_playing = accounts.selected().is_none() && active.eq_ignore_ascii_case(&name);
+        if accounts
+            .offline_selected
+            .as_deref()
+            .is_some_and(|n| n.eq_ignore_ascii_case(&name))
+        {
+            accounts.offline_selected = None;
+        }
+        let next = was_playing.then(|| accounts.offline.first().cloned().unwrap_or_default());
+        if let Some(next) = next.as_ref().filter(|n| !n.is_empty()) {
+            accounts.offline_selected = Some(next.clone());
+        }
+        self.message = match accounts.save() {
+            Ok(()) => format!("Removed {name}"),
+            Err(e) => e,
+        };
+        self.refresh_status();
+        next
+    }
+
+    /// Plays as a kept offline name; returns it.
+    pub(super) fn select_offline(&mut self, index: usize) -> Option<String> {
+        let name = self.offline_names.get(index).cloned()?;
+        let mut accounts = Accounts::load();
+        accounts.selected = None;
+        accounts.offline_selected = Some(name.clone());
+        if let Err(e) = accounts.save() {
+            self.message = e;
+        }
+        self.refresh_status();
+        Some(name)
+    }
+
+    /// Keeps the typed offline name and plays as it.
+    pub(super) fn add_offline(&mut self) -> Result<String, String> {
+        let name = self.new_offline.trim().to_string();
+        let mut accounts = Accounts::load();
+        accounts.play_as_with(account::store(), Player::Offline(name), true)?;
+        accounts.save()?;
+        let name = accounts.offline_selected.clone().unwrap_or_default();
+        self.new_offline.clear();
+        self.refresh_status();
+        Ok(name)
     }
 
     pub fn pending(&self) -> bool {
@@ -109,6 +227,8 @@ impl Login {
         self.password.clear();
         self.otp.clear();
         self.visible = false;
+        self.menu_open = false;
+        self.pending_remove = None;
     }
     pub fn close(&mut self) {
         self.password.clear();
@@ -162,6 +282,12 @@ impl Login {
                 };
                 self.task = None;
                 self.refresh_status();
+                if matches!(result, Ok(_)) {
+                    self.choosing = true;
+                    self.ely = false;
+                    self.offline = false;
+                    self.account_offset = 0;
+                }
                 completed = true;
             }
         }
@@ -188,6 +314,7 @@ impl Login {
             "ely_username" => Some(&self.username),
             "ely_password" => Some(&self.password),
             "ely_otp" => Some(&self.otp),
+            "offline_name" => Some(&self.new_offline),
             _ => None,
         }
     }
@@ -196,6 +323,7 @@ impl Login {
             Some("ely_username") => &mut self.username,
             Some("ely_password") => &mut self.password,
             Some("ely_otp") => &mut self.otp,
+            Some("offline_name") => &mut self.new_offline,
             _ => return false,
         };
         match output {
@@ -208,21 +336,6 @@ impl Login {
             _ => {}
         }
         true
-    }
-    pub fn sign_out(&mut self) {
-        self.close();
-        self.visible = true;
-        let mut accounts = Accounts::load();
-        if let Some(a) = accounts.selected().cloned() {
-            self.message = match accounts
-                .remove_when_idle(account::store(), &a.key())
-                .and_then(|_| accounts.save())
-            {
-                Ok(()) => "Signed out. Offline play is available.".into(),
-                Err(e) => e,
-            };
-        }
-        self.refresh_status();
     }
     pub fn copy_code(&mut self) {
         if let Some(SignInState::Code(code)) = &self.state {
@@ -257,7 +370,7 @@ impl Login {
         account::session::selected_session(id.trim())
     }
     #[allow(clippy::too_many_arguments)]
-    fn account_row(
+    fn list_row(
         &self,
         ui: &mut Ui,
         targets: &mut Vec<([f32; 4], Action)>,
@@ -265,29 +378,83 @@ impl Login {
         name: &str,
         detail: &str,
         current: bool,
-        action: Action,
+        select: Action,
+        remove: Action,
+        confirming: bool,
     ) {
+        let theme = horizon_client::ui_theme::active_theme();
         let [x, y, w, h] = rect;
-        ui.rounded(x, y, w, h, 9.0, login_surface());
-        ui.border(
+        ui.rounded(
             x,
             y,
             w,
             h,
-            9.0,
+            12.0,
+            if current {
+                theme.surface_selected
+            } else {
+                login_surface()
+            },
+        );
+        ui.stroke_rounded(
+            x,
+            y,
+            w,
+            h,
+            12.0,
+            if current { 1.4 } else { 1.0 },
             if current {
                 login_accent()
             } else {
                 login_border()
             },
         );
-        let avatar = (h - 12.0).clamp(30.0, 40.0);
+        let avatar = (h - 12.0).clamp(28.0, 40.0);
         ui.avatar_head_2d(x + 10.0, y + (h - avatar) * 0.5, avatar, name);
+
+        let trash_w = if confirming { 84.0 } else { 36.0 };
+        let trash = [
+            x + w - trash_w - 8.0,
+            y + (h - 32.0) * 0.5,
+            trash_w,
+            32.0,
+        ];
+        if confirming {
+            ui.rounded(trash[0], trash[1], trash[2], trash[3], 9.0, theme.danger);
+            ui.centered_fit(
+                Face::SemiBold,
+                11.5,
+                trash,
+                theme.on_accent,
+                "Remove?",
+            );
+        } else {
+            ui.icon(
+                Icon::Trash,
+                trash[0] + 8.0,
+                trash[1] + 6.0,
+                20.0,
+                login_muted(),
+            );
+        }
+        targets.push((trash, remove));
+
+        let check_w = if current { 28.0 } else { 0.0 };
+        if current {
+            ui.icon(
+                Icon::Check,
+                trash[0] - check_w,
+                y + (h - 18.0) * 0.5,
+                18.0,
+                login_accent(),
+            );
+        }
         let tx = x + avatar + 22.0;
-        let fitted = ui.fit_text(Face::SemiBold, 14.0, name, (w - avatar - 56.0).max(60.0));
-        ui.text(Face::SemiBold, 14.0, tx, y + 7.0, login_text(), &fitted);
+        let text_w = (trash[0] - check_w - tx - 6.0).max(60.0);
+        let fitted = ui.fit_text(Face::SemiBold, 14.0, name, text_w);
+        ui.text(Face::SemiBold, 14.0, tx, y + h * 0.5 - 17.0, login_text(), &fitted);
         let detail = if current {
-            format!("{detail} · Current")
+            format!("{detail} · Playing")
         } else {
             detail.to_owned()
         };
@@ -295,7 +462,7 @@ impl Login {
             Face::Regular,
             11.5,
             tx,
-            y + h - 21.0,
+            y + h * 0.5 + 3.0,
             if current {
                 login_accent()
             } else {
@@ -303,16 +470,7 @@ impl Login {
             },
             &detail,
         );
-        if current {
-            ui.icon(
-                Icon::Check,
-                x + w - 30.0,
-                y + (h - 18.0) * 0.5,
-                18.0,
-                login_accent(),
-            );
-        }
-        targets.push(([x, y, w, h], action));
+        targets.push(([x, y, w, h], select));
     }
 
     pub fn draw(
@@ -357,19 +515,57 @@ impl Login {
         ui.rounded(x, y, w, h, 12.0, theme.bg_solid);
         ui.border(x, y, w, h, 12.0, login_border());
 
-        let (title, subtitle): (&str, String) = if self.providers {
-            ("Accounts", "Choose how you want to play".into())
-        } else if self.choosing {
-            let line = if let Some(name) = &self.profile {
-                if self.signed_in {
-                    format!("Signed in as {name} with {}", self.provider_name())
-                } else {
-                    format!("Sign in required for {name}")
-                }
+        let list_mode = self.choosing;
+        let plus = [x + w - 100.0, y + 16.0, 38.0, 38.0];
+        let menu_w = 244.0_f32.min(w - 16.0);
+        let menu_item_h = 52.0;
+        let menu_items = [
+            (
+                "Microsoft",
+                "Xbox and Minecraft",
+                "M",
+                Action::MicrosoftAccount,
+            ),
+            ("Ely.by", "Alternative auth server", "E", Action::ElySignIn),
+            (
+                "Offline",
+                "Play without signing in",
+                "O",
+                Action::OfflineAccount,
+            ),
+        ];
+        let menu = [
+            (plus[0] + plus[2] - menu_w).max(x + 8.0),
+            plus[1] + plus[3] + 6.0,
+            menu_w,
+            menu_item_h * menu_items.len() as f32 + 8.0,
+        ];
+        if list_mode && self.menu_open {
+            for (i, (_, _, _, action)) in menu_items.iter().enumerate() {
+                targets.push((
+                    [
+                        menu[0] + 4.0,
+                        menu[1] + 4.0 + i as f32 * menu_item_h,
+                        menu[2] - 8.0,
+                        menu_item_h,
+                    ],
+                    *action,
+                ));
+            }
+            targets.push(([0.0, 0.0, ui.w, ui.h], Action::AddAccount));
+        }
+
+        let (title, subtitle): (&str, String) = if list_mode {
+            let line = if !self.message.is_empty() {
+                self.message.clone()
             } else {
-                "Choose an account or play offline".into()
+                match self.row_count() {
+                    0 => "Tap + to add an account".into(),
+                    1 => "1 saved account".into(),
+                    n => format!("{n} saved accounts"),
+                }
             };
-            ("Your accounts", line)
+            ("Accounts", line)
         } else if self.ely {
             (
                 "Ely.by account",
@@ -377,22 +573,16 @@ impl Login {
             )
         } else if self.offline {
             (
-                "Offline profile",
+                "Offline account",
                 "A local name for single-player and LAN".into(),
             )
         } else {
-            let line = if let Some(name) = &self.profile {
-                if self.signed_in {
-                    format!("Already signed in as {name}")
-                } else {
-                    format!("Sign in to use {name}")
-                }
-            } else {
-                "Xbox and Minecraft profile".into()
-            };
-            ("Microsoft account", line)
+            (
+                "Microsoft account",
+                "Xbox and Minecraft profile".into(),
+            )
         };
-        if !self.providers {
+        if !list_mode {
             let back = [x + 16.0, y + 16.0, 38.0, 38.0];
             ui.rounded(
                 back[0],
@@ -428,13 +618,25 @@ impl Login {
             login_text(),
         );
         targets.push((close, Action::CloseLogin));
-        let text_x = if self.providers { x + 22.0 } else { x + 64.0 };
+        if list_mode {
+            ui.rounded(plus[0], plus[1], plus[2], plus[3], 12.0, login_accent());
+            ui.icon(
+                Icon::Plus,
+                plus[0] + 9.0,
+                plus[1] + 9.0,
+                20.0,
+                theme.on_accent,
+            );
+            targets.push((plus, Action::AddAccount));
+        }
+        let text_x = if list_mode { x + 22.0 } else { x + 64.0 };
+        let title_right = if list_mode { x + w - 110.0 } else { x + w - 70.0 };
         ui.text(Face::SemiBold, 20.0, text_x, y + 14.0, login_text(), title);
         let fitted = ui.fit_text(
             Face::Regular,
             12.5,
             &subtitle,
-            (x + w - 70.0 - text_x).max(70.0),
+            (title_right - text_x).max(70.0),
         );
         ui.text(
             Face::Regular,
@@ -452,155 +654,158 @@ impl Login {
         let gap = 8.0;
         let field_h = ((content_h - 116.0) / 3.0 - gap).clamp(42.0, 56.0);
 
-        if self.providers {
-            let gap = 12.0;
-            let cw = ((w - 40.0 - gap) * 0.5).max(120.0);
-            let ch = ((content_h - 54.0 - gap) * 0.5).clamp(84.0, 96.0);
-            for (i, (label, note, action, mark)) in [
-                (
-                    "Microsoft",
-                    "Xbox and Minecraft",
-                    Action::MicrosoftAccount,
-                    "M",
-                ),
-                ("Ely.by", "Alternative auth", Action::ElySignIn, "E"),
-                (
-                    "Offline",
-                    "Play without signing in",
-                    Action::OfflineAccount,
-                    "O",
-                ),
-                (
-                    "Saved accounts",
-                    "Switch account",
-                    Action::SavedAccounts,
-                    "S",
-                ),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let cx = x + 20.0 + (i % 2) as f32 * (cw + gap);
-                let cy = content_y + (i / 2) as f32 * (ch + gap);
-                ui.rounded(cx, cy, cw, ch, 10.0, login_surface());
-                ui.border(cx, cy, cw, ch, 10.0, login_border());
-                ui.rounded(cx + 14.0, cy + 14.0, 34.0, 34.0, 11.0, login_accent_soft());
+        if self.choosing {
+            let rows = self.rows();
+            let row_gap = 6.0;
+            let avail = footer_y - content_y - 8.0;
+            let row_h = ((avail - row_gap * (ROWS_PER_PAGE as f32 - 1.0)) / ROWS_PER_PAGE as f32)
+                .clamp(36.0, 54.0);
+            let pages = rows.len().div_ceil(ROWS_PER_PAGE).max(1);
+            let offset = self
+                .account_offset
+                .min((pages - 1) * ROWS_PER_PAGE);
+            if rows.is_empty() {
+                let card = [x + 20.0, content_y, w - 40.0, 64.0];
+                ui.rounded(card[0], card[1], card[2], card[3], 12.0, login_surface());
+                ui.border(card[0], card[1], card[2], card[3], 12.0, login_border());
                 ui.text(
                     Face::SemiBold,
-                    15.0,
-                    cx + 23.0,
-                    cy + 21.0,
-                    login_accent(),
-                    mark,
-                );
-                ui.text(
-                    Face::SemiBold,
-                    15.0,
-                    cx + 14.0,
-                    cy + 50.0,
+                    13.0,
+                    card[0] + 16.0,
+                    card[1] + 14.0,
                     login_text(),
-                    label,
+                    "No saved accounts yet",
                 );
-                let note = ui.fit_text(Face::Regular, 11.5, note, cw - 28.0);
                 ui.text(
                     Face::Regular,
                     11.5,
-                    cx + 14.0,
-                    cy + 68.0,
+                    card[0] + 16.0,
+                    card[1] + 36.0,
                     login_muted(),
-                    &note,
+                    "Tap + to sign in or add an offline name.",
                 );
-                targets.push(([cx, cy, cw, ch], action));
             }
-            button(
-                ui,
-                targets,
-                [x + 20.0, footer_y, w - 40.0, 42.0],
-                "Close",
-                Action::CloseLogin,
-                false,
-            );
-            return;
-        }
-
-        if self.choosing {
-            let row_h = ((footer_y - content_y - 26.0) / 4.0).clamp(36.0, 56.0);
-            let offline_current = self.profile.is_none();
-            let offline_label = if offline_name.trim().is_empty() {
-                "Offline player"
-            } else {
-                offline_name
-            };
-            self.account_row(
-                ui,
-                targets,
-                [x + 20.0, content_y, w - 40.0, row_h],
-                offline_label,
-                "Offline profile",
-                offline_current,
-                Action::SelectOffline,
-            );
-            for (row, (index, account)) in self
-                .saved_accounts
-                .iter()
-                .enumerate()
-                .skip(self.account_offset)
-                .take(3)
-                .enumerate()
-            {
-                let detail = if account.provider == account::Provider::Ely {
-                    "Ely.by"
-                } else {
-                    "Microsoft"
-                };
-                let current = self.profile.as_deref() == Some(account.name.as_str());
-                let cy = content_y + (row + 1) as f32 * (row_h + 6.0);
-                self.account_row(
+            for (n, row) in rows.iter().enumerate().skip(offset).take(ROWS_PER_PAGE) {
+                let ry = content_y + (n - offset) as f32 * (row_h + row_gap);
+                let rect = [x + 20.0, ry, w - 40.0, row_h];
+                match *row {
+                    Row::Account(i) => {
+                        let account = &self.saved_accounts[i];
+                        let detail = if account.provider == account::Provider::Ely {
+                            "Ely.by"
+                        } else {
+                            "Microsoft"
+                        };
+                        let current = self.selected_key.as_deref() == Some(account.key().as_str());
+                        self.list_row(
+                            ui,
+                            targets,
+                            rect,
+                            &account.name,
+                            detail,
+                            current,
+                            Action::SelectAccount(i),
+                            Action::RemoveAccount(i),
+                            self.pending_remove == Some((false, i)),
+                        );
+                    }
+                    Row::Offline(i) => {
+                        let name = &self.offline_names[i];
+                        let current = self.selected_key.is_none()
+                            && name.eq_ignore_ascii_case(offline_name.trim());
+                        self.list_row(
+                            ui,
+                            targets,
+                            rect,
+                            name,
+                            "Offline",
+                            current,
+                            Action::SelectOfflineAt(i),
+                            Action::RemoveOffline(i),
+                            self.pending_remove == Some((true, i)),
+                        );
+                    }
+                }
+            }
+            let mut done_x = x + 20.0;
+            if pages > 1 {
+                let nav = 36.0;
+                button(
                     ui,
                     targets,
-                    [x + 20.0, cy, w - 40.0, row_h],
-                    &account.name,
-                    detail,
-                    current,
-                    Action::SelectAccount(index),
+                    [x + 20.0, footer_y, nav, 38.0],
+                    "<",
+                    Action::SavedPage(false),
+                    false,
                 );
+                let label = format!("{}/{}", offset / ROWS_PER_PAGE + 1, pages);
+                let label_w = 44.0;
+                ui.centered_fit(
+                    Face::Medium,
+                    12.0,
+                    [x + 20.0 + nav + 4.0, footer_y, label_w, 38.0],
+                    login_muted(),
+                    &label,
+                );
+                button(
+                    ui,
+                    targets,
+                    [x + 20.0 + nav + 8.0 + label_w, footer_y, nav, 38.0],
+                    ">",
+                    Action::SavedPage(true),
+                    false,
+                );
+                done_x = x + 20.0 + 2.0 * nav + label_w + 20.0;
             }
-            let nav = 36.0;
             button(
                 ui,
                 targets,
-                [x + 20.0, footer_y, nav, 38.0],
-                "<",
-                Action::SavedPage(false),
-                false,
-            );
-            button(
-                ui,
-                targets,
-                [x + 20.0 + nav + 6.0, footer_y, nav, 38.0],
-                ">",
-                Action::SavedPage(true),
-                false,
-            );
-            let after = x + 20.0 + 2.0 * (nav + 6.0) + 8.0;
-            let rest = x + w - 20.0 - after;
-            let add_w = (rest - 8.0) * 0.5;
-            button(
-                ui,
-                targets,
-                [after, footer_y, add_w, 38.0],
-                "Add account",
-                Action::AddAccount,
-                false,
-            );
-            button(
-                ui,
-                targets,
-                [after + add_w + 8.0, footer_y, rest - add_w - 8.0, 38.0],
+                [done_x, footer_y, x + w - 20.0 - done_x, 38.0],
                 "Done",
                 Action::CloseLogin,
                 true,
             );
+
+            if self.menu_open {
+                ui.rounded(
+                    menu[0] + 2.0,
+                    menu[1] + 6.0,
+                    menu[2],
+                    menu[3],
+                    14.0,
+                    color::hex(0x000000, 110),
+                );
+                ui.rounded(menu[0], menu[1], menu[2], menu[3], 14.0, login_surface_high());
+                ui.border(menu[0], menu[1], menu[2], menu[3], 14.0, login_border());
+                for (i, (label, note, mark, _)) in menu_items.iter().enumerate() {
+                    let iy = menu[1] + 4.0 + i as f32 * menu_item_h;
+                    ui.rounded(menu[0] + 12.0, iy + 9.0, 34.0, 34.0, 11.0, login_accent_soft());
+                    ui.centered_fit(
+                        Face::SemiBold,
+                        15.0,
+                        [menu[0] + 12.0, iy + 9.0, 34.0, 34.0],
+                        login_accent(),
+                        mark,
+                    );
+                    ui.text(
+                        Face::SemiBold,
+                        14.0,
+                        menu[0] + 58.0,
+                        iy + 8.0,
+                        login_text(),
+                        label,
+                    );
+                    let note = ui.fit_text(Face::Regular, 11.0, note, menu[2] - 70.0);
+                    ui.text(
+                        Face::Regular,
+                        11.0,
+                        menu[0] + 58.0,
+                        iy + 28.0,
+                        login_muted(),
+                        &note,
+                    );
+                }
+            }
             return;
         }
 
@@ -697,19 +902,22 @@ impl Login {
         }
 
         if self.offline {
-            let focused = editing == Some("name");
+            let focused = editing == Some("offline_name");
             ui.text_field(
                 x + 20.0,
                 content_y,
                 w - 40.0,
                 58.0,
                 "Player name",
-                offline_name,
-                "Enter a name",
+                &self.new_offline,
+                "3 to 16 letters, digits or _",
                 focused,
             );
-            targets.push(([x + 20.0, content_y, w - 40.0, 58.0], Action::Field("name")));
-            let count = format!("{}/16 characters", offline_name.chars().count());
+            targets.push((
+                [x + 20.0, content_y, w - 40.0, 58.0],
+                Action::Field("offline_name"),
+            ));
+            let count = format!("{}/16 characters", self.new_offline.chars().count());
             ui.text(
                 Face::Regular,
                 11.5,
@@ -725,6 +933,17 @@ impl Login {
                 "This name is local; it is not an online identity.",
                 login_muted(),
             );
+            if !self.message.is_empty() && !focused {
+                paragraph(
+                    ui,
+                    x + 20.0,
+                    content_y + 112.0,
+                    w - 40.0,
+                    &self.message,
+                    theme.danger,
+                    2,
+                );
+            }
             if focused {
                 button(
                     ui,
@@ -740,7 +959,7 @@ impl Login {
                 ui,
                 targets,
                 [x + 20.0, footer_y, w - 40.0, 42.0],
-                "Use offline account",
+                "Add offline account",
                 Action::SelectOffline,
                 true,
             );
@@ -755,48 +974,41 @@ impl Login {
             return;
         }
 
-        // Microsoft
+        // Microsoft: add an account with the browser or a device code
         let card_h = 84.0;
         let card = [x + 20.0, content_y, w - 40.0, card_h];
         ui.rounded(card[0], card[1], card[2], card[3], 16.0, login_surface());
         ui.border(card[0], card[1], card[2], card[3], 16.0, login_border());
-        let display_name = self.profile.as_deref().unwrap_or(offline_name);
-        ui.avatar_head_2d(card[0] + 14.0, card[1] + 14.0, 56.0, display_name);
+        ui.rounded(card[0] + 14.0, card[1] + 14.0, 56.0, 56.0, 16.0, login_accent_soft());
+        ui.centered_fit(
+            Face::SemiBold,
+            24.0,
+            [card[0] + 14.0, card[1] + 14.0, 56.0, 56.0],
+            login_accent(),
+            "M",
+        );
         let name_x = card[0] + 84.0;
-        let fitted = ui.fit_text(Face::SemiBold, 17.0, display_name, card[2] - 100.0);
         ui.text(
             Face::SemiBold,
             17.0,
             name_x,
-            card[1] + 14.0,
+            card[1] + 16.0,
             login_text(),
-            &fitted,
+            "Add a Microsoft account",
         );
-        let status = self.status(offline_name);
-        let fitted = ui.fit_text(Face::Regular, 12.5, &status, card[2] - 100.0);
+        let fitted = ui.fit_text(
+            Face::Regular,
+            12.5,
+            "Your other accounts stay saved.",
+            card[2] - 100.0,
+        );
         ui.text(
             Face::Regular,
             12.5,
             name_x,
-            card[1] + 40.0,
-            if self.signed_in {
-                login_accent()
-            } else {
-                login_muted()
-            },
-            &fitted,
-        );
-        ui.text(
-            Face::Regular,
-            11.0,
-            name_x,
-            card[1] + 60.0,
+            card[1] + 44.0,
             login_muted(),
-            if self.signed_in {
-                "Microsoft · Connected"
-            } else {
-                "Microsoft · Not connected"
-            },
+            &fitted,
         );
 
         let mut row_y = content_y + card_h + 12.0;
@@ -847,11 +1059,7 @@ impl Login {
             );
             row_y += 46.0;
         } else {
-            let text = if self.signed_in {
-                "Your account is saved on this device. Sessions renew automatically."
-            } else {
-                "You sign in inside Microsoft's browser; this app never sees your password."
-            };
+            let text = "You sign in inside Microsoft's browser; this app never sees your password.";
             row_y = paragraph(ui, x + 20.0, row_y, w - 40.0, text, login_muted(), 2) + 8.0;
         }
         let message = if matches!(&self.state, Some(SignInState::Starting)) {
@@ -876,8 +1084,6 @@ impl Login {
             ("Copy code and open browser", Action::LoginLink)
         } else if self.pending() {
             ("Restart browser sign-in", Action::SignIn)
-        } else if self.signed_in {
-            ("Switch Microsoft account", Action::SignIn)
         } else {
             ("Sign in with browser", Action::SignIn)
         };
@@ -900,8 +1106,6 @@ impl Login {
         );
         let (second_label, second_action) = if self.pending() {
             ("Cancel", Action::CancelLogin)
-        } else if self.profile.is_some() {
-            ("Sign out", Action::SignOut)
         } else {
             ("Back", Action::Account)
         };

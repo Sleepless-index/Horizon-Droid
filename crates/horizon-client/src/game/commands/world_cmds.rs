@@ -494,7 +494,14 @@ impl Game<'_> {
             Some(i) => (&spec[..i], &spec[i..]),
             None => (spec.as_str(), ""),
         };
-        let ty = ParticleType::from_name(name).ok_or_else(|| err("particle.notFound", &[&name]))?;
+        let pack_particle = (ParticleType::from_name(name).is_none()
+            && name.contains(':')
+            && !name.starts_with("minecraft:"))
+        .then(|| name.to_owned());
+        let ty = match &pack_particle {
+            Some(_) => ParticleType::Smoke,
+            None => ParticleType::from_name(name).ok_or_else(|| err("particle.notFound", &[&name]))?,
+        };
         let opts = match horizon_client::command::snbt::parse_fully(options_text) {
             Ok(Tag::Compound(c)) if !options_text.is_empty() => Some(c),
             _ => None,
@@ -532,6 +539,9 @@ impl Game<'_> {
         // The block state of a block particle, for its packet.
         let mut block_state = None;
         let options = match ty {
+            _ if pack_particle.is_some() => {
+                ParticleOptions::named(pack_particle.clone().unwrap_or_default())
+            }
             ParticleType::Dust => ParticleOptions::dust(
                 rgb,
                 field("scale")
