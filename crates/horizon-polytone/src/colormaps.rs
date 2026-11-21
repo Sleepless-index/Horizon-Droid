@@ -76,6 +76,7 @@ pub struct SampleContext<'a> {
     pub biome: &'a str,
     pub biome_index: u32,
     pub item_damage: f64,
+    pub state: &'a [(u32, u32)],
 }
 
 struct Sampler<'a> {
@@ -284,6 +285,21 @@ impl Host for Sampler<'_> {
     fn function(&mut self, name: &str, args: &[Value]) -> Result<Value, String> {
         match (name, args) {
             ("config", [Value::Str(id)]) => crate::pack::active_config(id),
+            ("state_prop" | "state_prop_i", [index]) => {
+                let Some(last) = self.at.state.len().checked_sub(1) else {
+                    return Ok(Value::Num(0.0));
+                };
+                let (position, count) = self.at.state[(index.num() as i64).clamp(0, last as i64) as usize];
+                Ok(Value::Num(if name == "state_prop" {
+                    if count > 1 {
+                        f64::from(position) / f64::from(count - 1)
+                    } else {
+                        0.0
+                    }
+                } else {
+                    f64::from(position)
+                }))
+            }
             _ => Err(format!("{name} is not available in a colormap")),
         }
     }
@@ -421,6 +437,7 @@ pub struct Colormap {
     default_color: Option<u32>,
     textures: BTreeMap<i32, Texture>,
     biome_only: bool,
+    uses_state: bool,
 }
 
 impl Colormap {
@@ -506,8 +523,12 @@ impl Colormap {
             && modifier_ok;
         let per_biome =
             x.reads_only(&per_biome_reads) && y.reads_only(&per_biome_reads) && modifier_ok;
+        let uses_state = ["state_prop", "state_prop_i"]
+            .iter()
+            .any(|f| x.calls(f) || y.calls(f));
         Ok(Self {
             per_biome,
+            uses_state,
             mapper,
             modifier: color_modifier,
             x,
@@ -533,6 +554,10 @@ impl Colormap {
 
     pub fn blends(&self) -> bool {
         self.blend
+    }
+
+    pub fn uses_state(&self) -> bool {
+        self.uses_state
     }
 
     pub fn depends_only_on_biome(&self) -> bool {
@@ -1133,6 +1158,34 @@ mod tests {
         assert_eq!(map.sample(ALL_TINTS, &at("minecraft:plains")).unwrap() >> 16 & 0xFF, 4);
         assert_eq!(map.sample(ALL_TINTS, &at("minecraft:desert")).unwrap() >> 16 & 0xFF, 1);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn state_prop_reads_a_block_states_property_by_position() {
+        let map = Colormap::new(
+            Some(&json!({"x_axis": "state_prop(1)", "y_axis": 0})),
+            only(gradient()),
+        )
+        .unwrap();
+        assert!(map.uses_state());
+        let props = [(3, 4), (1, 3)];
+        let at = SampleContext {
+            state: &props,
+            ..Default::default()
+        };
+        assert_eq!(xy(map.sample(ALL_TINTS, &at).unwrap()).0, 128);
+        let far = SampleContext {
+            state: &[(0, 2), (2, 3)],
+            ..Default::default()
+        };
+        assert_eq!(xy(map.sample(ALL_TINTS, &far).unwrap()).0, 0);
+        let integer = Colormap::new(
+            Some(&json!({"x_axis": "state_prop_i(9) / 255", "y_axis": 0})),
+            only(gradient()),
+        )
+        .unwrap();
+        assert_eq!(xy(integer.sample(ALL_TINTS, &at).unwrap()).0, 254);
+        assert!(!Colormap::new(None, only(gradient())).unwrap().uses_state());
     }
 
     #[test]

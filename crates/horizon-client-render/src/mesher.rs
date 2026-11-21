@@ -25,7 +25,7 @@ use horizon_polytone::{
 use horizon_world::{
     block_render::FaceVisibility,
     fluid::{FluidKind, FluidState},
-    registry::BlockStateId,
+    registry::{BlockRegistry, BlockStateId},
 };
 pub use sides::{Part, Sides, group_parts};
 use std::sync::Arc;
@@ -491,7 +491,7 @@ mod custom_tint_tests {
         let custom = CustomTints {
             maps: Colormaps::read(&root),
             set,
-            slots: vec![(entry, 0)],
+            slots: vec![(entry, 0, Vec::new())],
             ..Default::default()
         };
         let at = |x| SampleContext {
@@ -517,7 +517,7 @@ mod custom_tint_tests {
         let custom = CustomTints {
             maps: Colormaps::read(&root),
             set,
-            slots: vec![(entry, 0)],
+            slots: vec![(entry, 0, Vec::new())],
             ..Default::default()
         };
         let biome = |biome| SampleContext {
@@ -539,7 +539,7 @@ mod custom_tint_tests {
         let custom = CustomTints {
             maps: Colormaps::read(&root),
             set,
-            slots: vec![(entry, 0)],
+            slots: vec![(entry, 0, Vec::new())],
             ..Default::default()
         };
         assert_eq!(custom.len(), 1);
@@ -556,6 +556,22 @@ mod custom_tint_tests {
         );
         assert_eq!(custom.sample(7, &climate(0.5, 0.5)), 0xFF_FFFF);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn property_positions_follow_each_propertys_value_order_in_the_block() {
+        let block: Vec<Vec<(&str, &str)>> = ["north", "south"]
+            .into_iter()
+            .flat_map(|facing| {
+                ["true", "false"]
+                    .into_iter()
+                    .map(move |powered| vec![("facing", facing), ("powered", powered)])
+            })
+            .collect();
+        assert_eq!(property_positions(&block, 0), [(0, 2), (0, 2)]);
+        assert_eq!(property_positions(&block, 3), [(1, 2), (1, 2)]);
+        assert_eq!(property_positions(&block, 2), [(1, 2), (0, 2)]);
+        assert!(property_positions(&block, 9).is_empty());
     }
 
     #[test]
@@ -664,9 +680,55 @@ pub struct MeshTables {
 struct CustomTints {
     maps: Colormaps,
     set: Modifiers<BlockModifier>,
-    slots: Vec<(usize, i32)>,
+    slots: Vec<(usize, i32, Vec<(u32, u32)>)>,
     redstone: [Option<u32>; 16],
 }
+fn property_positions(block: &[Vec<(&str, &str)>], own: usize) -> Vec<(u32, u32)> {
+    let Some(state) = block.get(own) else {
+        return Vec::new();
+    };
+    state
+        .iter()
+        .map(|(name, value)| {
+            let mut seen: Vec<&str> = Vec::new();
+            for other in block {
+                if let Some((_, v)) = other.iter().find(|(n, _)| n == name) {
+                    if !seen.contains(v) {
+                        seen.push(v);
+                    }
+                }
+            }
+            let position = seen.iter().position(|v| v == value).unwrap_or(0);
+            (position as u32, seen.len() as u32)
+        })
+        .collect()
+}
+
+fn state_property_positions(registry: &BlockRegistry, id: BlockStateId) -> Vec<(u32, u32)> {
+    let Some(state) = registry.state(id) else {
+        return Vec::new();
+    };
+    let same = |at: u32| registry.state(BlockStateId(at)).is_some_and(|s| s.name == state.name);
+    let mut first = id.0;
+    while first > 0 && same(first - 1) {
+        first -= 1;
+    }
+    let mut last = id.0;
+    while same(last + 1) {
+        last += 1;
+    }
+    let block: Vec<Vec<(&str, &str)>> = (first..=last)
+        .filter_map(|at| registry.state(BlockStateId(at)))
+        .map(|s| {
+            s.properties
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect()
+        })
+        .collect();
+    property_positions(&block, (id.0 - first) as usize)
+}
+
 impl CustomTints {
     fn redstone(&self, power: u8) -> u32 {
         self.redstone
@@ -679,13 +741,14 @@ impl CustomTints {
         self.slots.len()
     }
     fn sample(&self, slot: u16, at: &SampleContext) -> u32 {
-        let Some(&(entry, index)) = self.slots.get(usize::from(slot)) else {
+        let Some((entry, index, state)) = self.slots.get(usize::from(slot)) else {
             return 0xFF_FFFF;
         };
+        let at = SampleContext { state, ..*at };
         self.set
-            .get(entry)
+            .get(*entry)
             .and_then(|modifier| modifier.tint.as_ref())
-            .and_then(|tint| tint.color(index, &self.maps, at))
+            .and_then(|tint| tint.color(*index, &self.maps, &at))
             .map_or(0xFF_FFFF, |color| color & 0xFF_FFFF)
     }
     fn color(&self, slot: u16, biome: &BiomeInfo, index: u16, [x, y, z]: [i32; 3]) -> u32 {
@@ -700,6 +763,7 @@ impl CustomTints {
                 biome: &biome.name,
                 biome_index: u32::from(index),
                 item_damage: 0.0,
+                state: &[],
             },
         )
     }
@@ -755,6 +819,7 @@ impl MeshTables {
         &mut self,
         facts: &BlockFacts,
         root: &std::path::Path,
+        registry: &BlockRegistry,
         block_in_tag: &dyn Fn(&str, &str) -> bool,
     ) {
         horizon_client_core::pack_colors::set_map_colors(Default::default());
@@ -764,7 +829,7 @@ impl MeshTables {
         }
         let maps = Colormaps::read(root);
         let mut map_colors = std::collections::HashMap::new();
-        let mut slots: Vec<(usize, i32)> = Vec::new();
+        let mut slots: Vec<(usize, i32, Vec<(u32, u32)>)> = Vec::new();
         let mut warned = std::collections::HashSet::new();
         for (id, state) in facts.states.iter().enumerate() {
             let name = if state.name.contains(':') {
@@ -822,7 +887,12 @@ impl MeshTables {
                     None => continue,
                     Some(ColorSource::Flat(color)) => Tint::Constant(color & 0xFF_FFFF),
                     Some(source) if source.resolves(&maps) => {
-                        let key = (entry, index);
+                        let state_props = if source.uses_state(&maps) {
+                            state_property_positions(registry, BlockStateId(id as u32))
+                        } else {
+                            Vec::new()
+                        };
+                        let key = (entry, index, state_props);
                         let slot = match slots.iter().position(|s| *s == key) {
                             Some(slot) => slot,
                             None => {

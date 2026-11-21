@@ -42,7 +42,12 @@ macro_rules! world_biomes {
 }
 
 /// The world's packs' content files, as a field-level borrow (see the macros).
-fn polytone_block_tints(tables: &mut MeshTables, facts: &BlockFacts, root: &std::path::Path) {
+fn polytone_block_tints(
+    tables: &mut MeshTables,
+    facts: &BlockFacts,
+    root: &std::path::Path,
+    registry: &horizon_world::registry::BlockRegistry,
+) {
     horizon_polytone::pack::set_active(horizon_polytone::pack::Configs::read(root));
     tables.apply_polytone_fluid_tints(root);
     tables.apply_polytone_colors(root);
@@ -58,7 +63,7 @@ fn polytone_block_tints(tables: &mut MeshTables, facts: &BlockFacts, root: &std:
     });
     horizon_client::potions::set_pack_effect_colors(&colors.effects());
     let tags = std::cell::OnceCell::new();
-    tables.apply_polytone_block_tints(facts, root, &|tag, block| {
+    tables.apply_polytone_block_tints(facts, root, registry, &|tag, block| {
         tags.get_or_init(|| {
             horizon_items::items::load_tags(root, "block", &horizon_world::loot::PackOverlay::NONE)
                 .unwrap_or_default()
@@ -1999,7 +2004,7 @@ impl PackResources {
     ) -> Result<Self> {
         let visibility = models::load_visibility(root, assets.registry)?;
         let mut tables = MeshTables::new(&assets, &render, facts, visibility)?;
-        polytone_block_tints(&mut tables, facts, root);
+        polytone_block_tints(&mut tables, facts, root, assets.registry);
         let tables = Arc::new(tables);
         let item_renderer = horizon_client::item_render::ItemRenderer::load_with_library(
             root,
@@ -19968,7 +19973,7 @@ fn load_resources(
         world_loading::preload_launch_world(folder, &root, assets.registry, biomes.clone());
     }
     let mut tables = MeshTables::new(&assets, &render, &facts, visibility)?;
-    polytone_block_tints(&mut tables, &facts, &root);
+    polytone_block_tints(&mut tables, &facts, &root, assets.registry);
     let tables = Arc::new(tables);
     let pack = PackResources::assemble(
         &root,
