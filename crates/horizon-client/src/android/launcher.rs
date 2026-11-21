@@ -62,8 +62,6 @@ pub(super) struct Launcher {
     drag: Option<gesture::Drag>,
     chooser: Option<chooser::Chooser>,
     exit_confirmation: bool,
-    /// Whether the Home page's three-dot drawer shows the Renderer / Frame rate / Controls tiles.
-    chip_drawer: bool,
     login: login::Login,
     wardrobe: wardrobe::Wardrobe,
     session_worker: Option<mpsc::Receiver<std::result::Result<PreparedAccount, String>>>,
@@ -252,7 +250,6 @@ impl Launcher {
             drag: None,
             chooser: None,
             exit_confirmation: false,
-            chip_drawer: false,
             login: login::Login::new(),
             session_worker: prewarm_session_worker,
             session_ready: false,
