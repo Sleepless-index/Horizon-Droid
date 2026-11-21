@@ -61,6 +61,14 @@ Work only in this repository.
   cache keys on the player's choices).
 - Textured `bar_color`: a `<item>_bar.png` (or a `bar_color` colormap) colours the durability bar, sampled with the remaining
   durability (1 = full) as `x`, `y`, `temperature` and `downfall`. The bar only shows on a damaged item.
+- Custom particle types (`polytone/custom_particles/<name>.json`, drawn from `assets/<ns>/particles/<name>.json`): `initializer`
+  (`size` is the quad size, `lifetime`, colour channels, `roll`, `friction`, `custom`, `customs`, `hitbox_size`, `dx`/`dy`/`dz`),
+  `ticker` (`x`/`y`/`z`, `dx`/`dy`/`dz`, `size`, colour, `roll`, `custom`, `customs`, `remove_condition`, every `tick_interval`
+  ticks; `o.custom()` and `o.custom('name')` read the variables), `has_physics`, `kill_on_contact`, `kill_when_still`,
+  `liquid_affinity`, `light_level`, `random_sprite`, `render_type` (`invisible` draws nothing), `semi_custom` copying a vanilla
+  type, and the particle's own `particle_emitters`. Spawned by `/particle ns:name`, by an emitter, or by block modifiers'
+  `particle_emitters` (`animate_tick` source, `state_predicate` with `block_match`, `blockstate_match` and the random forms,
+  `spawn_location` `center`/`lower_corner`, `chance`, `count`, `x`/`y`/`z` default to a 0.4 spread).
 - Colormap `state_prop(i)` (position of the state's i-th property, by name order, over its value count) and `state_prop_i(i)`
   (the position itself) give a block tint one slot per distinct state.
 - Colormap `color_modifier`: `red`/`green`/`blue` expressions over `RED`, `GREEN`, `BLUE` (0-255) rewrite the sampled colour;
@@ -94,8 +102,9 @@ Work only in this repository.
 1. Custom `offset_type` objects.
 3. Position-dependent colormaps for fluid tints (blocks and items already read the position).
 4. Biome layers: `blend_to_gray`, `REMOVE`, colormap and expression arguments, other attributes; weather groups and the other dimension attributes; fog distances and cloud colour.
-5. Custom particle types (`custom_particles/`: initializer, ticker, render mode, sound and particle emitters) and block
-   `particle_emitters`; the engine's particle type is a closed vanilla list, so this needs a custom variant first.
+5. Custom particles still missing: GPU particles (`"type": "gpu"`), `model`, `rotation_mode`, `colormap`, `sound_emitters`,
+   `exclusion_radius`/`limit`, `kill_when_not_in_view`, additive blending (`additive_translucent` draws as `translucent`),
+   entity emitters, block emitters' `biomes`, `block_broken`/`block_cracking` tick sources and `tag_match` rule tests.
 
 ## Rules
 

@@ -608,6 +608,7 @@ struct ModifierHost<'a> {
     world: &'a ParticleWorld,
     configs: &'a crate::pack::Configs,
     rng: &'a mut Rng,
+    named: &'a BTreeMap<String, f64>,
 }
 
 impl ModifierHost<'_> {
@@ -661,7 +662,14 @@ impl crate::expr::Host for ModifierHost<'_> {
             (Root::Object, "life") => s.life,
             (Root::Object, "size") => s.size,
             (Root::Object, "roll") => s.roll,
-            (Root::Object, "custom") => s.custom,
+            (Root::Object, "custom") => match args.first() {
+                Some(Value::Str(name)) => self
+                    .named
+                    .get(&name.to_lowercase())
+                    .copied()
+                    .unwrap_or(0.0),
+                _ => s.custom,
+            },
             (Root::Object, "xd") => s.motion[0],
             (Root::Object, "yd") => s.motion[1],
             (Root::Object, "zd") => s.motion[2],
@@ -760,6 +768,7 @@ impl ParticleModifier {
                     world,
                     configs,
                     rng: &mut rng,
+                    named: &BTreeMap::new(),
                 };
                 match program.eval(&mut host) {
                     Ok(v) => v.num(),
@@ -848,6 +857,355 @@ impl ParticleModifiers {
                 modifier.apply_phase(state, world, &self.1, seed, phase);
             }
         }
+    }
+}
+
+fn run(
+    program: &Program,
+    what: &str,
+    state: &ParticleState,
+    named: &BTreeMap<String, f64>,
+    world: &ParticleWorld,
+    configs: &crate::pack::Configs,
+    rng: &mut Rng,
+) -> Option<f64> {
+    let mut host = ModifierHost {
+        state,
+        world,
+        configs,
+        rng,
+        named,
+    };
+    match program.eval(&mut host) {
+        Ok(value) => {
+            let number = value.num();
+            number.is_finite().then_some(number)
+        }
+        Err(e) => {
+            log::warn!("custom particle {what}: {e}");
+            None
+        }
+    }
+}
+
+fn set_channel(state: &mut ParticleState, key: &str, value: f64) -> bool {
+    let slot = match key {
+        "red" => 0,
+        "green" => 1,
+        "blue" => 2,
+        "alpha" => 3,
+        _ => return false,
+    };
+    state.rgba[slot] = value.clamp(0.0, 1.0);
+    true
+}
+
+/// What a custom particle's initializer sets that the particle state doesn't hold.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Initialized {
+    pub friction: Option<f64>,
+    pub hitbox: Option<f64>,
+}
+
+impl CustomParticle {
+    /// Runs the initializer on a particle just made: `roll`, `size` (the quad size itself), the
+    /// colour channels, `lifetime`, `friction`, `custom`, the named variables, `hitbox_size` and
+    /// the motion, each seeing what the ones before set.
+    pub fn initialize(
+        &self,
+        state: &mut ParticleState,
+        named: &mut BTreeMap<String, f64>,
+        world: &ParticleWorld,
+        configs: &crate::pack::Configs,
+        seed: u64,
+    ) -> Initialized {
+        let mut rng = Rng(seed | 1);
+        let mut out = Initialized::default();
+        const ORDER: [&str; 9] = [
+            "roll", "size", "red", "green", "blue", "alpha", "lifetime", "friction", "custom",
+        ];
+        for key in ORDER {
+            let Some(program) = self.initializer.get(key) else {
+                continue;
+            };
+            let Some(value) = run(program, key, state, named, world, configs, &mut rng) else {
+                continue;
+            };
+            if set_channel(state, key, value) {
+                continue;
+            }
+            match key {
+                "roll" => state.roll = value,
+                "size" => state.size = value.max(0.0),
+                "lifetime" => state.life = value.max(1.0).trunc(),
+                "friction" => out.friction = Some(value),
+                _ => state.custom = value,
+            }
+        }
+        for (name, program) in &self.initializer_customs {
+            if let Some(value) = run(program, name, state, named, world, configs, &mut rng) {
+                named.insert(name.clone(), value);
+            }
+        }
+        if let Some(program) = self.initializer.get("hitbox_size") {
+            out.hitbox = run(program, "hitbox_size", state, named, world, configs, &mut rng)
+                .map(|v| v.max(0.0));
+        }
+        for (axis, key) in ["dx", "dy", "dz"].into_iter().enumerate() {
+            if let Some(program) = self.initializer.get(key) {
+                if let Some(value) = run(program, key, state, named, world, configs, &mut rng) {
+                    state.motion[axis] = value;
+                }
+            }
+        }
+        out
+    }
+
+    /// One run of the ticker: `roll`, `size`, the colour channels, the position and motion,
+    /// `custom` and the named variables, then `remove_condition`; true when the particle is to go.
+    pub fn tick(
+        &self,
+        state: &mut ParticleState,
+        named: &mut BTreeMap<String, f64>,
+        world: &ParticleWorld,
+        configs: &crate::pack::Configs,
+        seed: u64,
+    ) -> bool {
+        let mut rng = Rng(seed | 1);
+        const ORDER: [&str; 13] = [
+            "roll", "size", "red", "green", "blue", "alpha", "x", "y", "z", "dx", "dy", "dz",
+            "custom",
+        ];
+        for key in ORDER {
+            let Some(program) = self.ticker.get(key) else {
+                continue;
+            };
+            let Some(value) = run(program, key, state, named, world, configs, &mut rng) else {
+                continue;
+            };
+            if set_channel(state, key, value) {
+                continue;
+            }
+            match key {
+                "roll" => state.roll = value,
+                "size" => state.size = value.max(0.0),
+                "x" => state.position[0] = value,
+                "y" => state.position[1] = value,
+                "z" => state.position[2] = value,
+                "dx" => state.motion[0] = value,
+                "dy" => state.motion[1] = value,
+                "dz" => state.motion[2] = value,
+                _ => state.custom = value,
+            }
+        }
+        for (name, program) in &self.ticker_customs {
+            if let Some(value) = run(program, name, state, named, world, configs, &mut rng) {
+                named.insert(name.clone(), value);
+            }
+        }
+        self.ticker.get("remove_condition").is_some_and(|program| {
+            run(program, "remove_condition", state, named, world, configs, &mut rng)
+                .is_some_and(|v| v > 0.0)
+        })
+    }
+}
+
+/// A particle an emitter asks for, with what it sets on it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Spawn {
+    pub particle: ParticleRef,
+    pub position: [f64; 3],
+    pub motion: [f64; 3],
+    pub rgba: [Option<f64>; 4],
+    pub roll: Option<f64>,
+    pub size: Option<f64>,
+    pub custom: Option<f64>,
+    pub named: BTreeMap<String, f64>,
+}
+
+impl Emitter {
+    /// Runs the emitter at `origin` for the owner described by `state` (a block's centre, or a
+    /// particle): `chance` decides if it fires, `count` how many particles it makes, each placed
+    /// at `origin` plus `x`/`y`/`z` (a random spread of 0.4 by default) with motion `dx`/`dy`/`dz`.
+    pub fn emit(
+        &self,
+        origin: [f64; 3],
+        state: &ParticleState,
+        world: &ParticleWorld,
+        configs: &crate::pack::Configs,
+        seed: u64,
+    ) -> Vec<Spawn> {
+        let mut rng = Rng(seed | 1);
+        let none = BTreeMap::new();
+        let mut value = |key: &str, rng: &mut Rng| {
+            self.fields
+                .get(key)
+                .map(|p| run(p, key, state, &none, world, configs, rng))
+        };
+        let chance = value("chance", &mut rng).flatten().unwrap_or(1.0);
+        if rng.next() >= chance {
+            return Vec::new();
+        }
+        let count = value("count", &mut rng).flatten().unwrap_or(1.0).clamp(0.0, 64.0) as usize;
+        let mut out = Vec::with_capacity(count);
+        for _ in 0..count {
+            let mut axes = [0.0; 3];
+            for (i, key) in ["x", "y", "z"].into_iter().enumerate() {
+                axes[i] = match value(key, &mut rng) {
+                    Some(v) => v.unwrap_or(0.0),
+                    None => (rng.next() * 2.0 - 1.0) * 0.4,
+                };
+            }
+            let mut motion = [0.0; 3];
+            for (i, key) in ["dx", "dy", "dz"].into_iter().enumerate() {
+                motion[i] = value(key, &mut rng).flatten().unwrap_or(0.0);
+            }
+            let mut pick = |long: &str, short: &str, rng: &mut Rng| {
+                value(long, rng).or_else(|| value(short, rng)).flatten()
+            };
+            let rgba = [
+                pick("red", "r", &mut rng),
+                pick("green", "g", &mut rng),
+                pick("blue", "b", &mut rng),
+                pick("alpha", "a", &mut rng),
+            ];
+            let roll = value("roll", &mut rng).flatten();
+            let size = value("size", &mut rng).flatten();
+            let custom = value("custom", &mut rng).flatten();
+            let mut named = BTreeMap::new();
+            for (name, program) in &self.customs {
+                if let Some(v) = run(program, name, state, &none, world, configs, &mut rng) {
+                    named.insert(name.clone(), v);
+                }
+            }
+            out.push(Spawn {
+                particle: self.particle.clone(),
+                position: [
+                    origin[0] + axes[0],
+                    origin[1] + axes[1],
+                    origin[2] + axes[2],
+                ],
+                motion,
+                rgba,
+                roll,
+                size,
+                custom,
+                named,
+            });
+        }
+        out
+    }
+}
+
+/// Whether a rule test (`state_predicate`) accepts a block: `always_true`, `block_match`,
+/// `blockstate_match` (its properties compared through `property`), `random_block_match` and
+/// `random_blockstate_match` (their `probability` drawn from `roll`). A test it doesn't know
+/// accepts, as the real mod's lenient reader does.
+pub fn rule_test(
+    test: Option<&Json>,
+    block: &str,
+    property: &dyn Fn(&str) -> Option<String>,
+    roll: f64,
+) -> bool {
+    let Some(test) = test.and_then(Json::as_object) else {
+        return true;
+    };
+    let id = |s: &str| {
+        if s.contains(':') {
+            s.to_owned()
+        } else {
+            format!("minecraft:{s}")
+        }
+    };
+    let same_block = |v: Option<&Json>| v.and_then(Json::as_str).is_some_and(|b| id(b) == block);
+    let same_state = |state: Option<&Json>| {
+        let Some(state) = state.and_then(Json::as_object) else {
+            return false;
+        };
+        same_block(state.get("Name"))
+            && state
+                .get("Properties")
+                .and_then(Json::as_object)
+                .into_iter()
+                .flatten()
+                .all(|(key, want)| want.as_str().is_some_and(|w| property(key).as_deref() == Some(w)))
+    };
+    let chance = test.get("probability").and_then(Json::as_f64).unwrap_or(1.0);
+    match test.get("predicate_type").and_then(Json::as_str).map(id).as_deref() {
+        Some("minecraft:block_match") => same_block(test.get("block")),
+        Some("minecraft:blockstate_match") => same_state(test.get("block_state")),
+        Some("minecraft:random_block_match") => same_block(test.get("block")) && roll < chance,
+        Some("minecraft:random_blockstate_match") => {
+            same_state(test.get("block_state")) && roll < chance
+        }
+        _ => true,
+    }
+}
+
+/// The custom particle types and block emitters of a pack.
+#[derive(Default)]
+pub struct CustomParticles {
+    types: BTreeMap<String, std::sync::Arc<CustomParticle>>,
+    blocks: Vec<BlockEmitters>,
+    configs: crate::pack::Configs,
+}
+
+impl CustomParticles {
+    pub fn read(root: &std::path::Path) -> Self {
+        let mut types = BTreeMap::new();
+        for entry in crate::files::scan(root, "custom_particles") {
+            let (Some(json), Some(id)) = (&entry.json, &entry.id) else {
+                continue;
+            };
+            if json.get("polytone_ignore").and_then(Json::as_bool) == Some(true) {
+                continue;
+            }
+            match CustomParticle::parse(json) {
+                Ok(particle) => {
+                    types.insert(id.clone(), std::sync::Arc::new(particle));
+                }
+                Err(e) => log::warn!("{}: {e}", entry.label),
+            }
+        }
+        let mut blocks = Vec::new();
+        for entry in crate::files::scan(root, "block_modifiers") {
+            let Some(json) = &entry.json else { continue };
+            match BlockEmitters::parse(json, entry.id.as_deref()) {
+                Ok(Some(emitters)) => blocks.push(emitters),
+                Ok(None) => {}
+                Err(e) => log::warn!("{}: {e}", entry.label),
+            }
+        }
+        blocks.sort_by_key(|b| b.priority);
+        Self {
+            types,
+            blocks,
+            configs: crate::pack::Configs::read(root),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.types.is_empty() && self.blocks.is_empty()
+    }
+
+    pub fn get(&self, id: &str) -> Option<&std::sync::Arc<CustomParticle>> {
+        self.types.get(id)
+    }
+
+    pub fn configs(&self) -> &crate::pack::Configs {
+        &self.configs
+    }
+
+    pub fn has_block_emitters(&self) -> bool {
+        self.blocks.iter().any(|b| !b.particle_emitters.is_empty())
+    }
+
+    /// The emitters of every block modifier that targets `block` (`namespace:path`).
+    pub fn block_emitters<'a>(&'a self, block: &'a str) -> impl Iterator<Item = &'a Emitter> + 'a {
+        self.blocks
+            .iter()
+            .filter(move |b| b.targets.matches(block, |_| false))
+            .flat_map(|b| &b.particle_emitters)
     }
 }
 
@@ -1206,5 +1564,115 @@ mod tests {
         configs.set("p:on", crate::pack::ConfigValue::Bool(false));
         configs.set("p:mode", crate::pack::ConfigValue::Text("cyan".into()));
         assert_eq!(run(&configs).rgba[..3], [0.0, 1.0, 1.0]);
+    }
+
+    fn state_at(position: [f64; 3]) -> ParticleState {
+        ParticleState {
+            life: 20.0,
+            position,
+            size: 0.1,
+            rgba: [1.0; 4],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn an_initializer_sets_the_particle_and_a_ticker_moves_it() {
+        let particle = CustomParticle::parse(&json!({
+            "initializer": {
+                "size": 0.5, "lifetime": 40, "red": 0.25, "friction": 0.9, "dy": 0.1,
+                "custom": 3, "customs": {"Phase": "o.custom + 1"}
+            },
+            "ticker": {
+                "y": "o.y + o.custom", "dx": "o.age", "custom": "o.custom('phase') * 2",
+                "alpha": "1 - o.age / o.life", "remove_condition": "o.age > 5"
+            }
+        }))
+        .unwrap();
+        let world = ParticleWorld::default();
+        let configs = crate::pack::Configs::default();
+        let mut state = state_at([1.0, 2.0, 3.0]);
+        let mut named = BTreeMap::new();
+        let set = particle.initialize(&mut state, &mut named, &world, &configs, 1);
+        assert_eq!((state.size, state.life, state.rgba[0]), (0.5, 40.0, 0.25));
+        assert_eq!((state.custom, state.motion), (3.0, [0.0, 0.1, 0.0]));
+        assert_eq!(named["phase"], 4.0);
+        assert_eq!(set.friction, Some(0.9));
+        state.age = 2.0;
+        state.life = 4.0;
+        let remove = particle.tick(&mut state, &mut named, &world, &configs, 1);
+        assert!(!remove);
+        assert_eq!(state.position[1], 5.0);
+        assert_eq!(state.motion[0], 2.0);
+        assert_eq!(state.custom, 8.0);
+        assert_eq!(state.rgba[3], 0.5);
+        state.age = 6.0;
+        assert!(particle.tick(&mut state, &mut named, &world, &configs, 1));
+    }
+
+    #[test]
+    fn an_emitter_spawns_counted_particles_with_a_default_spread() {
+        let emitter = Emitter::parse(&json!({
+            "particle": "foo:spark", "count": 3, "dy": 0.5, "red": 0.5, "customs": {"Heat": 9}
+        }))
+        .unwrap();
+        let world = ParticleWorld::default();
+        let configs = crate::pack::Configs::default();
+        let spawns = emitter.emit([10.0, 64.0, 10.0], &state_at([10.0; 3]), &world, &configs, 7);
+        assert_eq!(spawns.len(), 3);
+        for spawn in &spawns {
+            assert_eq!(spawn.particle.id(), "foo:spark");
+            assert!((spawn.position[0] - 10.0).abs() <= 0.4);
+            assert!((spawn.position[1] - 64.0).abs() <= 0.4);
+            assert!((spawn.position[2] - 10.0).abs() <= 0.4);
+            assert_eq!((spawn.motion, spawn.rgba[0]), ([0.0, 0.5, 0.0], Some(0.5)));
+            assert_eq!(spawn.named["heat"], 9.0);
+        }
+        let never = Emitter::parse(&json!({"particle": "foo:spark", "chance": 0})).unwrap();
+        assert!(never.emit([0.0; 3], &state_at([0.0; 3]), &world, &configs, 7).is_empty());
+    }
+
+    #[test]
+    fn a_rule_test_matches_blocks_and_their_properties() {
+        let lit = |key: &str| (key == "lit").then(|| "true".to_owned());
+        let none = |_: &str| None;
+        let block = json!({"predicate_type": "minecraft:block_match", "block": "minecraft:torch"});
+        assert!(rule_test(Some(&block), "minecraft:torch", &none, 0.0));
+        assert!(!rule_test(Some(&block), "minecraft:stone", &none, 0.0));
+        let state = json!({
+            "predicate_type": "blockstate_match",
+            "block_state": {"Name": "minecraft:furnace", "Properties": {"lit": "true"}}
+        });
+        assert!(rule_test(Some(&state), "minecraft:furnace", &lit, 0.0));
+        assert!(!rule_test(Some(&state), "minecraft:furnace", &none, 0.0));
+        let random = json!({
+            "predicate_type": "random_block_match", "block": "minecraft:torch", "probability": 0.25
+        });
+        assert!(rule_test(Some(&random), "minecraft:torch", &none, 0.1));
+        assert!(!rule_test(Some(&random), "minecraft:torch", &none, 0.5));
+        assert!(rule_test(None, "minecraft:stone", &none, 0.9));
+    }
+
+    #[test]
+    fn a_pack_provides_custom_particles_and_block_emitters() {
+        let root = std::env::temp_dir().join(format!("polytone-custom-particles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for dir in ["custom_particles", "block_modifiers"] {
+            std::fs::create_dir_all(root.join("assets/foo/polytone").join(dir)).unwrap();
+        }
+        let write = |relative: &str, text: &str| {
+            std::fs::write(root.join("assets/foo/polytone").join(relative), text).unwrap()
+        };
+        write("custom_particles/spark.json", r#"{"initializer": {"size": 0.2}}"#);
+        write(
+            "block_modifiers/torch.json",
+            r#"{"targets": "minecraft:torch", "particle_emitters": [{"particle": "foo:spark"}]}"#,
+        );
+        let pack = CustomParticles::read(&root);
+        assert!(pack.get("foo:spark").is_some());
+        assert!(pack.has_block_emitters());
+        assert_eq!(pack.block_emitters("minecraft:torch").count(), 1);
+        assert_eq!(pack.block_emitters("minecraft:stone").count(), 0);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
