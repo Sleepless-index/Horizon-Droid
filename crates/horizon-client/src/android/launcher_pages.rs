@@ -325,10 +325,12 @@ pub(super) enum Action {
     MicrosoftAccount,
     OfflineAccount,
     SubmitEly,
-    SavedAccounts,
     SavedPage(bool),
     SelectAccount(usize),
     SelectOffline,
+    SelectOfflineAt(usize),
+    RemoveAccount(usize),
+    RemoveOffline(usize),
     WardrobeKind(bool),
     WardrobeSelect(usize),
     WardrobeRemoveMode,
@@ -339,14 +341,12 @@ pub(super) enum Action {
     WardrobeActivateCape(usize),
     WardrobeUseCloud,
     WardrobeModel,
-    WardrobeSkinModel(usize),
     WardrobeZoom(bool),
     WardrobeHideCape,
     DeviceSignIn,
     CopyLoginCode,
     CancelLogin,
     ReviewApp,
-    SignOut,
     LoginLink,
     CloseLogin,
     Renderer,
@@ -5334,7 +5334,7 @@ impl Launcher {
                 (
                     Icon::MicrosoftGrid,
                     "Account",
-                    "Microsoft and Xbox sign-in",
+                    "Saved accounts and sign-in",
                     Action::Account,
                 ),
             ];
@@ -7059,6 +7059,12 @@ impl Launcher {
         }
         self.feedback = action.map(|action| (action, std::time::Instant::now()));
         self.focus = None;
+        if !matches!(
+            action,
+            Some(Action::AddAccount | Action::RemoveAccount(_) | Action::RemoveOffline(_))
+        ) {
+            self.login.clear_pending();
+        }
         if action.is_some() && horizon_client::official_install::ready(&self.home) {
             let audio = self.audio.get_or_insert_with(|| {
                 let mut audio = horizon_client::audio::Audio::new(
@@ -7770,47 +7776,26 @@ impl Launcher {
             Some(Action::Account) => {
                 self.catalog.editing = None;
                 crate::platform::hide();
-                self.login.refresh_status();
-                self.login.visible = true;
-                self.login.offline = false;
-                self.login.ely = false;
-                if self.login.signed_in {
-                    // Already signed in: open the selector, with the current
-                    // Microsoft/Ely.by account called out, instead of asking
-                    // the player to choose a provider again.
-                    self.login.providers = false;
-                    self.login.choosing = true;
-                    self.login.account_offset = 0;
-                } else {
-                    self.login.providers = true;
-                    self.login.choosing = false;
-                }
+                self.login.seed_offline(&self.catalog.config.name);
+                self.login.open_list();
             }
             Some(Action::AddAccount) => {
-                self.login.choosing = false;
-                self.login.providers = true;
-                self.login.offline = false;
-                self.login.ely = false;
-                self.login.visible = true;
+                self.login.menu_open = !self.login.menu_open;
             }
             Some(Action::OfflineAccount | Action::MicrosoftAccount) => {
-                self.login.providers = false;
                 self.login.offline = matches!(action, Some(Action::OfflineAccount));
                 self.login.ely = false;
                 self.login.choosing = false;
+                self.login.new_offline.clear();
+                self.login.set_message(String::new());
                 self.login.visible = true;
             }
-            Some(Action::SavedAccounts) => {
-                self.login.providers = false;
-                self.login.refresh_status();
-                self.login.choosing = true;
-                self.login.ely = false;
-            }
             Some(Action::SavedPage(next)) => {
-                if next && self.login.account_offset + 3 < self.login.saved_accounts.len() {
-                    self.login.account_offset += 3;
+                let step = login::ROWS_PER_PAGE;
+                if next && self.login.account_offset + step < self.login.row_count() {
+                    self.login.account_offset += step;
                 } else if !next {
-                    self.login.account_offset = self.login.account_offset.saturating_sub(3);
+                    self.login.account_offset = self.login.account_offset.saturating_sub(step);
                 }
             }
             Some(Action::SelectAccount(index)) => {
@@ -7828,23 +7813,60 @@ impl Launcher {
                 self.refresh_wardrobe_account();
             }
             Some(Action::SelectOffline) => {
-                self.catalog.config.save(&self.home)?;
-                self.catalog.editing = None;
                 crate::platform::hide();
-                self.login.hide();
-                let mut accounts = crate::account::Accounts::load();
-                accounts.selected = None;
-                accounts.save()?;
+                self.catalog.editing = None;
+                match self.login.add_offline() {
+                    Ok(name) => {
+                        self.catalog.config.name = name;
+                        self.catalog.config.touch_name_changed();
+                        self.catalog.config.save(&self.home)?;
+                        self.session_ready = false;
+                        self.prepared_session = None;
+                        self.session_worker = None;
+                        self.login.open_list();
+                        self.refresh_wardrobe_account();
+                    }
+                    Err(error) => self.login.set_message(error),
+                }
+            }
+            Some(Action::SelectOfflineAt(index)) => {
+                if let Some(name) = self.login.select_offline(index) {
+                    self.catalog.config.name = name;
+                    self.catalog.config.touch_name_changed();
+                    self.catalog.config.save(&self.home)?;
+                }
                 self.session_ready = false;
                 self.prepared_session = None;
                 self.session_worker = None;
-                self.login.choosing = false;
-                self.login.refresh_status();
                 self.refresh_wardrobe_account();
             }
+            Some(Action::RemoveAccount(index)) => {
+                if self.login.confirm_remove(false, index) {
+                    self.login.remove_account(index);
+                    self.session_ready = false;
+                    self.prepared_session = None;
+                    self.session_worker = None;
+                    self.refresh_wardrobe_account();
+                }
+            }
+            Some(Action::RemoveOffline(index)) => {
+                if self.login.confirm_remove(true, index) {
+                    if let Some(next) = self.login.remove_offline(index, &self.catalog.config.name)
+                    {
+                        self.catalog.config.name = next;
+                        self.catalog.config.touch_name_changed();
+                        self.catalog.config.save(&self.home)?;
+                    }
+                    self.session_ready = false;
+                    self.prepared_session = None;
+                    self.session_worker = None;
+                    self.refresh_wardrobe_account();
+                }
+            }
             Some(Action::ElySignIn) => {
-                self.login.providers = false;
                 self.login.close();
+                self.login.choosing = false;
+                self.login.offline = false;
                 self.login.ely = true;
                 self.login.visible = true;
             }
@@ -7882,13 +7904,6 @@ impl Launcher {
                 self.prepared_session = None;
                 self.session_worker = None;
                 self.login.start(&self.catalog.config.microsoft_client_id);
-            }
-            Some(Action::SignOut) => {
-                self.session_ready = false;
-                self.prepared_session = None;
-                self.session_worker = None;
-                self.login.sign_out();
-                self.refresh_wardrobe_account();
             }
             Some(Action::LoginLink) => self.login.open_link(),
             Some(Action::Page(page)) => {
@@ -7935,7 +7950,6 @@ impl Launcher {
             ),
             Some(Action::WardrobeUseCloud) => self.wardrobe.use_cloud(),
             Some(Action::WardrobeModel) => self.wardrobe.model(),
-            Some(Action::WardrobeSkinModel(index)) => self.wardrobe.skin_model(index),
             Some(Action::WardrobeZoom(inward)) => {
                 self.wardrobe
                     .camera
