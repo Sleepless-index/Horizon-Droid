@@ -1703,7 +1703,7 @@ impl Launcher {
                 };
                 // 1. Hero card: the game and Play, then the Renderer / Frame rate / Controls tiles.
                 let hero_h = (h - card_y - bottom_reserve).clamp(150.0, 190.0);
-                ui.m3_tonal_card(content_x, card_y, content_w, hero_h, 16.0, true);
+                ui.m3_tonal_card(content_x, card_y, content_w, hero_h, 18.0, true);
 
                 // Play, top right of the card.
                 let is_launching = self.launching;

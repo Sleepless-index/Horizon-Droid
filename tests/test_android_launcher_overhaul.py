@@ -1407,12 +1407,13 @@ class LauncherOverhaulTests(unittest.TestCase):
         # 3. Verify Jetpack Compose Material You Dashboard (Hero Split Button, mods summary card, Stadium Nav Rail)
         lp_rs = _read_repo_file("crates/horizon-client/src/android/launcher_pages.rs")
         self.assertIn("ui.m3_tonal_card(content_x, card_y, content_w, hero_h, 18.0, true);", lp_rs)
-        # The Play page redesign dropped the mods summary card: the hero banner carries the
-        # sunset art and a compact Play button, and the config chips run along the bottom.
+        # The Play page is a flat charcoal card: the title and Play on top, the config tiles
+        # along the bottom, no sunset art, and the pages as top tabs with no brand lockup.
         self.assertNotIn('"{n} mods loaded"', lp_rs)
-        self.assertIn("ui.draw_horizon_sunset(art[0], art[1], art[2], art[3]);", lp_rs)
+        self.assertNotIn("ui.draw_horizon_sunset(", lp_rs)
         self.assertIn('"Renderer"', lp_rs)
-        self.assertIn("ui.horizon_mark(18.0, 12.0, 28.0);", lp_rs)
+        self.assertNotIn("ui.horizon_mark(", lp_rs)
+        self.assertIn("fn page_label(", lp_rs)
         self.assertNotIn("Horizon Mod Engine", lp_rs)
         self.assertNotIn("Action::Discord", lp_rs)
         self.assertNotIn("Action::Repository", lp_rs)
