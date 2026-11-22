@@ -24,6 +24,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 png = "0.18"
 sha2 = "0.10"
+chacha20poly1305 = "0.10"
 getrandom = "0.3"
 ureq = { version = "2", features = ["json"] }
 url = "2"
