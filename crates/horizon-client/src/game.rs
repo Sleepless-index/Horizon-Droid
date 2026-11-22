@@ -232,7 +232,7 @@ mod music;
 mod names;
 mod narrator;
 #[cfg(target_os = "android")]
-mod native_builds;
+pub(crate) mod native_builds;
 #[cfg(target_os = "android")]
 mod setup {
     pub(super) mod fishing;

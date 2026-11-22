@@ -92,6 +92,25 @@ enum Act {
     Switch,
 }
 
+/// The build service to compile on: the `HORIZON_BUILD_SERVER` environment
+/// variable, else the first line of `build-server.txt` in the app's private
+/// folder (so you can point the game at your own service without rebuilding),
+/// else the built-in default.
+pub(super) fn build_server() -> String {
+    let clean = |s: &str| s.trim().trim_end_matches('/').to_owned();
+    if let Ok(v) = std::env::var("HORIZON_BUILD_SERVER") {
+        if !clean(&v).is_empty() {
+            return clean(&v);
+        }
+    }
+    if let Ok(text) = std::fs::read_to_string(horizon_client::logging::private_home().join("build-server.txt")) {
+        if let Some(line) = text.lines().map(clean).find(|l| l.starts_with("http")) {
+            return line;
+        }
+    }
+    BUILD_SERVER.into()
+}
+
 fn dir() -> PathBuf {
     horizon_client::logging::private_home().join("native")
 }
@@ -328,7 +347,7 @@ pub fn compile_profile_blocking(
 
     // 2. Otherwise compile via the Horizon Mod Build Server and download libhorizon_android.so
     let shared = Mutex::new(Shared::default());
-    let server = std::env::var("HORIZON_BUILD_SERVER").unwrap_or_else(|_| BUILD_SERVER.into());
+    let server = build_server();
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(20))
         .timeout_read(Duration::from_secs(40))
@@ -535,7 +554,7 @@ fn compile(version: &str, shared: &Mutex<Shared>) -> Result<String, String> {
         s.status = text;
         s.building_since = None;
     };
-    let server = std::env::var("HORIZON_BUILD_SERVER").unwrap_or_else(|_| BUILD_SERVER.into());
+    let server = build_server();
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(20))
         .timeout_read(Duration::from_secs(40))
@@ -1133,4 +1152,62 @@ impl Game<'_> {
             }
         }
     }
+}
+
+// ---- The launcher's chip: compile before Play ----------------------------------------------
+
+/// A compile started from the launcher: its progress (0..1) and the last error.
+static LAUNCHER_JOB: Mutex<(Option<f32>, Option<String>)> = Mutex::new((None, None));
+
+/// What the launcher chip shows for `profile_dir` (see `native_status`).
+pub(crate) fn launcher_chip(profile_dir: &std::path::Path) -> Option<horizon_client::native_status::Chip> {
+    let (compiling, failed) = LAUNCHER_JOB
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    let needed: std::collections::BTreeSet<String> = bundles_body_for(profile_dir)
+        .map(|(_, _, ids)| ids.into_iter().collect())
+        .unwrap_or_default();
+    let name = chosen().filter(|n| n.starts_with(COMPILED));
+    let built = name.as_ref().and_then(|n| {
+        std::fs::read_to_string(dir().join(n).join("build.json"))
+            .ok()
+            .map(|j| horizon_client::native_status::built_ids(&j))
+    });
+    let fits = name.as_ref().is_some_and(|n| {
+        let made_for = std::fs::read_to_string(dir().join(n).join("for")).unwrap_or_default();
+        crate::android::app_version().is_some_and(|(v, _)| v == made_for.trim())
+    });
+    horizon_client::native_status::chip_for(&horizon_client::native_status::Snapshot {
+        needed,
+        built,
+        build_fits_apk: fits,
+        compiling,
+        failed,
+    })
+}
+
+/// Compiles the enabled native mods in the background; the chip shows progress, and the
+/// finished build is chosen for the next start. Play is never blocked.
+pub(crate) fn launcher_compile(profile_dir: PathBuf) {
+    let Some((version, _)) = crate::android::app_version() else {
+        return;
+    };
+    {
+        let mut job = LAUNCHER_JOB.lock().unwrap_or_else(PoisonError::into_inner);
+        if job.0.is_some() {
+            return;
+        }
+        *job = (Some(0.0), None);
+    }
+    let _ = std::thread::Builder::new()
+        .name("launcher native compile".into())
+        .spawn(move || {
+            let progress = |_: &str, p: f32| {
+                LAUNCHER_JOB.lock().unwrap_or_else(PoisonError::into_inner).0 = Some(p);
+            };
+            let result = compile_profile_blocking(&profile_dir, &version, &progress);
+            let mut job = LAUNCHER_JOB.lock().unwrap_or_else(PoisonError::into_inner);
+            *job = (None, result.err());
+        });
 }

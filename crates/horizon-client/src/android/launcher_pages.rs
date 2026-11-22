@@ -289,6 +289,8 @@ pub(super) enum Action {
     ModSource(crate::shader_catalog::Origin),
     SetCompilerMode(crate::catalog::CompilerMode),
     CompilerRunQuery,
+    /// The chip beside Play: compile the native mods now.
+    CompileMods,
     CompilerPortLocal(usize),
     Field(&'static str),
     FinishNameEdit,
@@ -1781,7 +1783,42 @@ impl Launcher {
 
                 // The game title, top left.
                 let title_size = if compact { 18.0 } else { 22.0 };
-                let title_w = (play_x - 14.0 - (content_x + 18.0)).max(60.0);
+                // The native-build chip, left of Play: compiles the mods before the game starts.
+                let stale = self
+                    .native_chip
+                    .as_ref()
+                    .is_none_or(|(at, _)| at.elapsed().as_millis() > 1000);
+                if stale {
+                    let game_home = self.catalog.config.game_home(&self.home);
+                    self.native_chip = Some((
+                        std::time::Instant::now(),
+                        crate::game::native_builds::launcher_chip(&game_home),
+                    ));
+                }
+                let mut chip_w = 0.0;
+                if let Some((_, Some(chip))) = &self.native_chip {
+                    use horizon_client::native_status::{Tap, Tone};
+                    let max_w = if compact { 150.0 } else { 240.0 };
+                    let label = ui.fit_text(Face::SemiBold, 12.0, &chip.label, max_w - 20.0);
+                    chip_w = ui.measure(Face::SemiBold, 12.0, &label) + 20.0;
+                    let chip_x = play_x - 10.0 - chip_w;
+                    let chip_y = play_y + (play_h - 28.0) * 0.5;
+                    let tone = match chip.tone {
+                        Tone::Good => horizon_client::ui_theme::active_theme().success,
+                        Tone::Bad => horizon_client::ui_theme::active_theme().danger,
+                        Tone::Warn => my3_accent(),
+                        Tone::Neutral => my3_muted(),
+                    };
+                    ui.rounded(chip_x, chip_y, chip_w, 28.0, 14.0, color::with_alpha(tone, 0.18));
+                    ui.stroke_rounded(chip_x, chip_y, chip_w, 28.0, 14.0, 1.0, tone);
+                    ui.text(Face::SemiBold, 12.0, chip_x + 10.0, chip_y + 6.0, tone, &label);
+                    if chip.tap != Tap::Nothing {
+                        self.targets
+                            .push(([chip_x, chip_y, chip_w, 28.0], Action::CompileMods));
+                    }
+                    chip_w += 10.0;
+                }
+                let title_w = (play_x - 14.0 - chip_w - (content_x + 18.0)).max(60.0);
                 let hero_title = ui.fit_text(Face::SemiBold, title_size, "Minecraft 26.3", title_w);
                 ui.text(
                     Face::SemiBold,
@@ -7729,7 +7766,24 @@ impl Launcher {
             }
             Some(Action::CompilerRunQuery) => {
                 crate::platform::hide();
-                self.catalog.run_compiler_from_query(&self.home);
+                if self.catalog.compiler_mode == crate::catalog::CompilerMode::NativeSoBuild
+                    && self.catalog.compiler_query.trim().is_empty()
+                {
+                    // The real thing: compile on the build service, not just bundle.
+                    self.catalog.status = "Compiling native mods...".into();
+                    crate::game::native_builds::launcher_compile(
+                        self.catalog.config.game_home(&self.home),
+                    );
+                } else {
+                    self.catalog.run_compiler_from_query(&self.home);
+                }
+            }
+            Some(Action::CompileMods) => {
+                crate::platform::hide();
+                crate::game::native_builds::launcher_compile(
+                    self.catalog.config.game_home(&self.home),
+                );
+                self.native_chip = None;
             }
             Some(Action::CompilerPortLocal(idx)) => {
                 self.catalog.run_compiler_on_local(&self.home, idx);

@@ -56,6 +56,8 @@ pub(super) struct Launcher {
     error: Option<String>,
     catalog: Catalog,
     targets: Vec<([f32; 4], pages::Action)>,
+    /// The native-build chip beside Play, refreshed every second or so (it reads the mod files).
+    native_chip: Option<(std::time::Instant, Option<horizon_client::native_status::Chip>)>,
     list_targets: Vec<([f32; 4], pages::Action)>,
     list_view: Option<[f32; 3]>,
     pending_focus: Option<pages::Action>,
@@ -244,6 +246,7 @@ impl Launcher {
             error: None,
             catalog,
             targets: vec![],
+            native_chip: None,
             list_targets: vec![],
             list_view: None,
             pending_focus: None,
