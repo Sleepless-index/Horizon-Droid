@@ -100,7 +100,7 @@ fn sprite_level(uv: vec2<f32>, layer: u32, lod: f32) -> vec4<f32> {
 // sprites while `uv` stays inside one (see `tile_uv` below).
 fn sample_nearest(uv: vec2<f32>, layer: u32, pixel: vec2<f32>, du: vec2<f32>, dv: vec2<f32>,
                   texel_screen: vec2<f32>, tiled: bool) -> vec4<f32> {
-    let texel_coords = uv / pixel;
+    let texel_coords = uv * globals.filtering.y;
     let center = round(texel_coords) - 0.5;
     var offset = texel_coords - center;
     if TERRAIN_FILTERING == 0u {
@@ -425,15 +425,6 @@ fn brightness(c: vec3<f32>) -> f32 {
 @fragment fn fs_solid(in: TerrainOut) -> @location(0) vec4<f32> {
     return solid_color(in);
 }
-// `fs_solid` for the opaque pass (`opaque_quad`): no fade, no cutout, no discard.
-@fragment fn fs_opaque(in: TerrainOut) -> @location(0) vec4<f32> {
-    let texel = sprite(in.uv, in.layer & 0x7fffu);
-    var color = texel * in.color;
-    if !TERRAIN_FULLY_VISIBLE {
-        color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, in.visibility);
-    }
-    return solid_finish(in, texel, color);
-}
 // The water mirror (gfx.rs's reflection pass): what lies below the water plane
 // (`fog_ends.w`, camera-relative) would show above it in the mirror, so it is cut away.
 @fragment fn fs_solid_mirror(in: TerrainOut) -> @location(0) vec4<f32> {
@@ -461,6 +452,15 @@ fn solid_color(in: TerrainOut) -> vec4<f32> {
     var color = texel * in.color;
     // terrain.fsh: the fade-in mixes toward the fog colour.
     color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, in.visibility);
+    return solid_finish(in, texel, color);
+}
+// `fs_solid` for the opaque pass (`opaque_quad`): no fade, no cutout, no discard.
+@fragment fn fs_opaque(in: TerrainOut) -> @location(0) vec4<f32> {
+    let texel = sprite(in.uv, in.layer & 0x7fffu);
+    var color = texel * in.color;
+    if !TERRAIN_FULLY_VISIBLE {
+        color = mix(globals.fog_color * vec4(1.0, 1.0, 1.0, color.a), color, in.visibility);
+    }
     return solid_finish(in, texel, color);
 }
 // The rest of a solid pixel's colour once it is kept: emission and fog.
