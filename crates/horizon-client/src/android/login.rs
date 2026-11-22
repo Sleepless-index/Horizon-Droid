@@ -544,21 +544,6 @@ impl Login {
             menu_w,
             menu_item_h * menu_items.len() as f32 + 8.0,
         ];
-        if list_mode && self.menu_open {
-            for (i, (_, _, _, action)) in menu_items.iter().enumerate() {
-                targets.push((
-                    [
-                        menu[0] + 4.0,
-                        menu[1] + 4.0 + i as f32 * menu_item_h,
-                        menu[2] - 8.0,
-                        menu_item_h,
-                    ],
-                    *action,
-                ));
-            }
-            targets.push(([0.0, 0.0, ui.w, ui.h], Action::AddAccount));
-        }
-
         let (title, subtitle): (&str, String) = if list_mode {
             let line = if !self.message.is_empty() {
                 self.message.clone()
@@ -771,6 +756,21 @@ impl Login {
             );
 
             if self.menu_open {
+                // Taps resolve to the last target registered, so the menu's targets go in after
+                // everything else: first the full-screen "tap outside closes" one, then the items
+                // on top of it (the other way round, the full-screen target swallows every tap).
+                targets.push(([0.0, 0.0, ui.w, ui.h], Action::AddAccount));
+                for (i, (_, _, _, action)) in menu_items.iter().enumerate() {
+                    targets.push((
+                        [
+                            menu[0] + 4.0,
+                            menu[1] + 4.0 + i as f32 * menu_item_h,
+                            menu[2] - 8.0,
+                            menu_item_h,
+                        ],
+                        *action,
+                    ));
+                }
                 ui.rounded(
                     menu[0] + 2.0,
                     menu[1] + 6.0,
