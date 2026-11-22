@@ -18,6 +18,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[derive(Clone)]
 struct Request {
     kind: Kind,
     appearance: Option<crate::skins::library::Kind>,
@@ -71,6 +72,11 @@ static STATE: Mutex<State> = Mutex::new(State {
     progress: None,
 });
 static CANCEL: AtomicBool = AtomicBool::new(false);
+/// Set while several selected files are imported in one go: a name collision then keeps both
+/// files instead of waiting for a choice that only has room for one pending file.
+static BATCH: AtomicBool = AtomicBool::new(false);
+/// Most files taken from one selection.
+const MAX_BATCH: usize = 64;
 
 pub fn busy() -> bool {
     let s = STATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -154,11 +160,11 @@ pub fn begin(kind: Kind, home: PathBuf) -> std::result::Result<(), String> {
             cache,
         });
     }
-    if !crate::native_ime::pick_document() {
+    if !crate::native_ime::pick_documents(true) {
         picker_failed("Android document picker is unavailable");
         return Err("Android document picker is unavailable".into());
     }
-    notice(format!("Choose a {} file", kind.label()), false);
+    notice(format!("Choose one or more {} files", kind.label()), false);
     Ok(())
 }
 
@@ -200,16 +206,25 @@ pub fn begin_appearance(
             cache,
         });
     }
-    if !crate::native_ime::pick_document() {
+    if !crate::native_ime::pick_documents(true) {
         picker_failed("Android document picker is unavailable");
         return Err("Android document picker is unavailable".into());
     }
-    notice("Choose a skin or cape PNG", false);
+    notice("Choose one or more skin or cape PNGs", false);
     Ok(())
 }
 
 /// Opens Android's `ACTION_OPEN_DOCUMENT` picker to import a file directly into `target_dir`.
 pub fn begin_into_dir(target_dir: PathBuf) -> std::result::Result<(), String> {
+    begin_into_dir_with(target_dir, false)
+}
+
+/// Like [`begin_into_dir`], but the picker lets the user select several files at once.
+pub fn begin_files_into_dir(target_dir: PathBuf) -> std::result::Result<(), String> {
+    begin_into_dir_with(target_dir, true)
+}
+
+fn begin_into_dir_with(target_dir: PathBuf, multiple: bool) -> std::result::Result<(), String> {
     if busy() {
         return Err("Finish or cancel the current import first".into());
     }
@@ -234,11 +249,18 @@ pub fn begin_into_dir(target_dir: PathBuf) -> std::result::Result<(), String> {
             cache,
         });
     }
-    if !crate::native_ime::pick_document() {
+    if !crate::native_ime::pick_documents(multiple) {
         picker_failed("Android document picker is unavailable");
         return Err("Android document picker is unavailable".into());
     }
-    notice("Choose a file to import into this folder", false);
+    notice(
+        if multiple {
+            "Choose one or more files to import into this folder"
+        } else {
+            "Choose a file to import into this folder"
+        },
+        false,
+    );
     Ok(())
 }
 
@@ -541,12 +563,34 @@ pub extern "system" fn document_result(
         notice("Could not read the selected document", false);
         return;
     };
-    if !uri.starts_with("content://") || uri.len() > 8192 {
+    // A multi-file selection arrives as one URI per line.
+    let uris: Vec<String> = if request == 4101 {
+        uri.split('\n')
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+            .map(str::to_owned)
+            .collect()
+    } else {
+        vec![uri.clone()]
+    };
+    if uris.is_empty()
+        || uris.len() > MAX_BATCH
+        || uris
+            .iter()
+            .any(|u| !u.starts_with("content://") || u.len() > 8192)
+    {
         let mut st = STATE.lock().unwrap_or_else(|e| e.into_inner());
         st.working = false;
         st.progress = None;
         drop(st);
-        notice("Unsupported document URI", false);
+        notice(
+            if uris.len() > MAX_BATCH {
+                format!("Select at most {MAX_BATCH} files at a time")
+            } else {
+                "Unsupported document URI".to_owned()
+            },
+            false,
+        );
         return;
     }
 
@@ -709,6 +753,8 @@ pub extern "system" fn document_result(
         st.status_detail = "Reading selected file from Android storage...".into();
         st.progress = Some(0.15);
     }
+    let total = uris.len();
+    BATCH.store(total > 1, Ordering::Relaxed);
     let spawned = std::thread::Builder::new()
         .name("Content import".into())
         .spawn(move || {
@@ -719,14 +765,57 @@ pub extern "system" fn document_result(
                 } else {
                     "import.zip"
                 };
-                let opened =
-                    crate::document_bridge::open(&mut env, activity.as_obj(), &uri, fallback);
-                if opened.is_err() {
-                    let _ = env.exception_clear();
+                let mut done = 0usize;
+                let mut failures: Vec<String> = Vec::new();
+                for (index, uri) in uris.iter().enumerate() {
+                    if CANCEL.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    if total > 1 {
+                        set_progress(
+                            format!("Importing file {} of {total}...", index + 1),
+                            "Reading selected file from Android storage...",
+                            Some(0.1),
+                        );
+                    }
+                    let opened =
+                        crate::document_bridge::open(&mut env, activity.as_obj(), uri, fallback);
+                    if opened.is_err() {
+                        let _ = env.exception_clear();
+                    }
+                    let (label, outcome): (String, Result<()>) = match opened {
+                        Ok((input, name)) => (name.clone(), stage(pending.clone(), input, name)),
+                        Err(error) => (format!("file {}", index + 1), Err(error.to_string().into())),
+                    };
+                    if total == 1 {
+                        return outcome;
+                    }
+                    match outcome {
+                        Ok(()) => done += 1,
+                        Err(error) => failures.push(format!("{label} ({error})")),
+                    }
                 }
-                let (input, name) = opened.map_err(|e| e.to_string())?;
-                stage(pending, input, name)
+                if CANCEL.load(Ordering::Relaxed) {
+                    notice(format!("Import cancelled after {done} of {total} files"), done > 0);
+                    return Ok(());
+                }
+                let mut text = format!("Imported {done} of {total} files.");
+                if !failures.is_empty() {
+                    text.push_str(" Skipped: ");
+                    text.push_str(&failures.iter().take(2).cloned().collect::<Vec<_>>().join("; "));
+                    if failures.len() > 2 {
+                        text.push_str(&format!("; and {} more", failures.len() - 2));
+                    }
+                    text.push('.');
+                }
+                if done > 0 && pending.appearance.is_none() && pending.target_dir.is_none() {
+                    imported(text, pending.kind);
+                } else {
+                    notice(text, done > 0);
+                }
+                Ok(())
             })();
+            BATCH.store(false, Ordering::Relaxed);
             {
                 let mut st = STATE.lock().unwrap_or_else(|e| e.into_inner());
                 st.working = false;
@@ -739,6 +828,7 @@ pub extern "system" fn document_result(
             }
         });
     if let Err(error) = spawned {
+        BATCH.store(false, Ordering::Relaxed);
         let mut st = STATE.lock().unwrap_or_else(|e| e.into_inner());
         st.working = false;
         st.progress = None;
@@ -1053,7 +1143,13 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
         if CANCEL.load(Ordering::Relaxed) {
             return Err("Import cancelled".into());
         }
-        let target = dir.join(name);
+        let mut target = dir.join(&name);
+        if target.exists() && BATCH.load(Ordering::Relaxed) {
+            if request.kind == Kind::Mods {
+                return Err("already installed; import it on its own to replace it".into());
+            }
+            target = crate::document_store::unique_destination_path(&dir, &name)?;
+        }
         if target.exists() {
             STATE.lock().unwrap_or_else(|e| e.into_inner()).conflict = Some(Conflict {
                 kind: request.kind,

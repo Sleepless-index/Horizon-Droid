@@ -8547,7 +8547,7 @@ impl Launcher {
                     &self.catalog.fm_current_dir,
                 ) {
                     Ok(target_dir) => {
-                        if let Err(e) = crate::documents::begin_into_dir(target_dir) {
+                        if let Err(e) = crate::documents::begin_files_into_dir(target_dir) {
                             self.catalog.status = e;
                         }
                     }

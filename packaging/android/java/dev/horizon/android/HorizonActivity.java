@@ -239,7 +239,21 @@ public final class HorizonActivity extends android.app.NativeActivity {
                             takeFlags != 0 ? takeFlags : android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
                 } catch (Throwable ignored) {}
             }
-            nativeDocumentResult(request, result, uri == null ? null : uri.toString());
+            String uris = uri == null ? null : uri.toString();
+            if (result == -1 && request == 4101 && data != null && data.getClipData() != null) {
+                // Several files were selected: pass them all, one URI per line (URIs are
+                // percent-encoded, so they never contain a newline).
+                android.content.ClipData clip = data.getClipData();
+                StringBuilder all = new StringBuilder();
+                for (int i = 0; i < clip.getItemCount(); i++) {
+                    android.net.Uri item = clip.getItemAt(i).getUri();
+                    if (item == null) continue;
+                    if (all.length() > 0) all.append('\n');
+                    all.append(item.toString());
+                }
+                if (all.length() > 0) uris = all.toString();
+            }
+            nativeDocumentResult(request, result, uris);
         } catch (Throwable err) {
             android.util.Log.e("HorizonActivity", "onActivityResult failed", err);
             try {

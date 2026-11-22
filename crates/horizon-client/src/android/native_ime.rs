@@ -33,7 +33,7 @@ enum Command {
     Poll,
     Capture(bool),
     Bounds,
-    ImportDocument,
+    ImportDocument(bool),
     ImportFolderTree,
     CreateDocument(String, String),
     Screen(bool, bool),
@@ -351,7 +351,7 @@ impl Ui {
                 }
                 self.enqueue(Command::Bounds);
             }
-            Command::ImportDocument => {
+            Command::ImportDocument(multiple) => {
                 let result = (|| -> jni::errors::Result<()> {
                     let action =
                         JObject::from(env.new_string("android.intent.action.OPEN_DOCUMENT")?);
@@ -375,6 +375,17 @@ impl Ui {
                         "(Ljava/lang/String;)Landroid/content/Intent;",
                         &[JValue::Object(&mime)],
                     )?;
+                    if multiple {
+                        let key = JObject::from(
+                            env.new_string("android.intent.extra.ALLOW_MULTIPLE")?,
+                        );
+                        env.call_method(
+                            &intent,
+                            "putExtra",
+                            "(Ljava/lang/String;Z)Landroid/content/Intent;",
+                            &[JValue::Object(&key), JValue::Bool(1)],
+                        )?;
+                    }
                     env.call_method(
                         &intent,
                         "addFlags",
@@ -861,10 +872,14 @@ pub fn viewport_bottom() -> Option<u32> {
     })
 }
 pub fn pick_document() -> bool {
+    pick_documents(false)
+}
+/// Opens the document picker; with `multiple` the user can select several files at once.
+pub fn pick_documents(multiple: bool) -> bool {
     let Some(ui) = UI.get().filter(|ui| !ui.failed.load(Ordering::Acquire)) else {
         return false;
     };
-    ui.enqueue(Command::ImportDocument);
+    ui.enqueue(Command::ImportDocument(multiple));
     true
 }
 pub fn pick_document_tree() -> bool {
