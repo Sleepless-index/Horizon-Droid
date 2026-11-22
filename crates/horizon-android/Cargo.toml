@@ -38,6 +38,10 @@ horizon-protocol = { path = "../horizon-protocol" }
 horizon-server-files = { path = "../horizon-server-files" }
 horizon-shaders = { path = "../horizon-shaders" }
 horizon-friends = { path = "../horizon-friends" }
+# OptiFine random entities and custom entity models (game/random_textures.rs, mobs/cem*.rs).
+horizon-optifine = { path = "../horizon-optifine" }
+# The launcher's account.rs, shared with this crate, seals tokens in a file with it.
+chacha20poly1305 = "0.10"
 # Native mod discovery shares the upstream index. Java mods are not supported.
 horizon-mods = { path = "../horizon-mods", default-features = false, features = ["index"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl", "naga-ir"] }

@@ -275,14 +275,18 @@ impl Login {
         let mut completed = false;
         if let Some(task) = &self.task {
             self.state = Some(task.state());
-            if let Some(SignInState::Done(result)) = &self.state {
-                self.message = match result {
+            let done = match &self.state {
+                Some(SignInState::Done(result)) => Some(result.clone()),
+                _ => None,
+            };
+            if let Some(result) = done {
+                self.message = match &result {
                     Ok(a) => format!("Signed in as {}", a.name),
                     Err(e) => e.clone(),
                 };
                 self.task = None;
                 self.refresh_status();
-                if matches!(result, Ok(_)) {
+                if result.is_ok() {
                     self.choosing = true;
                     self.ely = false;
                     self.offline = false;
