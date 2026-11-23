@@ -1389,16 +1389,6 @@ impl BlockEntityRenderer {
             }
         }
     }
-    /// A mod's signs, known by class where vanilla's go by name (`classify`).
-    pub fn add_mod_signs(&mut self, facts: &crate::blocks::BlockFacts, registry: &BlockRegistry) {
-        for (id, kind) in self.kinds.iter_mut().enumerate() {
-            let state = BlockStateId(id as u32);
-            if let (Some(form), Some(s)) = (facts.get(state).sign_form(), registry.state(state)) {
-                let prop = |k: &str| s.properties.get(k).cloned();
-                *kind = sign(form.hanging, form.wall, &prop);
-            }
-        }
-    }
     fn kind(&self, state: u32) -> &Kind {
         self.kinds.get(state as usize).unwrap_or(&Kind::None)
     }

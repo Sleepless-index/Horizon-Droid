@@ -547,6 +547,13 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
             }
         }
     }
+    if cfg!(target_os = "android") {
+        for (_, groups) in &mut pages {
+            for (_, rows) in groups {
+                rows.retain(|r| !matches!(r.item, Item::Horizon(H::GraphicsApi)));
+            }
+        }
+    }
     pages
 }
 
@@ -555,9 +562,8 @@ const BLUE_MAP_RADII: [u32; 5] = [16, 32, 64, 128, 256];
 const UPLOAD_STEPS: [u32; 8] = [0, 256, 512, 1024, 2048, 4096, 8192, 16384];
 /// What the LOD Distance slider stops at, in chunks: off, then each doubling
 /// up to the whole world.
-const LOD_STEPS: [u32; 19] = [
+const LOD_STEPS: [u32; 18] = [
     0,
-    32,
     64,
     128,
     256,
@@ -920,9 +926,6 @@ impl H {
             H::BatteryMode => g.battery = !g.battery,
             H::ShadowCache => g.shadow_cache = !g.shadow_cache,
             H::GraphicsApi => {
-                // Android selects the backend before creating the renderer in
-                // launcher Settings. Stale/programmatic menu actions must not
-                // save a competing backend preference for the next launch.
                 if !cfg!(target_os = "android") {
                     g.api = step(GraphicsApi::choices(), g.api, back);
                 }
@@ -2844,13 +2847,12 @@ mod tests {
             item.label(&s).plain(),
             format!("LOD Distance: {} chunks", crate::lod::MAX_CHUNKS)
         );
-        let stop = |d: u32| LOD_STEPS.iter().position(|&x| x == d).unwrap() as f32 / (LOD_STEPS.len() - 1) as f32;
-        item.set_slider(&mut s, stop(1024));
+        item.set_slider(&mut s, 5.0 / 17.0);
         assert_eq!(s.horizon.lod_distance, 1024);
         assert_eq!(item.label(&s).plain(), "LOD Distance: 1024 chunks");
         // A distance between stops (from the file) sits on the next one.
         s.horizon.lod_distance = 3000;
-        assert_eq!(item.slider(&s), Some(stop(4096)));
+        assert_eq!(item.slider(&s), Some(7.0 / 17.0));
         assert_eq!(
             Item::Vanilla(Opt::RenderDistance).label(&s).plain(),
             format!("Full Detail Distance: {near} chunks")

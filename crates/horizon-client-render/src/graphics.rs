@@ -296,6 +296,36 @@ impl FarDetail {
     }
 }
 
+/// Frame generation: a frame made between each two real ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FrameGeneration {
+    #[default]
+    Off,
+    /// AMD FidelityFX Super Resolution 3.1's frame interpolation, ported to WGSL.
+    Fsr31,
+}
+impl FrameGeneration {
+    pub const ALL: [FrameGeneration; 2] = [FrameGeneration::Off, FrameGeneration::Fsr31];
+    pub fn name(self) -> &'static str {
+        match self {
+            FrameGeneration::Off => "off",
+            FrameGeneration::Fsr31 => "fsr3.1",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            FrameGeneration::Off => "Off",
+            FrameGeneration::Fsr31 => "FSR 3.1",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|f| f.name() == s)
+            .unwrap_or_default()
+    }
+}
+
 /// What the section mesher does with leaf faces inside a canopy. Terrain
 /// geometry only: entities, particles and block entities are untouched.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -519,12 +549,26 @@ pub struct Graphics {
     pub blue_map: crate::bluemap::Settings,
     /// Skip sections hidden behind closed ones (vanilla's occlusion graph).
     pub cave_culling: bool,
-    /// Skip drawing entities hidden behind opaque terrain.
-    pub entity_culling: bool,
+    /// Skip drawing entities hidden behind opaque terrain, synchronously or asynchronously.
+    pub entity_culling: EntityCullingMode,
     /// Terrain leaf faces inside a canopy (see [`LeafCullingMode`]); `Off` draws
     /// vanilla's fancy leaves. Ignored with a resource pack that may replace
     /// the vanilla leaf models ([`Graphics::leaf_culling_effective`]).
     pub leaf_culling: LeafCullingMode,
+    /// Cache settled shulker-box models.
+    pub cache_shulker_boxes: bool,
+    /// Cache sign-text geometry.
+    pub cache_signs: bool,
+    /// Cache decorated pots outside their wobble animation.
+    pub cache_decorated_pots: bool,
+    /// Cache bells while they are not ringing.
+    pub cache_bells: bool,
+    /// Cache closed chests, including copper variants.
+    pub cache_chests: bool,
+    /// Cache banner poles while leaving their flags animated.
+    pub cache_banners: bool,
+    /// Cache copper-golem statue models.
+    pub cache_copper_golem_statues: bool,
     /// Meshed sections uploaded per frame; 0 uploads all that are ready.
     pub chunk_updates: u32,
     /// Section mesh bytes uploaded per frame, in KiB; 0 is unlimited.
@@ -554,6 +598,8 @@ pub struct Graphics {
     pub upscaling: Upscaling,
     /// F2 screenshots at this many times the game's resolution: 1, 2, 4 or 8.
     pub screenshot_quality: u32,
+    /// Frame generation (Horizon setting), off by default.
+    pub frame_generation: FrameGeneration,
     /// HDR output (HDR10, or scRGB), where the display path offers it.
     pub hdr: bool,
     /// HDR paper white (where SDR white sits), in nits; 0 is Auto: the desktop's SDR
@@ -601,7 +647,7 @@ impl Default for Graphics {
             far_detail: FarDetail::Full,
             blue_map: crate::bluemap::Settings::default(),
             cave_culling: true,
-            entity_culling: false,
+            entity_culling: EntityCullingMode::Off,
             leaf_culling: LeafCullingMode::Off,
             cache_shulker_boxes: false,
             // Sign text has used its renderer cache independently of the new model caches.
@@ -628,6 +674,7 @@ impl Default for Graphics {
             taa: false,
             upscaling: Upscaling::Native,
             screenshot_quality: 1,
+            frame_generation: FrameGeneration::Off,
             hdr: false,
             hdr_paper_white: 0,
             hdr_peak: 0,
@@ -637,7 +684,7 @@ impl Default for Graphics {
             battery: false,
             shadow_cache: false,
             api: GraphicsApi::Auto,
-            translucent_batching: false,
+            translucent_batching: true,
             shader_pack: String::new(),
         }
     }
@@ -686,18 +733,18 @@ impl Graphics {
                     g.lod_distance = number(g.lod_distance).min(crate::lod::MAX_CHUNKS)
                 }
                 "farDetail" => g.far_detail = FarDetail::parse(value),
-                "caveCulling" => {
-                    g.cave_culling = if cfg!(target_os = "android") {
-                        true
-                    } else {
-                        flag(g.cave_culling)
+                "blueMapRadius" => {
+                    if let Some(radius) = crate::bluemap::Settings::parse_radius(value) {
+                        g.blue_map.radius = radius;
                     }
                 }
+                "blueMapAutoDetect" => g.blue_map.auto_detect = flag(g.blue_map.auto_detect),
+                "caveCulling" => g.cave_culling = cfg!(target_os = "android") || flag(g.cave_culling),
                 "entityCulling" => {
                     g.entity_culling = if cfg!(target_os = "android") {
-                        true
+                        EntityCullingMode::Synchronous
                     } else {
-                        flag(g.entity_culling)
+                        EntityCullingMode::parse(value)
                     }
                 }
                 "leafCulling" => g.leaf_culling = LeafCullingMode::parse(value),
@@ -752,6 +799,7 @@ impl Graphics {
                         .filter(|q| SCREENSHOT_QUALITIES.contains(q))
                         .unwrap_or(1)
                 }
+                "frameGeneration" => g.frame_generation = FrameGeneration::parse(value),
                 "hdr" => g.hdr = flag(g.hdr),
                 "hdrPaperWhite" => {
                     g.hdr_paper_white = match number(g.hdr_paper_white) {
@@ -772,7 +820,7 @@ impl Graphics {
                 "hdrKey" if value.starts_with("key.") => g.hdr_key = value.to_owned(),
                 "batteryMode" => g.battery = flag(g.battery),
                 "shadowCache" => g.shadow_cache = flag(g.shadow_cache),
-                "translucentBatching" => g.translucent_batching = flag(g.translucent_batching),
+                "batchTranslucent" => g.translucent_batching = flag(g.translucent_batching),
                 "graphicsApi" => g.api = GraphicsApi::from_name(value).unwrap_or_default(),
                 "pickedShaderPack" => g.shader_pack = value.to_owned(),
                 "overlay" => {
@@ -788,13 +836,13 @@ impl Graphics {
         g
     }
     pub fn serialize(&self) -> String {
-        format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nleafCulling:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\ntranslucentBatching:{}\n",
+        let mut text = format!(
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nleafCulling:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiBrightness:{}\nhdrKey:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
             bool_text(self.cave_culling),
-            bool_text(self.entity_culling),
+            self.entity_culling.name(),
             self.leaf_culling.name(),
             bool_text(self.cache_shulker_boxes),
             bool_text(self.cache_signs),
@@ -827,6 +875,7 @@ impl Graphics {
             bool_text(self.taa),
             self.upscaling.name(),
             self.screenshot_quality,
+            self.frame_generation.name(),
             bool_text(self.hdr),
             self.hdr_paper_white,
             self.hdr_peak,
@@ -838,7 +887,9 @@ impl Graphics {
             self.api.name(),
             self.shader_pack,
             bool_text(self.translucent_batching),
-        )
+        );
+        text += &self.blue_map.serialize();
+        text
     }
     /// Binds Horizon's graphics key `name` (`HDR_KEY`); false for another name.
     pub fn set_key(&mut self, name: &str, value: String) -> bool {
@@ -896,10 +947,8 @@ impl Graphics {
         // and render threads are raised above four cores, where vanilla
         // raises its server thread). Leaving two idled a core of a 4-thread
         // laptop while a world loaded: a teleport there took ~15% longer.
-        let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
+        let cores = horizon_threads::worker_count();
         let auto = if cfg!(target_os = "android") {
-            // Mobile big.LITTLE SoCs (e.g. 2x Cortex-A75 + 6x Cortex-A55 on Helio G85)
-            // need 4 cores free for android_main, integrated Server, Audio, and Vulkan driver.
             cores.saturating_sub(2).clamp(1, 4)
         } else {
             cores.saturating_sub(1).max(1)
@@ -983,7 +1032,7 @@ mod tests {
                 servers: Vec::new(),
             },
             cave_culling: false,
-            entity_culling: true,
+            entity_culling: EntityCullingMode::Synchronous,
             leaf_culling: LeafCullingMode::SolidAggressive,
             cache_shulker_boxes: true,
             cache_signs: true,
@@ -1009,6 +1058,7 @@ mod tests {
             taa: true,
             upscaling: Upscaling::Balanced,
             screenshot_quality: 4,
+            frame_generation: FrameGeneration::Fsr31,
             hdr: true,
             hdr_paper_white: 240,
             hdr_peak: 1400,
@@ -1018,7 +1068,7 @@ mod tests {
             battery: true,
             shadow_cache: true,
             api: GraphicsApi::Dx12,
-            translucent_batching: true,
+            translucent_batching: false,
             shader_pack: "Golden Hour".into(),
         };
         assert_eq!(Graphics::parse(&g.serialize()), g);
@@ -1045,8 +1095,12 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(Graphics::parse(""), Graphics::default());
-        // Translucent Batching is opt-in for now: only the file turns it on.
-        assert!(!Graphics::default().translucent_batching);
+        // Translucent Batching is on, in files from before it too; only false turns it off,
+        // and only under its key: the old one held the false every save wrote while it was
+        // off by default, not a choice.
+        assert!(Graphics::default().translucent_batching);
+        assert!(!Graphics::parse("batchTranslucent:false\n").translucent_batching);
+        assert!(Graphics::parse("translucentBatching:false\n").translucent_batching);
         // 0 is Auto; anything else is a peak the slider reaches.
         assert_eq!(Graphics::parse("hdrPeak:0\n").hdr_peak, 0);
         assert_eq!(Graphics::parse("hdrPeak:50\n").hdr_peak, 200);
@@ -1258,13 +1312,8 @@ mod tests {
     fn automatic_workers_leave_a_core_as_vanilla_does() {
         let g = Graphics::default();
         assert_eq!(g.workers, 0);
-        let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
-        assert_eq!(
-            g.worker_threads(),
-            cores
-                .saturating_sub(if cfg!(target_os = "android") { 2 } else { 1 })
-                .max(1)
-        );
+        let cores = horizon_threads::worker_count();
+        assert_eq!(g.worker_threads(), cores.saturating_sub(1).max(1));
         // A manual count is the player's own choice, kept as asked.
         let manual = Graphics { workers: 3, ..g };
         assert_eq!(manual.worker_threads(), 3);

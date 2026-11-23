@@ -12,6 +12,24 @@ use std::{
 };
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    static SPANS: RefCell<Vec<Span>> = const { RefCell::new(Vec::new()) };
+    /// Spans recorded on this thread alone, wall time only ([`record_here`]).
+    static HERE: Cell<bool> = const { Cell::new(false) };
+    /// How many timed spans the thread is inside: the next span's [`Span::depth`].
+    static DEPTH: Cell<u8> = const { Cell::new(0) };
+}
+
+/// A named timing: wall milliseconds and the thread's CPU milliseconds in it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Span {
+    pub name: &'static str,
+    pub ms: f32,
+    pub cpu_ms: f32,
+    /// How many timed spans it ran inside (0: none): `tick_mobs` is inside `tick`.
+    pub depth: u8,
+}
+
 static RECORDING: AtomicBool = AtomicBool::new(false);
 type Totals = (u64, f64, f64, f32);
 type Trace = std::collections::BTreeMap<(&'static str, &'static str), Totals>;
@@ -63,25 +81,8 @@ pub fn job<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
     } else {
         "worker"
     };
-    collect(role, Span { name, ms, cpu_ms });
+    collect(role, Span { name, ms, cpu_ms, depth: 0 });
     value
-}
-thread_local! {
-    static SPANS: RefCell<Vec<Span>> = const { RefCell::new(Vec::new()) };
-    /// Spans recorded on this thread alone, wall time only ([`record_here`]).
-    static HERE: Cell<bool> = const { Cell::new(false) };
-    /// How many timed spans the thread is inside: the next span's [`Span::depth`].
-    static DEPTH: Cell<u8> = const { Cell::new(0) };
-}
-
-/// A named timing: wall milliseconds and the thread's CPU milliseconds in it.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Span {
-    pub name: &'static str,
-    pub ms: f32,
-    pub cpu_ms: f32,
-    /// How many timed spans it ran inside (0: none): `tick_mobs` is inside `tick`.
-    pub depth: u8,
 }
 
 pub fn enable(on: bool) {
@@ -618,9 +619,4 @@ mod tests {
         assert!(slept.as_millis() < 25, "{slept:?} while asleep");
         assert!(worked.as_millis() >= 10, "{worked:?} while busy");
     }
-}
-
-pub mod startup {
-    pub fn init(_at: std::time::Instant) {}
-    pub fn step(_name: &'static str) {}
 }

@@ -342,15 +342,10 @@ impl Biomes {
             .iter()
             .filter(|f| !f.name.contains('/'))
             .collect();
-        names.sort();
-        for path in names {
-            let name = format!(
-                "minecraft:{}",
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .ok_or("bad biome")?
-            );
-            let v: Value = serde_json::from_slice(&fs::read(&path)?)?;
+        files.sort_by_cached_key(|f| format!("{}.json", f.name));
+        for file in files {
+            let v: Value = serde_json::from_slice(file.bytes()?)?;
+            let name = format!("minecraft:{}", file.name);
             let id = list.len() as u32;
             list.push(BiomeInfo::from_json_at(name, id, &v, &maps));
         }
