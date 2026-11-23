@@ -15,40 +15,58 @@ use chrono::{DateTime, Local};
 static DETAILS: Mutex<Vec<(&'static str, String)>> = Mutex::new(Vec::new());
 static REPORTED: AtomicBool = AtomicBool::new(false);
 
-/// A running native trait-mod hook call on the current thread.
-#[derive(Clone, Copy, Debug)]
-pub struct NativeModCall {
-    pub id: Option<&'static str>,
-    pub index: usize,
-    pub hook: &'static str,
-}
-
-pub struct NativeModGuard {
-    previous: Option<NativeModCall>,
-}
-
-impl Drop for NativeModGuard {
-    fn drop(&mut self) {
-        NATIVE_MOD_CALL.with(|c| c.set(self.previous));
-    }
-}
-
-pub fn enter_native_mod(call: NativeModCall) -> NativeModGuard {
-    let previous = NATIVE_MOD_CALL.with(|c| {
-        let prev = c.get();
-        c.set(Some(call));
-        prev
-    });
-    NativeModGuard { previous }
-}
-
 thread_local! {
     /// How many `contain` calls this thread is inside.
     static CONTAINED: Cell<u32> = const { Cell::new(0) };
     /// The message of the last panic `contain` caught on this thread, from the hook.
     static CAUGHT: RefCell<Option<String>> = const { RefCell::new(None) };
-    /// The native trait-mod hook currently running on this thread, if any.
-    static NATIVE_MOD_CALL: Cell<Option<NativeModCall>> = const { Cell::new(None) };
+    /// The native mod hook this thread is inside, for the panic hook to name.
+    static IN_NATIVE_MOD: Cell<Option<NativeModCall>> = const { Cell::new(None) };
+}
+
+/// A call into one hook of a native mod.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeModCall {
+    /// The mod's `[mod] id`, None in a build that didn't name its mods.
+    pub id: Option<&'static str>,
+    /// Its place in dispatch order, which names it then.
+    pub index: usize,
+    pub hook: &'static str,
+}
+
+/// Marks this thread as inside `call` until the guard drops, which also happens while a panic
+/// unwinds. A hook called from a hook is named by the inner call.
+pub fn enter_native_mod(call: NativeModCall) -> NativeModGuard {
+    NativeModGuard {
+        outer: IN_NATIVE_MOD.with(|c| c.replace(Some(call))),
+    }
+}
+
+/// Puts back the call that `enter_native_mod` found.
+#[must_use]
+pub struct NativeModGuard {
+    outer: Option<NativeModCall>,
+}
+
+impl Drop for NativeModGuard {
+    fn drop(&mut self) {
+        IN_NATIVE_MOD.with(|c| c.set(self.outer));
+    }
+}
+
+/// `message`, with the native mod hook this thread is inside, if any.
+fn attributed(message: String) -> String {
+    match IN_NATIVE_MOD.with(Cell::get) {
+        Some(NativeModCall {
+            id: Some(id), hook, ..
+        }) => format!("{message}\nin native mod {id}, hook {hook}"),
+        Some(NativeModCall {
+            id: None,
+            index,
+            hook,
+        }) => format!("{message}\nin native mod #{index}, hook {hook}"),
+        None => message,
+    }
 }
 
 /// Runs `f`, and returns a panic in it as an error with the panic's message instead of letting
@@ -151,24 +169,28 @@ impl Report {
         for line in self.stack.lines() {
             let _ = writeln!(out, "\tat {line}");
         }
-        let _ = writeln!(out, "\n-- System Details --");
+        let _ = writeln!(
+            out,
+            "\n\nA detailed walkthrough of the error, its code path and all known details is as follows:"
+        );
+        let _ = writeln!(out, "{}\n", "-".repeat(87));
+        let _ = writeln!(out, "-- Head --");
+        let _ = writeln!(out, "Thread: {}\n", self.thread);
+        let _ = writeln!(out, "-- System Details --");
         let _ = writeln!(out, "Details:");
-        let _ = writeln!(out, "\tThread: {}", self.thread);
-        for (k, v) in &self.details {
-            let _ = writeln!(out, "\t{k}: {v}");
+        for (key, value) in &self.details {
+            let _ = writeln!(out, "\t{key}: {value}");
         }
-        if !self.log.is_empty() {
-            let _ = writeln!(out, "\n-- Recent Log --");
-            for line in &self.log {
-                let _ = writeln!(out, "\t{line}");
-            }
+        let _ = writeln!(out, "\n-- Last {} log lines --", self.log.len());
+        for line in &self.log {
+            let _ = writeln!(out, "{line}");
         }
         out
     }
 
-    /// Writes the report into `home/crash-reports/` and returns the file's path.
+    /// Writes the report in `home/crash-reports` and returns its path.
     pub fn save(&self, home: &Path) -> std::io::Result<PathBuf> {
-        let dir = home.join("crash-reports");
+        let dir = crate::logging::crash_reports_dir(home);
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(file_name(&self.time, self.side));
         std::fs::write(&path, self.text())?;
@@ -176,21 +198,35 @@ impl Report {
     }
 }
 
-/// `0.1.0` or `0.1.0 (abc1234)` when built with a commit id.
+/// The release this binary is (`v0.2.3`); a nightly's label (`Nightly 2026-10-28 · 0c02067`); for a
+/// release from before 0.2, its tag and the client's crate version; for a build from source, that
+/// version alone.
 pub fn version() -> String {
-    let base = env!("CARGO_PKG_VERSION");
-    match option_env!("HORIZON_GIT_SHA") {
-        Some(sha) if !sha.is_empty() => format!("{base} ({sha})"),
-        _ => base.to_owned(),
+    if let Some(label) = horizon_core::release::nightly_label() {
+        return label;
+    }
+    let version = env!("CARGO_PKG_VERSION");
+    match (horizon_core::release::RELEASE, release_tag()) {
+        (Some(_), Some(tag)) => tag,
+        (None, Some(tag)) => format!("{tag} (client {version})"),
+        (_, None) => version.to_owned(),
     }
 }
 
+/// The release this binary came with: the version release.yml built in (docs/versioning.md), else
+/// the folder the launcher installed it in, named after the tag (releases from before 0.2). A
+/// nightly is its version as the launcher installs it (`nightly-2026-10-28-0c02067`).
 pub fn release_tag() -> Option<String> {
-    option_env!("HORIZON_GIT_SHA").map(|sha| sha.to_owned())
-}
-
-fn read(path: &str) -> Option<String> {
-    std::fs::read_to_string(path).ok()
+    if let Some(nightly) = horizon_core::release::nightly_version() {
+        return Some(nightly);
+    }
+    if let Some(version) = horizon_core::release::RELEASE {
+        return Some(format!("v{version}"));
+    }
+    let exe = std::env::current_exe().ok()?;
+    let folder = exe.parent()?.file_name()?.to_str()?;
+    (folder.starts_with('v') && folder[1..].starts_with(|c: char| c.is_ascii_digit()))
+        .then(|| folder.to_owned())
 }
 
 fn command_output(program: &str, args: &[&str]) -> Option<String> {
@@ -198,21 +234,15 @@ fn command_output(program: &str, args: &[&str]) -> Option<String> {
         .args(args)
         .output()
         .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
-        .filter(|s| !s.is_empty())
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    (out.status.success() && !text.is_empty()).then_some(text)
 }
 
-fn windows_processor_name(query: &str) -> Option<String> {
-    query.lines().find_map(|line| {
-        let (_, value) = line.split_once("REG_SZ")?;
-        let value = value.trim();
-        (!value.is_empty()).then(|| value.to_owned())
-    })
+fn read(path: &str) -> Option<String> {
+    std::fs::read_to_string(path).ok()
 }
 
-/// `linux (x86_64) version Ubuntu 24.04 LTS, kernel 6.8.0-45-generic`
+/// `PRETTY_NAME` of /etc/os-release and the kernel, or the system's own version string.
 pub fn operating_system() -> String {
     let arch = std::env::consts::ARCH;
     let version = if cfg!(target_os = "linux") {
@@ -229,7 +259,7 @@ pub fn operating_system() -> String {
     } else if cfg!(target_os = "macos") {
         command_output("sw_vers", &["-productVersion"]).map(|v| format!("macOS {v}"))
     } else if cfg!(windows) {
-        command_output("cmd", &["/C", "ver"])
+        horizon_telemetry::system::windows_version()
     } else {
         None
     };
@@ -244,26 +274,11 @@ pub fn operating_system() -> String {
 pub fn cpu() -> String {
     let threads = std::thread::available_parallelism().map_or(0, |n| n.get());
     let name = if cfg!(target_os = "linux") {
-        read("/proc/cpuinfo").and_then(|t| {
-            t.lines()
-                .find(|l| l.starts_with("model name"))
-                .and_then(|l| l.split_once(':'))
-                .map(|(_, v)| v.trim().to_owned())
-        })
+        read("/proc/cpuinfo").and_then(|t| horizon_telemetry::system::linux_cpu_name(&t))
     } else if cfg!(target_os = "macos") {
         command_output("sysctl", &["-n", "machdep.cpu.brand_string"])
     } else if cfg!(windows) {
-        command_output(
-            "reg",
-            &[
-                "query",
-                r"HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0",
-                "/v",
-                "ProcessorNameString",
-            ],
-        )
-        .and_then(|query| windows_processor_name(&query))
-        .or_else(|| std::env::var("PROCESSOR_IDENTIFIER").ok())
+        horizon_telemetry::system::windows_cpu()
     } else {
         std::env::var("PROCESSOR_IDENTIFIER").ok()
     };
@@ -416,6 +431,30 @@ pub fn report_watchdog(home: &Path, side: &'static str, message: String) -> Opti
     )
 }
 
+/// The report for a game that went over the player's RAM limit (`ram_limit`), written by the
+/// watcher thread: it says nothing about where the memory went, so it carries no stack. The player
+/// chose this limit, so it is no bug to send (`telemetry::keep_crash`), and leaving that out ends
+/// the game seconds sooner: it keeps running, over its limit, until the report is written.
+pub fn report_memory_limit(home: &Path, side: &'static str, message: String) {
+    if REPORTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let report = Report {
+        time: Local::now(),
+        description: "RAM limit reached".into(),
+        error: message,
+        stack: String::new(),
+        thread: thread_name(side),
+        side,
+        details: system_details(side),
+        log: crate::logging::recent_lines(),
+    };
+    match report.save(home) {
+        Ok(path) => eprintln!("{SAVED_LINE}{}", path.display()),
+        Err(e) => eprintln!("Horizon: could not save a crash report: {e}"),
+    }
+}
+
 fn payload_text(payload: &(dyn std::any::Any + Send)) -> String {
     payload
         .downcast_ref::<&str>()
@@ -426,32 +465,29 @@ fn payload_text(payload: &(dyn std::any::Any + Send)) -> String {
 
 fn panic_message(info: &std::panic::PanicHookInfo) -> String {
     let text = payload_text(info.payload());
-    let mut msg = match info.location() {
+    attributed(match info.location() {
         Some(at) => format!("panicked at {at}:\n{text}"),
         None => format!("panicked:\n{text}"),
-    };
-    if let Some(call) = NATIVE_MOD_CALL.with(Cell::get) {
-        match call.id {
-            Some(id) => msg.push_str(&format!("\nin native mod {id}, hook {}", call.hook)),
-            None => msg.push_str(&format!(
-                "\nin native mod #{}, hook {}",
-                call.index, call.hook
-            )),
-        }
-    }
-    msg
+    })
 }
 
 /// A `std::backtrace` as one line a frame, `function (file:line:col)`. Captured in a panic hook
 /// (`from_panic`), it starts at the frame that panicked: the hook's and the panic machinery's
 /// frames go. Paths inside the workspace lose the build machine's prefix.
 pub fn stack_lines(backtrace: &str, from_panic: bool) -> String {
+    // The workspace as it was on the machine that built this binary (it need not exist here).
+    // A report names workspace files the same way on every host, whatever
+    // separator the build machine used.
+    let manifest = env!("CARGO_MANIFEST_DIR").replace('\\', "/");
+    let root = manifest
+        .strip_suffix("crates/horizon-client-render")
+        .unwrap_or(&manifest);
     let mut frames: Vec<(String, Option<String>)> = Vec::new();
     for line in backtrace.lines() {
         let line = line.trim();
         if let Some(at) = line.strip_prefix("at ") {
             if let Some(frame) = frames.last_mut() {
-                frame.1 = Some(short_path(at));
+                frame.1 = Some(short_path(&at.replace('\\', "/"), root).to_owned());
             }
         } else if let Some((n, name)) = line.split_once(": ")
             && n.chars().all(|c| c.is_ascii_digit())
@@ -499,17 +535,14 @@ pub fn stack_lines(backtrace: &str, from_panic: bool) -> String {
 
 /// A source path without the build machine's folders: relative to the workspace, or from the
 /// crate's folder for dependencies (`winit-0.30.13/src/event_loop.rs:642:56`).
-fn short_path(path: &str) -> String {
-    // Recognize source structure rather than embedding the builder's private
-    // CARGO_MANIFEST_DIR in every distributed binary. Normalize Windows too.
-    let path = path.replace('\\', "/");
-    if let Some(i) = path.rfind("/crates/") {
-        return path[i + 1..].to_owned();
+fn short_path<'a>(path: &'a str, root: &str) -> &'a str {
+    if let Some(rest) = path.strip_prefix(root) {
+        return rest;
     }
     if let Some(i) = path.find("/registry/src/") {
         let rest = &path[i + "/registry/src/".len()..];
         if let Some((_index, krate)) = rest.split_once('/') {
-            return krate.to_owned();
+            return krate;
         }
     }
     path
@@ -532,7 +565,8 @@ pub fn panic_report(info: &std::panic::PanicHookInfo, side: &'static str) -> Rep
     }
 }
 
-/// Whether `name` is one of the streaming pool's threads, vanilla's `Util` worker threads.
+/// Whether `name` is one of the shared worker pool's threads (`horizon_threads::jobs`), vanilla's
+/// `Util` worker threads.
 fn is_worker_thread(name: Option<&str>) -> bool {
     name.is_some_and(|n| n.starts_with("horizon-worker-"))
 }
@@ -550,7 +584,8 @@ pub fn worker_panic_report(info: &std::panic::PanicHookInfo, side: &'static str)
 /// Reports panics: on the main thread a crash report (the panic then ends the game, exit code
 /// 101); on a worker thread (`Util.onThreadException`) a crash report too, and the game ends
 /// with it; on other threads the error goes to the log, as vanilla's uncaught exception handler
-/// does. The default hook still prints the panic. A panic inside `contain` is only logged.
+/// does. The default hook still prints the panic. A panic inside `contain` is only logged. A
+/// panic inside a native mod's hook names the mod and the hook.
 pub fn install(home: PathBuf, side: &'static str) {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -602,32 +637,6 @@ impl std::fmt::Display for DebugCrash {
 }
 
 impl std::error::Error for DebugCrash {}
-
-/// When `err` is a [`DebugCrash`], writes its crash report (`"Manually triggered debug crash"`,
-/// as vanilla's `Minecraft.run` does when the debug crash throws) and returns true.
-pub fn report_if_debug_crash(
-    home: &Path,
-    side: &'static str,
-    err: &(dyn std::error::Error + 'static),
-) -> bool {
-    let Some(crash) = err.downcast_ref::<DebugCrash>() else {
-        return false;
-    };
-    deliver(
-        home,
-        Report {
-            time: Local::now(),
-            description: DebugCrash::MESSAGE.into(),
-            error: DebugCrash::MESSAGE.into(),
-            stack: crash.stack.clone(),
-            thread: thread_name(side),
-            side,
-            details: system_details(side),
-            log: crate::logging::recent_lines(),
-        },
-    );
-    true
-}
 
 /// A report for an error `main` got back: the game ends with it.
 pub fn report_error(
@@ -697,152 +706,208 @@ pub fn debug_crash_after() -> Option<std::time::Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
 
     #[test]
-    fn windows_registry_cpu_name_is_read_without_the_registry_columns() {
-        let query = r#"
-HKEY_LOCAL_MACHINE\HARDWARE\DESCRIPTION\System\CentralProcessor\0
-    ProcessorNameString    REG_SZ    13th Gen Intel(R) Core(TM) i7-13700F
-"#;
-        assert_eq!(
-            windows_processor_name(query).as_deref(),
-            Some("13th Gen Intel(R) Core(TM) i7-13700F")
-        );
-        assert_eq!(
-            windows_processor_name("ProcessorNameString REG_SZ   "),
-            None
-        );
-    }
-
-    fn sample() -> Report {
-        Report {
-            time: Local.with_ymd_and_hms(2026, 10, 14, 9, 5, 7).unwrap(),
-            description: "Unexpected error".into(),
-            error: "panicked at crates/horizon-client/src/game.rs:42:5:\nboom".into(),
-            stack: "horizon_client::game::tick (crates/horizon-client/src/game.rs:42:5)\n\
-                    horizon_client::main (crates/horizon-client/src/main.rs:10:5)\n"
-                .into(),
-            thread: "Render thread".into(),
-            side: "client",
-            details: vec![
-                ("Horizon Version".into(), "0.1.0 (abc1234)".into()),
-                ("Minecraft Version".into(), "26.1.1".into()),
-                ("Graphics Adapter".into(), "AMD Radeon RX 6700 XT".into()),
-            ],
-            log: vec!["12:00:01 [INFO] Started".into()],
+    fn a_release_reports_its_built_in_version() {
+        // release.yml builds with HORIZON_VERSION (docs/versioning.md): `v0.2.3`, wherever it is installed.
+        if let Some(label) = horizon_core::release::nightly_label() {
+            assert_eq!(super::version(), label);
+            assert_eq!(release_tag(), horizon_core::release::nightly_version());
+            return;
+        }
+        match horizon_core::release::RELEASE {
+            Some(version) => {
+                assert_eq!(release_tag(), Some(format!("v{version}")));
+                assert_eq!(super::version(), format!("v{version}"));
+            }
+            None => assert!(release_tag().is_none() || super::version().contains("(client ")),
         }
     }
 
     #[test]
-    fn report_has_the_sections_and_saves_under_crash_reports() {
-        let r = sample();
+    fn a_panic_in_a_native_mods_hook_names_it() {
+        let outer = enter_native_mod(NativeModCall {
+            id: None,
+            index: 1,
+            hook: "render",
+        });
+        let inner = enter_native_mod(NativeModCall {
+            id: Some("b"),
+            index: 0,
+            hook: "tick",
+        });
+        assert!(attributed("boom".into()).ends_with("\nin native mod b, hook tick"));
+        drop(inner);
+        assert!(attributed("boom".into()).ends_with("\nin native mod #1, hook render"));
+        drop(outer);
+        assert_eq!(attributed("boom".into()), "boom");
+    }
+
+    fn report() -> Report {
+        Report {
+            time: chrono::TimeZone::with_ymd_and_hms(&Local, 2026, 10, 14, 9, 5, 7).unwrap(),
+            description: "Unexpected error".into(),
+            error: "panicked at src/game.rs:10:5:\nboom".into(),
+            stack: "horizon_client::game::frame (src/game.rs:10:5)\n".into(),
+            thread: "Render thread".into(),
+            side: "client",
+            details: vec![
+                ("Horizon Version".into(), "0.1.0".into()),
+                ("Minecraft Version".into(), "26.3".into()),
+                ("Graphics".into(), "Test GPU (Vulkan), driver 1.0".into()),
+            ],
+            log: vec!["[09:05:06] [Render thread/INFO]: load assets: 1.20s".into()],
+        }
+    }
+
+    #[test]
+    fn file_names_are_vanillas() {
         assert_eq!(
-            file_name(&r.time, r.side),
+            file_name(&report().time, "client"),
             "crash-2026-10-14_09.05.07-client.txt"
         );
-        let text = r.text();
-        assert!(text.starts_with("---- Horizon Crash Report ----\n// "));
-        assert!(text.contains("Time: 2026-10-14 09:05:07\nDescription: Unexpected error\n"));
-        assert!(text.contains(
-            "panicked at crates/horizon-client/src/game.rs:42:5:\nboom\n\
-             \tat horizon_client::game::tick (crates/horizon-client/src/game.rs:42:5)\n"
-        ));
-        assert!(text.contains(
-            "-- System Details --\nDetails:\n\
-             \tThread: Render thread\n\
-             \tHorizon Version: 0.1.0 (abc1234)\n\
-             \tMinecraft Version: 26.1.1\n\
-             \tGraphics Adapter: AMD Radeon RX 6700 XT\n"
-        ));
-        assert!(text.contains("-- Recent Log --\n\t12:00:01 [INFO] Started\n"));
-
-        let dir = std::env::temp_dir().join(format!("horizon-crash-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let saved = r.save(&dir).unwrap();
-        assert_eq!(
-            saved,
-            dir.join("crash-reports/crash-2026-10-14_09.05.07-client.txt")
-        );
-        assert_eq!(std::fs::read_to_string(&saved).unwrap(), text);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn stack_lines_drop_panic_machinery_and_trim_paths() {
-        let raw = "   0: horizon_client_render::crash::panic_report\n\
-                   \x20            at /home/dev/horizon/crates/horizon-client-render/src/crash.rs:200:10\n\
-                      1: core::panicking::panic_fmt\n\
-                   \x20            at /rustc/abc/library/core/src/panicking.rs:75:14\n\
-                      2: horizon_client::game::tick\n\
-                   \x20            at /home/dev/horizon/crates/horizon-client/src/game.rs:42:5\n\
-                      3: winit::event_loop::EventLoop::run\n\
-                   \x20            at /home/dev/.cargo/registry/src/index.crates.io-6f17d22bba15001f/winit-0.30.13/src/event_loop.rs:642:56\n";
+    fn the_report_reads_like_vanillas() {
+        let text = report().text();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "---- Horizon Crash Report ----");
+        assert!(lines[1].starts_with("// "));
+        assert_eq!(lines[3], "Time: 2026-10-14 09:05:07");
+        assert_eq!(lines[4], "Description: Unexpected error");
+        assert_eq!(lines[6], "panicked at src/game.rs:10:5:");
+        assert_eq!(lines[7], "boom");
         assert_eq!(
-            stack_lines(raw, true),
-            "horizon_client::game::tick (crates/horizon-client/src/game.rs:42:5)\n\
-             winit::event_loop::EventLoop::run (winit-0.30.13/src/event_loop.rs:642:56)\n"
+            lines[8],
+            "\tat horizon_client::game::frame (src/game.rs:10:5)"
         );
-        // Windows backslashes normalize to forward slashes too.
-        assert_eq!(
-            short_path(r"C:\Users\runner\work\horizon\crates\horizon-client\src\main.rs:1:1"),
-            "crates/horizon-client/src/main.rs:1:1"
-        );
+        assert!(text.contains("-- Head --\nThread: Render thread\n"));
+        assert!(text.contains(
+            "-- System Details --\nDetails:\n\tHorizon Version: 0.1.0\n\tMinecraft Version: 26.3\n\tGraphics: Test GPU (Vulkan), driver 1.0\n"
+        ));
+        assert!(text.ends_with(
+            "-- Last 1 log lines --\n[09:05:06] [Render thread/INFO]: load assets: 1.20s\n"
+        ));
     }
 
     #[test]
-    fn details_replace_in_place_and_server_skips_render_settings() {
-        set_detail("Render Settings", "12 chunks");
-        set_detail("World", "New World");
-        set_detail("Render Settings", "16 chunks");
-        let client = system_details("client");
-        assert_eq!(
-            client
+    fn a_dedicated_servers_report_names_its_server_thread_and_no_render_settings() {
+        let unnamed = |side: &'static str| {
+            std::thread::spawn(move || thread_name(side))
+                .join()
+                .unwrap()
+        };
+        assert_eq!(unnamed("server"), "Server thread");
+        assert_eq!(unnamed("client"), "Render thread");
+        set_detail("Render Settings", "render distance 12");
+        let has = |side| {
+            system_details(side)
                 .iter()
-                .filter(|(k, _)| k == "Render Settings")
-                .map(|(_, v)| v.as_str())
-                .collect::<Vec<_>>(),
-            ["16 chunks"]
-        );
-        let server = system_details("server");
-        assert!(!server.iter().any(|(k, _)| k == "Render Settings"));
-        assert!(server.iter().any(|(k, v)| k == "World" && v == "New World"));
-        clear_detail("World");
+                .any(|(k, _)| k == "Render Settings")
+        };
+        assert!(has("client"));
+        assert!(!has("server"));
         clear_detail("Render Settings");
     }
 
     #[test]
-    fn debug_crash_carries_its_stack_past_its_own_new() {
-        let err: Box<dyn std::error::Error> = Box::new(DebugCrash::new());
-        assert_eq!(err.to_string(), DebugCrash::MESSAGE);
-        let crash = err.downcast_ref::<DebugCrash>().unwrap();
-        assert!(!crash.stack.contains("DebugCrash::new"));
-        assert!(crash.stack.contains("debug_crash_carries_its_stack"));
+    fn stacks_start_at_the_panicking_frame() {
+        let bt = format!(
+            "   0: horizon_client::crash::panic_report\n             at {root}/src/crash.rs:296:16\n   1: std::panicking::panic_with_hook\n             at /rustc/abc/library/std/src/panicking.rs:823:13\n   2: core::panicking::panic_fmt\n             at /rustc/abc/library/core/src/panicking.rs:80:14\n   3: horizon_client::crash::debug_crash_tick\n             at {root}/src/crash.rs:359:9\n   4: winit::dispatch\n             at /home/someone/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/winit-0.30.13/src/event_loop.rs:642:56\n   5: main\n",
+            root = env!("CARGO_MANIFEST_DIR")
+        );
+        assert_eq!(
+            stack_lines(&bt, true),
+            "horizon_client::crash::debug_crash_tick (crates/horizon-client-render/src/crash.rs:359:9)\nwinit::dispatch (winit-0.30.13/src/event_loop.rs:642:56)\nmain\n"
+        );
     }
 
     #[test]
-    fn worker_threads_are_recognized_by_prefix() {
-        assert!(is_worker_thread(Some("horizon-worker-0")));
-        assert!(is_worker_thread(Some("horizon-worker-7")));
+    fn contained_panics_come_back_as_errors() {
+        assert_eq!(contain(|| 7), Ok(7));
+        let error = contain(|| -> u8 { panic!("a pack's program") }).unwrap_err();
+        assert!(error.contains("a pack's program"), "{error}");
+        // Nested, and the thread is no longer inside one after.
+        let outer = contain(|| contain(|| -> u8 { panic!("inner") }));
+        assert!(outer.unwrap().unwrap_err().contains("inner"));
+        assert_eq!(CONTAINED.with(Cell::get), 0);
+    }
+
+    #[test]
+    fn the_debug_crash_is_reported_as_vanillas() {
+        let error: Box<dyn std::error::Error> = DebugCrash::new().into();
+        assert_eq!(error.to_string(), "Manually triggered debug crash");
+        let debug = error.downcast_ref::<DebugCrash>().unwrap();
+        // The stack starts where the crash was raised (DebugCrash::new, in this file).
+        let first = debug.stack.lines().next().unwrap();
+        assert!(first.contains("crash.rs"), "{}", debug.stack);
+    }
+
+    #[test]
+    fn worker_threads_are_the_streaming_pool() {
+        assert!(is_worker_thread(Some("horizon-worker-3")));
         assert!(!is_worker_thread(Some("main")));
-        assert!(!is_worker_thread(Some("horizon-io")));
         assert!(!is_worker_thread(None));
     }
 
     #[test]
-    fn contain_catches_a_panic_and_returns_its_message() {
-        assert_eq!(contain(|| 2 + 2), Ok(4));
-        let err = contain(|| -> i32 { panic!("bad shader") }).unwrap_err();
-        assert!(err.contains("bad shader"), "{err}");
-        // After `contain` returns, this thread is no longer inside it.
-        assert_eq!(CONTAINED.with(Cell::get), 0);
-        // Nested `contain` works too.
-        let outer = contain(|| {
-            let inner = contain(|| -> i32 { panic!("inner") });
-            assert!(inner.is_err());
-            7
+    fn a_panic_becomes_a_report() {
+        // A real panic through a hook, as the game's would be.
+        let caught = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let sink = caught.clone();
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if panic_message(info).contains("the test crash") {
+                sink.lock().unwrap().push(panic_report(info, "client"));
+            }
+        }));
+        let _ = std::panic::catch_unwind(|| panic!("the test crash"));
+        // The same panic inside a native mod's hook, which the hook sees before the unwind.
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = enter_native_mod(NativeModCall {
+                id: Some("a"),
+                index: 0,
+                hook: "tick",
+            });
+            panic!("the test crash")
         });
-        assert_eq!(outer, Ok(7));
-        assert_eq!(CONTAINED.with(Cell::get), 0);
+        std::panic::set_hook(previous);
+        // A caught panic leaves the thread as it found it.
+        assert_eq!(attributed("boom".into()), "boom");
+        let mut reports = std::mem::take(&mut *caught.lock().unwrap());
+        assert_eq!(reports.len(), 2, "the hook ran for both panics");
+        let in_mod = reports.pop().unwrap();
+        assert!(
+            in_mod.error.ends_with("\nin native mod a, hook tick"),
+            "{}",
+            in_mod.error
+        );
+        let report = reports.pop().unwrap();
+        assert!(!report.error.contains("native mod"));
+        assert!(report.error.contains("the test crash"));
+        assert!(report.error.contains("crash.rs"));
+        // The first frame is the test's own code, not the panic machinery.
+        let first = report.stack.lines().next().unwrap();
+        assert!(first.contains("crash.rs"), "{}", report.stack);
+        let text = report.text();
+        assert!(text.contains("Description: Unexpected error"));
+        assert!(text.contains(&format!(
+            "\tMinecraft Version: {}\n",
+            horizon_core::VANILLA_VERSION
+        )));
+        assert!(text.contains("\tOperating System: "));
+        assert!(text.contains("\tCPU: "));
+        let home = std::env::temp_dir().join(format!("horizon-crash-save-{}", std::process::id()));
+        let path = report.save(&home).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        assert!(
+            path.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .ends_with("-client.txt")
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

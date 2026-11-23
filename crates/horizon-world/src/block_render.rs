@@ -157,18 +157,15 @@ impl FaceVisibility {
     /// Switches `state` between occluding its neighbours and not, as `BlockState.canOcclude` and
     /// `initCache` do: the faces come back from its shape, or are all empty.
     pub fn set_can_occlude(&mut self, state: BlockStateId, can_occlude: bool) -> bool {
-        if state.0 as usize >= self.states.len() {
-            return false;
-        }
-        if Arc::get_mut(&mut self.states).is_none() {
-            self.states = self.states.to_vec().into();
-        }
-        let Some(entry) = Arc::get_mut(&mut self.states).and_then(|s| s.get_mut(state.0 as usize))
-        else {
+        let Some(current) = self.states.get(state.0 as usize) else {
             return false;
         };
+        let mut entry = current.clone();
         entry.definition.can_occlude = can_occlude;
         entry.faces = if can_occlude { entry.occluding } else { [0; 6] };
+        let mut states = self.states.to_vec();
+        states[state.0 as usize] = entry;
+        self.states = states.into();
         true
     }
 

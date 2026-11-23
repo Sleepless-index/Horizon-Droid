@@ -98,13 +98,14 @@ impl PackInfo {
 /// sampled into its 32x32 square. None when it does not decode, where
 /// `loadPackIcon` falls back to `unknown_pack`.
 pub fn load_icon(png: &[u8]) -> Option<Arc<[u8]>> {
-    let (w, h, rgba) = match crate::hud::decode_bytes(png) {
-        Ok(decoded) => decoded,
-        Err(_) => {
-            let image = image::load_from_memory(png).ok()?.into_rgba8();
-            (image.width(), image.height(), image.into_raw())
-        }
-    };
+    scale_icon(crate::hud::decode_bytes(png).ok()?)
+}
+/// A project icon Modrinth served (PNG, WebP or JPEG,
+/// [`crate::hud::decode_image_bytes`]), scaled as [`load_icon`] scales a pack's.
+pub fn load_fetched_icon(bytes: &[u8]) -> Option<Arc<[u8]>> {
+    scale_icon(crate::hud::decode_image_bytes(bytes).ok()?)
+}
+fn scale_icon((w, h, rgba): (u32, u32, Vec<u8>)) -> Option<Arc<[u8]>> {
     if w == 0 || h == 0 {
         return None;
     }
@@ -363,23 +364,16 @@ pub struct PackScreen {
     browser_search: TextField,
     /// The browser's search box has the keyboard.
     browser_focus: bool,
-    /// The first grid row the browser shows.
-    browser_scroll: f64,
-    /// The pointer's offset in the scroll bar's thumb while it is held.
-    browser_bar_held: Option<f64>,
 }
 
 fn tr(key: &str) -> Text {
     Text::translate(key, &[])
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Footer {
-    Folder,
-    Catalog,
-    Done,
-}
-
+/// The Add button is square. The button sprite is a nine-slice built for a
+/// height of 20; drawn shorter, neither it nor its label sits right, so the
+/// button keeps that height and is centred on the shorter search box.
+const ADD_SIZE: i32 = 20;
 /// A card in the grid: its icon beside its name, author and description.
 const ROW_H: i32 = 74;
 /// The air around a card's contents.
@@ -405,11 +399,6 @@ const ICON: i32 = 34;
 /// The browser's search box and the button beside it.
 const BROWSER_SEARCH_W: i32 = 200;
 const SEARCH_BTN_W: i32 = 56;
-const SEARCH_Y: i32 = 32;
-/// The grid's scroll bar, and the row of page buttons below it.
-const BAR_W: i32 = 6;
-const PAGER_H: i32 = 26;
-const PAGER_BTN_W: i32 = 30;
 /// The Back and Install buttons.
 const BACK_W: i32 = 60;
 const BACK_H: i32 = 20;
@@ -453,8 +442,6 @@ impl PackScreen {
             browsing_allowed: false,
             backdrop: Backdrop::None,
             browser_icons: Vec::new(),
-            browser_scroll: 0.0,
-            browser_bar_held: None,
             browser_search: {
                 let mut field = TextField::new(0, 0, BROWSER_SEARCH_W, 18);
                 field.hint = Some(tr("horizon.pack.searchHint").with_style(&Style {
@@ -606,19 +593,12 @@ impl PackScreen {
     /// Pack entries and the search field do not play widget click sounds.
     pub fn button_at(&self, m: &Measure, x: f64, y: f64) -> bool {
         let buttons = if let Some(c) = &self.confirm {
-            self.confirm_layout(m, c)
-                .2
-                .into_iter()
-                .map(|(bx, by)| (bx, by, 150))
-                .collect::<Vec<_>>()
+            self.confirm_layout(m, c).2
         } else {
-            self.footer_buttons()
-                .into_iter()
-                .map(|(bx, by, bw, _)| (bx, by, bw))
-                .collect()
+            self.footer()
         };
-        buttons.into_iter().any(|(bx, by, bw)| {
-            x >= bx as f64 && y >= by as f64 && x < (bx + bw) as f64 && y < (by + 20) as f64
+        buttons.into_iter().any(|(bx, by)| {
+            x >= bx as f64 && y >= by as f64 && x < (bx + 150) as f64 && y < (by + 20) as f64
         })
     }
     /// A left click (`Screen.mouseClicked`).
@@ -682,16 +662,13 @@ impl PackScreen {
             }
             return Action::None;
         }
-        for (i, (bx, by, bw, kind)) in self.footer_buttons().into_iter().enumerate() {
-            if x >= bx as f64 && y >= by as f64 && x < (bx + bw) as f64 && y < (by + 20) as f64 {
+        for (i, (bx, by)) in self.footer().into_iter().enumerate() {
+            if x >= bx as f64 && y >= by as f64 && x < (bx + 150) as f64 && y < (by + 20) as f64 {
                 self.set_focus(Focus::Button(i));
-                return match kind {
-                    Footer::Folder => Action::OpenFolder,
-                    Footer::Catalog => {
-                        self.open_browser(m);
-                        Action::None
-                    }
-                    Footer::Done => Action::Done,
+                return if i == 0 {
+                    Action::OpenFolder
+                } else {
+                    Action::Done
                 };
             }
         }
@@ -835,31 +812,17 @@ impl PackScreen {
     /// The mouse wheel (`AbstractScrollArea.mouseScrolled`).
     /// The pointer moved with the button held: a held scrollbar follows it.
     pub fn drag(&mut self, y: f64) {
-        if let Some(grab) = self.browser_bar_held {
-            let (track, thumb) = self.browser_bar();
-            let travel = f64::from(track.3 - thumb.3).max(1.0);
-            let top = y - grab - f64::from(track.1);
-            self.set_browser_scroll(top / travel * self.browser_max_scroll());
-            return;
-        }
         for l in &mut self.lists {
             l.drag(y);
         }
     }
     /// `onRelease`.
     pub fn release(&mut self) {
-        self.browser_bar_held = None;
         for l in &mut self.lists {
             l.held = None;
         }
     }
     pub fn scroll(&mut self, x: f64, y: f64, amount: f64) {
-        if self.browser.is_some() {
-            if amount != 0.0 {
-                self.set_browser_scroll(self.browser_scroll - amount * 8.0);
-            }
-            return;
-        }
         if self.confirm.is_some() || self.search.contains(x, y) {
             return;
         }
@@ -908,12 +871,6 @@ impl PackScreen {
             self.filter(None);
         }
     }
-    #[cfg(target_os = "android")]
-    pub fn android_edit_value(&mut self, measure: &Measure) -> String {
-        self.search
-            .move_cursor_to(measure, self.search.value.chars().count(), false);
-        self.search.value.clone()
-    }
     /// Keeps a browser icon, remembering it so [`Self::release_browser_icons`]
     /// can free it again. The installed packs' own icons are not touched.
     pub fn keep_browser_icon(&mut self, key: String, icon: Arc<[u8]>) {
@@ -935,10 +892,8 @@ impl PackScreen {
         let query = self.browser_search.value.clone();
         if let Some(browser) = &mut self.browser {
             browser.query = query;
-            browser.page = 0;
             browser.search();
         }
-        self.browser_scroll = 0.0;
     }
     /// Whether the browser's own search box has the keyboard, so the game
     /// sends it typing rather than treating it as a hotkey.
@@ -994,7 +949,7 @@ impl PackScreen {
 
     /// The shown screen's calls (`Screen.extractRenderState`); `blink_ms`
     /// is the time since the search box took the focus.
-    pub fn draw(&self, m: &Measure, mouse: (i32, i32), blink_ms: u64) -> Vec<Draw> {
+    pub fn draw(&self, m: &Measure, mouse: (i32, i32), blink_ms: u64, now_ms: i64) -> Vec<Draw> {
         let mut out = Vec::new();
         // PackSelectionScreen, or the ConfirmScreen over it (its title and
         // its message).
@@ -1012,7 +967,7 @@ impl PackScreen {
             for ((bx, by), key) in buttons.into_iter().zip(["gui.yes", "gui.no"]) {
                 let hover = d::inside(mouse, bx, by, 150, 20);
                 crate::widgets::widget_cursor(hover, true);
-                d::button(&mut out, m, &tr(key), bx, by, 150, 20, true, hover);
+                d::button(&mut out, m, &tr(key), bx, by, 150, 20, true, hover, now_ms);
             }
             return out;
         }
@@ -1030,39 +985,14 @@ impl PackScreen {
         for side in 0..2 {
             self.draw_list(&mut out, m, side, mouse);
         }
-        for (i, (bx, by, bw, kind)) in self.footer_buttons().into_iter().enumerate() {
-            let hover = d::inside(mouse, bx, by, bw, 20);
-            let label = tr(match kind {
-                Footer::Folder => "pack.openFolder",
-                Footer::Catalog => "horizon.pack.catalog",
-                Footer::Done => "gui.done",
-            });
-            // The cursor follows the mouse; the highlight also keyboard focus.
-            crate::widgets::widget_cursor(hover, true);
-            d::button(
-                &mut out,
-                m,
-                &label,
-                bx,
-                by,
-                bw,
-                20,
-                true,
-                hover || self.focus == Focus::Button(i),
-            );
-            if kind == Footer::Catalog && hover {
-                d::tooltip(&mut out, m, &tr("horizon.pack.addInfo"), mouse);
-            }
-            if kind == Footer::Folder {
-                crate::widgets::last_narratable(|n| {
-                    n.hint = Some(tr("pack.folderInfo").plain());
-                });
-            }
-            if kind == Footer::Folder && hover {
-                d::tooltip(&mut out, m, &tr("pack.folderInfo"), mouse);
-            }
-        }
-        self.draw_browser(&mut out, m, mouse);
+        self.draw_footer(
+            &mut out,
+            m,
+            mouse,
+            now_ms,
+            [&tr("pack.openFolder"), &tr("gui.done")],
+        );
+        self.draw_browser(&mut out, m, mouse, now_ms);
         out
     }
     /// The Add button and the screen it opens. `None` leaves the click to
@@ -1105,90 +1035,42 @@ impl PackScreen {
                         }
                         // A filter is only meaningful once it is searched on.
                         browser.query = query;
-                        browser.page = 0;
                         browser.search();
                     }
-                    self.browser_scroll = 0.0;
                     return Some(Action::None);
                 }
             }
-            let (px, py, pw, ph) = self.browser_area();
-            let (track, thumb) = self.browser_bar();
-            if self.browser_max_scroll() > 0.0
-                && d::inside(point, track.0 - 8, track.1, BAR_W + 12, track.3)
-            {
-                let grab = if d::inside(point, thumb.0 - 8, thumb.1, BAR_W + 12, thumb.3) {
-                    y - f64::from(thumb.1)
-                } else {
-                    f64::from(thumb.3) / 2.0
-                };
-                self.browser_bar_held = Some(grab);
-                self.drag(y);
-                return Some(Action::None);
-            }
-            let (prev, next, _) = self.pager();
-            let (page, last, busy) = self
-                .browser
-                .as_ref()
-                .map_or((0, 0, true), |b| (b.page, b.last_page(), b.busy));
-            if d::inside(point, prev.0, prev.1, PAGER_BTN_W, BACK_H) && page > 0 && !busy {
-                self.turn_page(-1);
-                return Some(Action::None);
-            }
-            if d::inside(point, next.0, next.1, PAGER_BTN_W, BACK_H) && page < last && !busy {
-                self.turn_page(1);
-                return Some(Action::None);
-            }
-            let hits = self.browser_hits();
-            if d::inside(point, px, py, pw, ph) {
-                for i in 0..hits {
-                    let (ix, iy) = self.install_button(i);
-                    if d::inside(point, ix, iy, INSTALL_W, BACK_H) {
-                        if busy {
-                            return Some(Action::None);
-                        }
-                        return Some(Action::BrowsePick(i as usize));
+            let fits = self.browser_row_count();
+            let busy = self.browser.as_ref().is_some_and(|b| b.busy);
+            let hits = self.browser.as_ref().map_or(0, |b| b.hits.len() as i32);
+            for i in 0..hits.min(fits) {
+                let (ix, iy) = self.install_button(i);
+                if d::inside(point, ix, iy, INSTALL_W, BACK_H) {
+                    if busy {
+                        return Some(Action::None);
                     }
+                    return Some(Action::BrowsePick(i as usize));
                 }
             }
             // The screen is modal: nothing beneath it takes the click.
             return Some(Action::None);
         }
+        let (bx, by) = self.add_button(m);
+        if d::inside(point, bx, by, ADD_SIZE, ADD_SIZE) {
+            let mut browser = crate::pack_browser::Browser::new();
+            // Opens on the text already in the search box, so a player who
+            // searched their own packs first keeps the term; it is then the
+            // browser's box that carries it.
+            browser.query = self.search.value.clone();
+            browser.search();
+            self.browser_search.set_value(m, &self.search.value);
+            self.browser_focus = true;
+            self.browser = Some(browser);
+            // Horizon's own screen, so it may ask for the menu panorama.
+            self.backdrop = Backdrop::Panorama;
+            return Some(Action::None);
+        }
         None
-    }
-    /// The footer's buttons: vanilla's two, or three with the Catalog between
-    /// them when the browser is on.
-    fn footer_buttons(&self) -> Vec<(i32, i32, i32, Footer)> {
-        let [(fx, fy), (dx, _)] = self.footer();
-        if !self.browsing_allowed {
-            return vec![(fx, fy, 150, Footer::Folder), (dx, fy, 150, Footer::Done)];
-        }
-        let x = fx;
-        vec![
-            (x, fy, 100, Footer::Folder),
-            (x + 104, fy, 100, Footer::Catalog),
-            (x + 208, fy, 100, Footer::Done),
-        ]
-    }
-    fn turn_page(&mut self, delta: i32) {
-        if let Some(browser) = &mut self.browser {
-            browser.turn(delta);
-        }
-        self.browser_scroll = 0.0;
-    }
-    fn open_browser(&mut self, m: &Measure) {
-        let mut browser = crate::pack_browser::Browser::new();
-        // Opens on the text already in the search box, so a player who
-        // searched their own packs first keeps the term; it is then the
-        // browser's box that carries it.
-        browser.query = self.search.value.clone();
-        browser.search();
-        self.browser_search.set_value(m, &self.search.value);
-        self.browser_focus = true;
-        self.browser_scroll = 0.0;
-        self.browser = Some(browser);
-        // Horizon's own screen, so it may ask for the menu panorama.
-        self.backdrop = Backdrop::Panorama;
     }
     /// The Back button, top left of the browser.
     fn back_button(&self) -> (i32, i32) {
@@ -1212,13 +1094,13 @@ impl PackScreen {
         let (cx, cy, cw, _) = self.card_box(i);
         (cx + cw - INSTALL_W - CARD_PAD, cy + CARD_PAD)
     }
-    /// The browser's content column: the grid, with a gutter for its scroll
-    /// bar on the right and the page row below.
+    /// The browser's content column: centred, and never wider than it reads
+    /// comfortably.
     fn browser_area(&self) -> (i32, i32, i32, i32) {
         let x = SIDEBAR_W + 6;
         let top = TOPBAR_H + 6;
-        let w = (self.width - x - 6 - BAR_W - 4).max(120);
-        let h = (self.height - top - PAGER_H - 6).max(ROW_H);
+        let w = (self.width - x - 6).max(120);
+        let h = (self.height - top - 6).max(ROW_H);
         (x, top, w, h)
     }
     /// Two columns where there is room for them, otherwise one.
@@ -1226,66 +1108,48 @@ impl PackScreen {
         let (_, _, w, _) = self.browser_area();
         if w >= 360 { 2 } else { 1 }
     }
-    /// The card for hit `i`: its box in the grid, scrolled.
+    /// The card at `i`: its box in the grid.
     fn card_box(&self, i: i32) -> (i32, i32, i32, i32) {
         let (px, py, pw, _) = self.browser_area();
         let cols = self.browser_columns();
         let cw = (pw - 6 * (cols - 1)) / cols;
         let (cx, cy) = (i % cols, i / cols);
-        (
-            px + cx * (cw + 6),
-            py + cy * (ROW_H + 6) - self.browser_scroll as i32,
-            cw,
-            ROW_H,
-        )
+        (px + cx * (cw + 6), py + cy * (ROW_H + 6), cw, ROW_H)
     }
     /// The filter row `i` in the sidebar.
     fn filter_box(&self, i: i32) -> (i32, i32, i32, i32) {
         (6, TOPBAR_H + 18 + i * FILTER_H, SIDEBAR_W - 12, FILTER_H)
     }
-    fn browser_hits(&self) -> i32 {
-        self.browser.as_ref().map_or(0, |b| b.hits.len() as i32)
-    }
-    /// How far the grid can scroll, in pixels.
-    fn browser_max_scroll(&self) -> f64 {
-        let rows = (self.browser_hits() + self.browser_columns() - 1) / self.browser_columns();
-        let content = (rows * (ROW_H + 6) - 6).max(0);
+    /// How many rows fit the column.
+    fn browser_row_count(&self) -> i32 {
         let (_, _, _, ph) = self.browser_area();
-        f64::from((content - ph).max(0))
-    }
-    fn set_browser_scroll(&mut self, to: f64) {
-        self.browser_scroll = to.clamp(0.0, self.browser_max_scroll());
-    }
-    /// The grid's scroll bar: the track beside it, and the thumb in it.
-    fn browser_bar(&self) -> ((i32, i32, i32, i32), (i32, i32, i32, i32)) {
-        let (px, py, pw, ph) = self.browser_area();
-        let track = (px + pw + 4, py, BAR_W, ph);
-        let max = self.browser_max_scroll();
-        let content = ph as f64 + max;
-        let thumb_h = ((f64::from(ph) * f64::from(ph) / content) as i32).clamp(18, ph);
-        let travel = f64::from(ph - thumb_h);
-        let thumb_y = if max > 0.0 {
-            py + (travel * self.browser_scroll / max) as i32
-        } else {
-            py
-        };
-        (track, (track.0, thumb_y, BAR_W, thumb_h))
-    }
-    /// The page row's buttons: previous, next, and the label's centre.
-    fn pager(&self) -> ((i32, i32), (i32, i32), i32) {
-        let (px, _, pw, _) = self.browser_area();
-        let y = self.height - PAGER_H + 2;
-        let mid = px + pw / 2;
-        ((mid - 90, y), (mid + 60, y), mid)
+        (((ph + 6) / (ROW_H + 6)) * self.browser_columns()).max(0)
     }
     /// Horizon's Add button, and the screen it opens. Nothing is drawn
     /// unless the player turned `packBrowser` on, so the screen's vanilla
     /// parity is untouched by default.
-    fn draw_browser(&self, out: &mut Vec<Draw>, m: &Measure, mouse: (i32, i32)) {
+    fn draw_browser(&self, out: &mut Vec<Draw>, m: &Measure, mouse: (i32, i32), now_ms: i64) {
         if !self.browsing_allowed {
             return;
         }
         let Some(browser) = &self.browser else {
+            let (bx, by) = self.add_button(m);
+            let hover = d::inside(mouse, bx, by, ADD_SIZE, ADD_SIZE);
+            d::button(
+                out,
+                m,
+                &tr("horizon.pack.add"),
+                bx,
+                by,
+                ADD_SIZE,
+                ADD_SIZE,
+                true,
+                hover,
+                now_ms,
+            );
+            if hover {
+                d::tooltip(out, m, &tr("horizon.pack.addInfo"), mouse);
+            }
             return;
         };
         // Modal and opaque: vanilla's own menu background tiled over the
@@ -1307,6 +1171,7 @@ impl PackScreen {
             BACK_H,
             true,
             back_hover,
+            now_ms,
         );
         // The search row: its box and the button that runs it.
         let (qx, qy) = self.browser_search_box();
@@ -1325,6 +1190,7 @@ impl PackScreen {
             18,
             !browser.busy,
             d::inside(mouse, sbx, sby, SEARCH_BTN_W, 18),
+            now_ms,
         );
         // The sidebar's heading and its filters.
         let heading = tr("horizon.pack.filters").with_style(&Style {
@@ -1349,61 +1215,13 @@ impl PackScreen {
             d::string_widget(out, m, &label, fx + 11, fy - 1, 0);
         }
         let (px, py, pw, ph) = self.browser_area();
-        let (prev, next, mid) = self.pager();
-        let enabled = |on: bool| on && !browser.busy;
-        for (at, label, on) in [
-            (prev, "<", enabled(browser.page > 0)),
-            (next, ">", enabled(browser.page < browser.last_page())),
-        ] {
-            d::button(
-                out,
-                m,
-                &Text::literal(label),
-                at.0,
-                at.1,
-                PAGER_BTN_W,
-                BACK_H,
-                on,
-                on && d::inside(mouse, at.0, at.1, PAGER_BTN_W, BACK_H),
-            );
-        }
-        let page = Text::literal(format!(
-            "Page {} of {}",
-            browser.page + 1,
-            browser.last_page() + 1
-        ))
-        .with_color(d::GRAY);
-        let pw_text = m.width(&page);
-        d::string_widget(out, m, &page, mid - pw_text / 2 + 5, prev.1 + 6, 0);
-        if self.browser_max_scroll() > 0.0 {
-            let (track, thumb) = self.browser_bar();
-            d::fill(
-                out,
-                track.0,
-                track.1,
-                track.0 + track.2,
-                track.1 + track.3,
-                SIDEBAR_BG,
-            );
-            let lit = self.browser_bar_held.is_some()
-                || d::inside(mouse, track.0 - 4, track.1, BAR_W + 8, track.3);
-            d::fill(
-                out,
-                thumb.0,
-                thumb.1,
-                thumb.0 + thumb.2,
-                thumb.1 + thumb.3,
-                if lit {
-                    0xFF_8A_93_B0u32 as i32
-                } else {
-                    0xFF_5A_62_7Cu32 as i32
-                },
-            );
-        }
         let message = if browser.busy && browser.installing.is_none() {
             Some(tr("horizon.pack.addWorking"))
         } else if let Some(status) = &browser.status {
-            Some(Text::literal(status.clone()))
+            Some(Text::translate(
+                "horizon.pack.addFailed",
+                &[Text::literal(status.clone())],
+            ))
         } else if browser.hits.is_empty() {
             Some(tr("horizon.pack.addNone"))
         } else {
@@ -1420,19 +1238,17 @@ impl PackScreen {
             d::label(out, &lines, px + 4, py + 20, pw - 8, true);
             return;
         }
-        out.push(Draw::Scissor {
-            x0: px,
-            y0: py,
-            x1: px + pw,
-            y1: py + ph,
-        });
-        for (index, hit) in browser.hits.iter().enumerate() {
-            let i = index as i32;
-            let (cx, cy, cw, ch) = self.card_box(i);
-            if cy + ch <= py || cy >= py + ph {
-                continue;
+        let fits = self.browser_row_count();
+        for (i, hit) in browser.hits.iter().enumerate() {
+            let i = i as i32;
+            if i >= fits {
+                break;
             }
-            let over = d::inside(mouse, cx, cy, cw, ch) && d::inside(mouse, px, py, pw, ph);
+            let (cx, cy, cw, ch) = self.card_box(i);
+            if cy + ch > py + ph {
+                break;
+            }
+            let over = d::inside(mouse, cx, cy, cw, ch);
             d::fill(
                 out,
                 cx,
@@ -1502,8 +1318,8 @@ impl PackScreen {
                 false,
             );
             let (ix, iy) = self.install_button(i);
-            let done = browser.known.contains(&hit.id) || browser.installed.contains(&index);
-            let running = browser.installing == Some(index);
+            let done = browser.installed.contains(&(i as usize));
+            let running = browser.installing == Some(i as usize);
             let label = if done {
                 tr("horizon.pack.installed")
             } else if running {
@@ -1540,7 +1356,48 @@ impl PackScreen {
                 0,
             );
         }
-        out.push(Draw::NoScissor);
+    }
+    /// The Add button, just right of the search box.
+    fn add_button(&self, m: &Measure) -> (i32, i32) {
+        let (sx, sy) = self.header(m)[2];
+        // The search box is 15 tall: centre the taller button on it.
+        (sx + 204, sy - (ADD_SIZE - 15) / 2)
+    }
+    /// The footer's two buttons, "Open Pack Folder" and "Done", over their
+    /// labels; a label wider than its button scrolls with the clock.
+    fn draw_footer(
+        &self,
+        out: &mut Vec<Draw>,
+        m: &Measure,
+        mouse: (i32, i32),
+        now_ms: i64,
+        labels: [&Text; 2],
+    ) {
+        for (i, ((bx, by), label)) in self.footer().into_iter().zip(labels).enumerate() {
+            let hover = d::inside(mouse, bx, by, 150, 20);
+            // The cursor follows the mouse; the highlight also keyboard focus.
+            crate::widgets::widget_cursor(hover, true);
+            d::button(
+                out,
+                m,
+                label,
+                bx,
+                by,
+                150,
+                20,
+                true,
+                hover || self.focus == Focus::Button(i),
+                now_ms,
+            );
+            if i == 0 {
+                crate::widgets::last_narratable(|n| {
+                    n.hint = Some(tr("pack.folderInfo").plain());
+                });
+            }
+            if i == 0 && hover {
+                d::tooltip(out, m, &tr("pack.folderInfo"), mouse);
+            }
+        }
     }
     fn draw_list(&self, out: &mut Vec<Draw>, m: &Measure, side: usize, mouse: (i32, i32)) {
         let l = &self.lists[side];
@@ -1799,7 +1656,7 @@ mod icon_tests {
             pack("file/Iconless", None),
         ];
         let screen = PackScreen::new(&m, tr("resourcePack.title"), 480, 320, false, packs, &[]);
-        let mut draws = screen.draw(&m, (0, 0), 0);
+        let mut draws = screen.draw(&m, (0, 0), 0, 0);
         let mut patches = Vec::new();
         screen.bind_icons(&mut draws, &atlas, &mut patches);
         let icons: Vec<&str> = draws
@@ -1896,13 +1753,10 @@ mod click_sound_tests {
             &[],
         );
         screen.browsing_allowed = true;
-        // The Catalog button opens the browser.
-        let (ax, ay, _, _) = screen.footer_buttons()[1];
+        // The Add button opens the browser.
+        let (ax, ay) = screen.add_button(&m);
         screen.click(&m, f64::from(ax) + 2.0, f64::from(ay) + 2.0);
-        assert!(
-            screen.browser.is_some(),
-            "the Catalog button opens the browser"
-        );
+        assert!(screen.browser.is_some(), "the Add button opens the browser");
         // Typing reaches the browser's own box, not the pack filter.
         screen.type_text(&m, "blue");
         assert_eq!(screen.browser_search.value, "blue");
@@ -1919,139 +1773,6 @@ mod click_sound_tests {
         // clicks.
         let (qx, _) = screen.browser_search_box();
         assert!(sx >= qx + BROWSER_SEARCH_W, "{sx} overlaps the box at {qx}");
-    }
-
-    #[test]
-    fn the_catalog_sits_between_open_folder_and_done_and_the_browser_scrolls_by_row() {
-        let atlas =
-            crate::hud::HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets"))
-                .unwrap();
-        let m = Measure(&atlas.font);
-        let mut screen = PackScreen::new(
-            &m,
-            tr("resourcePack.title"),
-            480,
-            320,
-            false,
-            Vec::new(),
-            &[],
-        );
-        assert_eq!(screen.footer_buttons().len(), 2);
-        screen.browsing_allowed = true;
-        let kinds: Vec<Footer> = screen.footer_buttons().iter().map(|b| b.3).collect();
-        assert_eq!(kinds, [Footer::Folder, Footer::Catalog, Footer::Done]);
-        let buttons = screen.footer_buttons();
-        for pair in buttons.windows(2) {
-            assert!(pair[0].0 + pair[0].2 <= pair[1].0, "footer buttons overlap");
-        }
-        screen.open_browser(&m);
-        let hit = |i: usize| crate::pack_browser::Hit {
-            id: format!("p{i}"),
-            title: format!("Pack {i}"),
-            author: String::new(),
-            description: String::new(),
-            downloads: 0,
-            icon_url: String::new(),
-        };
-        {
-            let b = screen.browser.as_mut().unwrap();
-            b.hits = (0..20).map(hit).collect();
-            b.total = 90;
-            b.busy = false;
-        }
-        let max = screen.browser_max_scroll();
-        assert!(max > 0.0, "twenty cards do not fit one screen");
-        let before = screen.lists[0].scroll;
-        screen.scroll(240.0, 160.0, -1.0);
-        assert!(screen.browser_scroll > 0.0 && screen.browser_scroll < f64::from(ROW_H));
-        assert_eq!(
-            screen.lists[0].scroll, before,
-            "the pack lists behind must not scroll"
-        );
-        for _ in 0..500 {
-            screen.scroll(240.0, 160.0, -1.0);
-        }
-        assert_eq!(screen.browser_scroll, max, "the last card can be reached");
-        let (last_card, _, _, _) = screen.card_box(19);
-        let (_, py, _, ph) = screen.browser_area();
-        assert!(last_card >= 0 && screen.card_box(19).1 + ROW_H <= py + ph + 1);
-        for _ in 0..1000 {
-            screen.scroll(240.0, 160.0, 1.0);
-        }
-        assert_eq!(screen.browser_scroll, 0.0);
-    }
-
-    #[test]
-    fn the_scroll_bar_can_be_dragged_and_the_page_buttons_turn_pages() {
-        let atlas =
-            crate::hud::HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets"))
-                .unwrap();
-        let m = Measure(&atlas.font);
-        let mut screen = PackScreen::new(
-            &m,
-            tr("resourcePack.title"),
-            480,
-            320,
-            false,
-            Vec::new(),
-            &[],
-        );
-        screen.browsing_allowed = true;
-        screen.open_browser(&m);
-        {
-            let b = screen.browser.as_mut().unwrap();
-            b.hits = (0..20)
-                .map(|i| crate::pack_browser::Hit {
-                    id: format!("p{i}"),
-                    title: String::new(),
-                    author: String::new(),
-                    description: String::new(),
-                    downloads: 0,
-                    icon_url: String::new(),
-                })
-                .collect();
-            b.total = 90;
-            b.busy = false;
-        }
-        let (track, thumb) = screen.browser_bar();
-        let x = f64::from(track.0 + 2);
-        screen.click(&m, x, f64::from(thumb.1 + 2));
-        assert!(screen.browser_bar_held.is_some());
-        screen.drag(f64::from(track.1 + track.3));
-        assert_eq!(
-            screen.browser_scroll,
-            screen.browser_max_scroll(),
-            "dragged to the end"
-        );
-        screen.release();
-        assert!(screen.browser_bar_held.is_none());
-        screen.click(&m, x, f64::from(track.1 + 1));
-        screen.release();
-        assert!(
-            screen.browser_scroll < screen.browser_max_scroll(),
-            "a click on the track jumps"
-        );
-
-        let (_, next, _) = screen.pager();
-        screen.click(&m, f64::from(next.0 + 2), f64::from(next.1 + 2));
-        assert_eq!(screen.browser.as_ref().unwrap().page, 1);
-        assert_eq!(screen.browser_scroll, 0.0, "a new page starts at the top");
-        let (prev, _, _) = screen.pager();
-        screen.browser.as_mut().unwrap().busy = false;
-        screen.click(&m, f64::from(prev.0 + 2), f64::from(prev.1 + 2));
-        assert_eq!(screen.browser.as_ref().unwrap().page, 0);
-    }
-
-    #[test]
-    fn a_jpeg_icon_is_decoded_like_a_png_one() {
-        let mut jpeg = Vec::new();
-        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 100)
-            .encode(&[200u8; 8 * 8 * 3], 8, 8, image::ExtendedColorType::Rgb8)
-            .unwrap();
-        let icon = load_icon(&jpeg).expect("a JPEG icon loads");
-        assert_eq!(icon.len(), (PACK_ICON_SIZE * PACK_ICON_SIZE * 4) as usize);
-        assert!(icon[0].abs_diff(200) < 6 && icon[3] == 255);
-        assert!(load_icon(b"not an image").is_none());
     }
 
     #[test]
@@ -2103,5 +1824,133 @@ mod click_sound_tests {
             Action::None
         );
         assert!(!screen.confirming());
+    }
+}
+
+#[cfg(test)]
+mod footer_label_tests {
+    use super::*;
+    use crate::lang::{self, Language};
+
+    /// The footer drawn with these labels (no global language involved) and
+    /// the footer buttons' positions.
+    fn footer(
+        atlas: &HudAtlas,
+        open_folder: &Text,
+        done: &Text,
+        now_ms: i64,
+    ) -> (Vec<Draw>, [(i32, i32); 2]) {
+        let m = Measure(&atlas.font);
+        let screen = PackScreen::new(&m, Text::literal("Packs"), 480, 320, false, Vec::new(), &[]);
+        let mut out = Vec::new();
+        screen.draw_footer(&mut out, &m, (0, 0), now_ms, [open_folder, done]);
+        (out, screen.footer())
+    }
+    /// Every label drawn in `[bx + 2, bx + 148] x [by, by + 20]` of its button:
+    /// the scissor of a scrolling one is that box, and the text sits between
+    /// the scissor's calls.
+    fn assert_labels_stay_in_their_buttons(draws: &[Draw], buttons: &[(i32, i32)]) -> usize {
+        let mut scissors = 0;
+        let mut open = None;
+        let mut button = 0;
+        for d in draws {
+            match d {
+                Draw::Sprite { x, y, .. } => {
+                    button = buttons.iter().position(|b| *b == (*x, *y)).unwrap();
+                }
+                Draw::Scissor { x0, y0, x1, y1 } => {
+                    let (bx, by) = buttons[button];
+                    assert_eq!([*x0, *y0, *x1, *y1], [bx + 2, by, bx + 148, by + 20]);
+                    assert!(open.replace(()).is_none());
+                    scissors += 1;
+                }
+                Draw::NoScissor => assert!(open.take().is_some()),
+                _ => {}
+            }
+        }
+        assert!(open.is_none());
+        scissors
+    }
+
+    /// The Resource Packs footer with a label wider than its 150 px button
+    /// does not panic and scrolls; the short "Done" keeps its centre.
+    #[test]
+    fn a_footer_label_wider_than_its_button_scrolls() {
+        let atlas =
+            crate::hud::HudAtlas::build(std::path::Path::new("/nonexistent/horizon-test-assets"))
+                .unwrap();
+        let m = Measure(&atlas.font);
+        let wide = Text::literal("Otvori papku s paketami resursov, i jos nesto");
+        assert!(m.width(&wide) > 146);
+        let (draws, buttons) = footer(&atlas, &wide, &Text::literal("Done"), 0);
+        assert_eq!(assert_labels_stay_in_their_buttons(&draws, &buttons), 1);
+        // The clock moves it.
+        let x = |draws: &[Draw]| {
+            draws
+                .iter()
+                .find_map(|d| match d {
+                    Draw::Text { x, .. } => Some(*x),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let (later, _) = footer(&atlas, &wide, &Text::literal("Done"), 2000);
+        assert_ne!(x(&draws), x(&later));
+        // Both too wide: both scroll.
+        let (draws, buttons) = footer(&atlas, &wide, &wide, 0);
+        assert_eq!(assert_labels_stay_in_their_buttons(&draws, &buttons), 2);
+    }
+
+    /// The real language files: the Resource Packs footer in each of the 143
+    /// languages draws without a panic, and in the ones whose "Open Pack
+    /// Folder" is wider than the button (Afrikaans and Macedonian among them,
+    /// the crash of #6129) it scrolls. A local `Language` per file: the global
+    /// language stays as it was.
+    #[test]
+    #[ignore = "requires prepared language data in HORIZON_TEST_RESOURCES or .local/horizon-client/26.3"]
+    fn the_footer_draws_in_every_language_file() {
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../.local/horizon-client/26.3")
+            });
+        let atlas = crate::hud::HudAtlas::build(&root).unwrap();
+        let m = Measure(&atlas.font);
+        let before = lang::code();
+        let mut codes: Vec<String> = std::fs::read_dir(root.join("assets/minecraft/lang"))
+            .unwrap()
+            .filter_map(|e| {
+                let name = e.ok()?.file_name().into_string().ok()?;
+                name.strip_suffix(".json").map(str::to_owned)
+            })
+            .collect();
+        codes.sort();
+        assert!(codes.len() >= 143, "{}", codes.len());
+        let mut scrolling = Vec::new();
+        for code in &codes {
+            let language = Language::load(&[&root], code);
+            let label = |key| Text::literal(language.get(key).unwrap_or(key));
+            let (open_folder, done) = (label("pack.openFolder"), label("gui.done"));
+            for now_ms in [0, 700, 1300, 5000] {
+                let (draws, buttons) = footer(&atlas, &open_folder, &done, now_ms);
+                let n = assert_labels_stay_in_their_buttons(&draws, &buttons);
+                assert_eq!(
+                    n,
+                    [&open_folder, &done]
+                        .iter()
+                        .filter(|t| m.width(t) > 146)
+                        .count(),
+                    "{code}"
+                );
+                if now_ms == 0 && n > 0 {
+                    scrolling.push(code.as_str());
+                }
+            }
+        }
+        for code in ["af_za", "mk_mk"] {
+            assert!(scrolling.contains(&code), "{code} not in {scrolling:?}");
+        }
+        assert_eq!(lang::code(), before, "the global language was left alone");
     }
 }
