@@ -110,7 +110,7 @@ impl ApplicationHandler for Missing {
                     window.clone(),
                     false,
                     Some(&self.gui.atlas),
-                    Some(self.gui.panorama.as_ref()),
+                    Some(&self.gui.panorama),
                     None,
                     self.api,
                 )?;

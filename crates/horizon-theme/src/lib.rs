@@ -13,6 +13,7 @@ use std::time::Duration;
 pub const FONT: &str = "Bricolage Grotesque";
 pub const GOOGLE_SANS_FONT: &str = "Google Sans";
 pub const MONO: &str = "Geist Mono";
+pub mod glass;
 pub mod night;
 
 /// The launcher's and the website's display face (headings, navigation, buttons, badges only):
@@ -566,6 +567,8 @@ pub fn css() -> String {
         );
         // The launcher's night look, for pages that wear it.
         s.push_str(&if p.dark { night::NIGHT } else { night::DAWN }.css());
+        // The launcher's glass look, the same in both appearances.
+        s.push_str(&glass::Glass::default_look().css());
     };
     s.push_str(
         "/* Generated from crates/horizon-theme by `cargo run -p xtask -- tokens`; do not edit.\n   \

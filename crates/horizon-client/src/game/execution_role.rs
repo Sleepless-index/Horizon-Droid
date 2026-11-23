@@ -1,5 +1,6 @@
 //! A Game's execution role is fixed at construction. Connecting or disconnecting
-//! changes `remote`, not this role. A client may simulate a world in-frame.
+//! changes `remote`, not this role. A client never simulates a world itself: single
+//! player's runs on its integrated server thread.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ExecutionRole {

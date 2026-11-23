@@ -20,6 +20,8 @@ struct Mock {
     no_profile: bool,
     /// What `launcher/login` answers instead of a token (an older service, an outage).
     launcher_login_refused: Option<u16>,
+    /// Mojang's session server refuses `join` (the token was revoked since it was renewed).
+    join_refused: bool,
     /// Every request: method, path and body.
     log: Vec<(String, String, String)>,
 }
@@ -157,6 +159,18 @@ fn route(mock: &mut Mock, method: &str, path: &str, auth: &str, body: &str) -> (
                           {"id": "c2", "state": "ACTIVE", "url": "http://textures.minecraft.net/texture/cape2", "alias": "Vanilla"}],
             }),
         ),
+        ("POST", "/session/session/minecraft/join") => {
+            let v: Value = serde_json::from_str(body).unwrap();
+            if mock.join_refused {
+                return reply(403, json!({"error": "ForbiddenOperationException"}));
+            }
+            assert_eq!(v["accessToken"], "mc-token");
+            assert_eq!(
+                (v["selectedProfile"].as_str(), v["serverId"].as_str()),
+                (Some(UUID), Some("svc-42"))
+            );
+            (204, String::new())
+        }
         _ => reply(404, json!({"error": "NotFound"})),
     }
 }

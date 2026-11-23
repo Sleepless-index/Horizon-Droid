@@ -11,6 +11,7 @@ use horizon_core::geometry::{Direction, ShapeOp, VoxelShape};
 use std::{
     collections::{BTreeMap, HashMap},
     io,
+    sync::Arc,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,10 +41,12 @@ struct State {
 }
 /// Prepared face geometry and a bounded cache shared across state pairs. Geometry
 /// is deduplicated by the imported immutable shape, not copied for every state.
+/// A clone (each meshing worker keeps one, with its own cache) shares the states
+/// and faces, which never change once made.
 #[derive(Clone)]
 pub struct FaceVisibility {
-    states: Vec<State>,
-    faces: Vec<VoxelShape>,
+    states: Arc<[State]>,
+    faces: Arc<[VoxelShape]>,
     cache: HashMap<(u32, u32), bool>,
 }
 impl FaceVisibility {
@@ -51,8 +54,8 @@ impl FaceVisibility {
     /// answers "unknown render state".
     pub fn empty() -> Self {
         Self {
-            states: Vec::new(),
-            faces: vec![VoxelShape::empty(), VoxelShape::block()],
+            states: Arc::new([]),
+            faces: Arc::new([VoxelShape::empty(), VoxelShape::block()]),
             cache: HashMap::new(),
         }
     }
@@ -146,15 +149,22 @@ impl FaceVisibility {
             });
         }
         Ok(Self {
-            states,
-            faces,
+            states: states.into(),
+            faces: faces.into(),
             cache: HashMap::new(),
         })
     }
     /// Switches `state` between occluding its neighbours and not, as `BlockState.canOcclude` and
     /// `initCache` do: the faces come back from its shape, or are all empty.
     pub fn set_can_occlude(&mut self, state: BlockStateId, can_occlude: bool) -> bool {
-        let Some(entry) = self.states.get_mut(state.0 as usize) else {
+        if state.0 as usize >= self.states.len() {
+            return false;
+        }
+        if Arc::get_mut(&mut self.states).is_none() {
+            self.states = self.states.to_vec().into();
+        }
+        let Some(entry) = Arc::get_mut(&mut self.states).and_then(|s| s.get_mut(state.0 as usize))
+        else {
             return false;
         };
         entry.definition.can_occlude = can_occlude;

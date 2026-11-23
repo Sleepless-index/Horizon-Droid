@@ -1,11 +1,12 @@
 //! Horizon: native Rust client for Minecraft Java Edition 26.3 gameplay.
 #![forbid(unsafe_code)]
-mod game;
 
-use horizon_client::{crash, logging};
-
+#[cfg(not(any(feature = "system-allocator", feature = "alloc-census")))]
 #[global_allocator]
-static ALLOCATOR: horizon_threads::Allocator = horizon_threads::Allocator;
+static ALLOCATOR: horizon_threads::Allocator = horizon_threads::ALLOCATOR;
+#[cfg(all(feature = "alloc-census", not(feature = "system-allocator")))]
+#[global_allocator]
+static ALLOCATOR: horizon_threads::CensusAllocator = horizon_threads::CensusAllocator;
 
 /// The mod API level this game serves, kept in the program for the launcher
 /// to read without running it (`horizon_mods::api_level::MARK`). `main`
@@ -15,6 +16,7 @@ static MOD_API_LEVEL: [u8; 27] = horizon_mods::api_level::MARK;
 fn main() {
     horizon_client::mod_api::install_runtime_hooks(Default::default());
     horizon_threads::configure_allocator();
+    horizon_client::spans::startup::init(std::time::Instant::now());
     std::hint::black_box(&MOD_API_LEVEL);
     horizon_client::telemetry::mark_start();
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -55,6 +57,7 @@ fn main() {
         // The log's first line names the build, so a bug report that carries the log says which one it was.
         log::info!("Horizon {}", crash::version());
         crash::install(home.clone(), side);
+        horizon_client::ram_limit::start(&home, side);
     }
     raise_open_file_limit();
     if let Err(error) = game::run() {

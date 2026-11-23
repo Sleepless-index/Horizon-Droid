@@ -384,6 +384,7 @@ impl Game<'_> {
     /// the server's recipes arrived, or a new session began.
     pub(super) fn forget_book(&mut self) {
         self.recipe_ui.book = None;
+        self.recipe_tables.categories = None;
     }
     fn ensure_book(&mut self) {
         if self.recipe_ui.book.is_none() {
@@ -727,7 +728,9 @@ impl Game<'_> {
         if let Some(search) = self.recipe_ui.search.as_mut() {
             search.x = xo + 25.0;
             search.y = yo + 13.0;
-            let magnifier = inside(cursor, xo + 8.0, yo + 13.0, 17.0, 14.0);
+            // RecipeBookComponent's magnifierIconPlacement: from the book's
+            // left edge plus eight to the search box's own left edge.
+            let magnifier = inside(cursor, xo + 8.0, yo + 13.0, search.x - xo, 14.0);
             if magnifier || inside(cursor, search.x, search.y, search.width, search.height) {
                 self.recipe_ui.search_drag = true;
                 search.focused = true;

@@ -346,6 +346,21 @@ impl StartupMenu {
             }
             return Action::None;
         }
+        // `TabNavigationBar.keyPressed` comes before the open tab's own
+        // widgets: Ctrl plus a digit or Tab picks a tab instead of reaching
+        // them.
+        let ctrl = if cfg!(target_os = "macos") {
+            self.modifiers.super_key()
+        } else {
+            self.modifiers.control_key()
+        };
+        if let PhysicalKey::Code(key) = event.physical_key
+            && title
+                .tab_bar_key(key, ctrl, self.modifiers.shift_key())
+                .is_some()
+        {
+            return Action::None;
+        }
         match event.physical_key {
             PhysicalKey::Code(KeyCode::Escape) => title.escape(),
             PhysicalKey::Code(KeyCode::F5) => title.refresh_servers(),
@@ -380,7 +395,7 @@ impl StartupMenu {
                 | KeyCode::ArrowUp
                 | KeyCode::ArrowDown),
             ) => {
-                title.arrow_key(key, viewport);
+                title.arrow_key(key, viewport, self.modifiers.shift_key());
             }
             _ => {
                 let cleared = !title.has_caret_field()
@@ -2316,6 +2331,22 @@ impl Loading {
                     }
                 }
             }
+            // AbstractSelectionList.mouseClicked: a world row takes a click
+            // of any button, so the middle one selects it without joining.
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Middle,
+                ..
+            } => {
+                let batch = HudBatch::new(self.menu_size());
+                if let Some(title) = &mut self.menu.title {
+                    title.select_world_at(
+                        self.menu.cursor.0,
+                        self.menu.cursor.1,
+                        (batch.width, batch.height),
+                    );
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } => {
                 let raw = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
@@ -2468,6 +2499,7 @@ impl Loading {
                 batch,
                 self.menu.cursor,
                 self.settings.file.bool("hideSplashTexts"),
+                self.settings.file.bool("hideServerAddress"),
             );
         }
         if let Some(focus) = self.menu.key_focus
@@ -2663,6 +2695,8 @@ mod tests {
             delivered: false,
             handle: None,
             shown: false,
+            ui_at: None,
+            title_drawn: false,
             menu: StartupMenu::default(),
             error: None,
         }

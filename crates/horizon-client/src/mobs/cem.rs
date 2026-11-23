@@ -1,18 +1,32 @@
 //! OptiFine custom entity models over Horizon's mob model layers: `optifine/cem/<name>.jem` (or
 //! `cem/<name>/<name>.jem`, and Entity Model Features' `emf/cem/`, which wins) maps to one layer
 //! (`zombie.jem` to `zombie#main`, `sheep_wool.jem` to `sheep#wool`), its parts to the layer's
-//! vanilla parts, and its boxes join or replace theirs. A baby layer without its own model
-//! takes the adult's (OptiFine's fallbacks, and Entity Model Features' for horses too).
+//! vanilla parts, and its boxes join or replace theirs. A layer without its own model takes the
+//! one it falls back to: a baby's adult (OptiFine's fallbacks, and Entity Model Features' for
+//! horses too), and the few of [`FALLBACKS`], following their chains (`cat_baby_collar` to
+//! `cat_collar` to `cat`).
 //!
 //! Built when the packs load; a mob's draw only swaps the layer's part tree. Without CEM files
-//! nothing is built and every model stays vanilla's.
+//! nothing is built and every model stays vanilla's, and a file no layer uses isn't parsed.
 //!
 //! The seam with random entity textures (ETF): a `.jem`'s own `texture` replaces the layer's
-//! vanilla texture name, and the texture selection then works on that name as on vanilla's.
+//! vanilla texture name, and the random texture lookup then gets that name. Variants without
+//! rules (`green2.png` beside `green.png`) follow it; a `.properties` with rules for it is not
+//! matched yet, because the random-texture picks are made for the vanilla names. That half
+//! belongs with random textures. The `.jem` texture paints the layer the file is for, not the overlays drawn on that layer's model (a wolf's
+//! collar, a spider's eyes, the cracks on a wolf's armour): those keep their textures over the
+//! new geometry.
 
-use super::{MobType, Part, Polygon};
-use horizon_optifine::cem::model::{Bone, EntityModel, MAX_BYTES, parse_jem};
-use std::{collections::HashMap, fs, path::Path, sync::Arc};
+use super::{Mob, MobType, Part, Polygon, Species};
+use horizon_optifine::cem::{
+    files::{atlas_name, jem_files, load_jem},
+    model::{Bone, EntityModel, MAX_BYTES},
+};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    path::Path,
+    sync::Arc,
+};
 
 /// The CEM models of the enabled packs, by model layer (`zombie#main`).
 #[derive(Default)]
@@ -28,66 +42,105 @@ pub struct CemLayer {
     /// The atlas name of the `.jem`'s texture (`entity/zombie/zombie_green`), drawn instead of
     /// the layer's vanilla texture.
     pub texture: Option<String>,
+    /// The `attachments` the pack's bones declare, by the bone's `cem#<n>` name: the item
+    /// anchors a renderer looks up (`right_handheld_item`, `left_handheld_item`, `fox_item`).
+    pub anchors: Vec<(String, String, [f32; 3])>,
 }
+
+/// How many fallbacks a chain follows (`cat_baby_collar`, `cat_collar`, `cat` takes two).
+const FALLBACK_STEPS: usize = 3;
 
 impl CemModels {
     /// The `.jem` files under `root` applied to the layers of `types`.
     pub fn load(root: &Path, types: &HashMap<String, Arc<MobType>>) -> Self {
-        let vanilla: HashMap<&str, &Arc<Part>> = types
-            .values()
-            .flat_map(|t| t.layers.iter().map(|(k, v)| (k.as_str(), v)))
-            .collect();
-        Self::over(root, &vanilla)
-    }
-
-    /// The `.jem` files under `root` applied to the `vanilla` layers.
-    fn over(root: &Path, vanilla: &HashMap<&str, &Arc<Part>>) -> Self {
         let files = jem_files(root);
         if files.is_empty() {
+            set_rule_species(Vec::new());
             return Self::default();
         }
-        let mut read = |path: &str| read_small(&root.join(path));
-        let mut layers = HashMap::new();
-        // A baby layer without its own file takes the adult's: those go after every own file.
-        let mut fallbacks = Vec::new();
-        for (name, path) in &files {
-            let Some(text) = read_small(&root.join(path)) else {
-                log::warn!(
-                    "Horizon: custom entity model {path}: unreadable or over {MAX_BYTES} bytes"
-                );
-                continue;
-            };
-            let jem = match parse_jem(path, &text, &mut read) {
-                Ok(jem) => jem,
-                Err(e) => {
-                    log::warn!("Horizon: custom entity model {e}");
-                    continue;
-                }
-            };
-            for warning in &jem.warnings {
-                log::warn!("Horizon: custom entity model {warning}");
-            }
-            let jem = Arc::new(jem);
+        let (models, standing) = Self::from_files(root, &files, &vanilla_layers(types));
+        set_rule_species(standing);
+        models
+    }
+
+    /// `files` ([`jem_files`]) applied to the `vanilla` layers; also the species ids whose
+    /// rules read the standing block, for the per-tick gate.
+    fn from_files(
+        root: &Path,
+        files: &BTreeMap<String, Vec<String>>,
+        vanilla: &HashMap<&str, (&Arc<Part>, &str)>,
+    ) -> (Self, Vec<String>) {
+        // Every model name a file can shape: the files' own, and the names that fall back to
+        // them, a chain of fallbacks deep.
+        let mut names: BTreeSet<String> = files.keys().cloned().collect();
+        let mut frontier: Vec<String> = names.iter().cloned().collect();
+        for _ in 0..FALLBACK_STEPS {
+            frontier = frontier
+                .iter()
+                .flat_map(|name| fallback_names(name))
+                .filter(|name| names.insert(name.clone()))
+                .collect();
+        }
+        // The files each layer may take, best first: the first that parses wins. Every name of
+        // the layer's own file in name order, then the files its names fall back to, nearest
+        // first. Two names of one layer (`llama_decor` and `trader_llama_decor` are both
+        // `llama#decor`, `skeleton_horse_armor` and `zombie_horse_armor` both
+        // `undead_horse_armor#main`) give it the first's, and the second's if the first is
+        // broken; within one name, EMF's file before OptiFine's.
+        let mut plan: HashMap<String, Vec<(usize, &str)>> = HashMap::new();
+        for name in &names {
             let key = layer_key(name);
-            if let Some(part) = vanilla.get(key.as_str()) {
-                layers.insert(key, CemLayer::build(part, &jem, name));
-            }
-            if !name.contains("_baby") {
-                fallbacks.extend(baby_names(name).map(|baby| (baby, name, jem.clone())));
-            }
-        }
-        for (baby, adult, jem) in fallbacks {
-            if files.contains_key(&baby) {
+            if !vanilla.contains_key(key.as_str()) {
                 continue;
             }
-            let key = layer_key(&baby);
-            if let Some(part) = vanilla.get(key.as_str()) {
-                layers
-                    .entry(key)
-                    .or_insert_with(|| CemLayer::build(part, &jem, adult));
+            let chain = std::iter::successors(Some(name.clone()), |n| falls_back_to(n));
+            let candidates = plan.entry(key).or_default();
+            for (depth, target) in chain.take(FALLBACK_STEPS + 1).enumerate() {
+                if let Some((file, _)) = files.get_key_value(&target) {
+                    candidates.push((depth, file.as_str()));
+                }
             }
         }
-        Self { layers }
+        // Each file parsed once, when a layer first tries it.
+        let mut parsed: HashMap<&str, Option<EntityModel>> = HashMap::new();
+        let mut layers = HashMap::new();
+        // The species whose rules read the standing block, for the per-tick gate.
+        let mut standing_species = Vec::new();
+        for (key, mut candidates) in plan {
+            candidates.sort_by_key(|&(depth, _)| depth);
+            let found = candidates
+                .iter()
+                .flat_map(move |&(_, name)| {
+                    files[name].iter().map(move |path| (name, path.as_str()))
+                })
+                .find(|&(_, path)| {
+                    parsed
+                        .entry(path)
+                        .or_insert_with(|| load_jem(root, path))
+                        .is_some()
+                });
+            let Some((name, path)) = found else {
+                continue;
+            };
+            let Some(Some(jem)) = parsed.get(path) else {
+                continue;
+            };
+            let (part, kind) = vanilla[key.as_str()];
+            // The random-model rules beside the `.jem` (same folder, same name) feed
+            // `rule_index`: a grazing cow's `optifine/cem/cow.properties`.
+            let rules = load_rules(root, path);
+            if rules.iter().any(|r| !r.blocks.is_empty()) {
+                standing_species.push(kind.to_owned());
+            }
+            let mut layer = CemLayer::build(part, jem, name, &rules);
+            // A fallback onto another layer (the cat's collar from `cat`) takes the geometry
+            // only: the layer keeps its own texture.
+            if layer_suffix(&key) != layer_suffix(&layer_key(name)) {
+                layer.texture = None;
+            }
+            layers.insert(key, layer);
+        }
+        (Self { layers }, standing_species)
     }
 
     pub fn layer(&self, key: &str) -> Option<&CemLayer> {
@@ -95,35 +148,201 @@ impl CemModels {
     }
 }
 
+/// Every model layer of `types` by its key, with its owner's id (`minecraft:cow` owns
+/// `cow#main` and `cold_cow#main` alike).
+fn vanilla_layers(types: &HashMap<String, Arc<MobType>>) -> HashMap<&str, (&Arc<Part>, &str)> {
+    types
+        .values()
+        .flat_map(|t| {
+            t.layers
+                .iter()
+                .map(|(k, v)| (k.as_str(), (v, t.id.as_str())))
+        })
+        .collect()
+}
+
+/// Replaces the species whose models carry `blocks.<n>` rules, as the packs change.
+fn set_rule_species(species: Vec<String>) {
+    *RULE_SPECIES
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(species.into_iter().collect());
+}
+
 /// A pack file's text, None when it's missing or larger than a model may read: its size is
 /// checked before anything is read.
 fn read_small(path: &Path) -> Option<String> {
-    let len = fs::metadata(path).ok()?.len();
+    let len = std::fs::metadata(path).ok()?.len();
     if len > MAX_BYTES as u64 {
         return None;
     }
-    fs::read_to_string(path).ok()
+    std::fs::read_to_string(path).ok()
 }
 
-/// Every `.jem` of the CEM folders by model name, `emf/cem` over `optifine/cem`.
-fn jem_files(root: &Path) -> HashMap<String, String> {
-    let mut out = HashMap::new();
-    for base in ["assets/minecraft/optifine/cem", "assets/minecraft/emf/cem"] {
-        let Ok(entries) = fs::read_dir(root.join(base)) else {
+/// One `optifine/cem/<name>.properties` random-model rule: `models.<n>` selects the model
+/// variant (the base file, for Fresh Animations), `blocks.<n>` and `nbt.<n>.<key>` the
+/// conditions, all of which must hold for the rule's number to become the animations'
+/// `rule_index` — the highest matching one wins, 0 the unconditional base, as OptiFine
+/// numbers its rules. Fresh Animations' entries only carry conditions: a grazing cow, a
+/// bee on flowers, a sleeping villager, a snow golem sheared of its pumpkin.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Rule {
+    index: u8,
+    /// `blocks.<n>`: the blocks (short ids) the mob may stand on.
+    blocks: Vec<String>,
+    /// `nbt.<n>.<key>=<value>` against the mob's facts.
+    nbt: Vec<(String, String)>,
+}
+
+/// The species whose model rules read the standing block (`blocks.<n>`): only their mobs
+/// pay the per-tick lookup, and none does without a pack of rules. Keyed like
+/// `MobType::id` (`minecraft:cow`), from the rule-carrying layers' owners.
+static RULE_SPECIES: std::sync::RwLock<Option<std::collections::HashSet<String>>> =
+    std::sync::RwLock::new(None);
+
+/// Whether the species' models carry `blocks.<n>` rules, which read the block under the
+/// mob's feet each tick (the window's remote tick keeps `standing_on` fresh; the server, which
+/// draws nothing, never looks).
+pub fn tracks_standing(id: &str) -> bool {
+    RULE_SPECIES
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .is_some_and(|s| s.contains(id))
+}
+
+/// The random-model rules beside the `.jem` at `path` (`cow.properties` beside `cow.jem`),
+/// which the layer that file shapes reads for its `rule_index`.
+fn load_rules(root: &Path, path: &str) -> Vec<Rule> {
+    path.strip_suffix(".jem")
+        .and_then(|properties| read_small(&root.join(format!("{properties}.properties"))))
+        .map(|text| parse_rules(&text))
+        .unwrap_or_default()
+}
+
+/// Parses one random-model `.properties` into its rules, lowest number first. `models.<n>`
+/// only marks the rule's presence (the base file serves every variant); `textures.<n>` and
+/// the like are the random-texture side's business and leave the rules alone.
+pub(super) fn parse_rules(text: &str) -> Vec<Rule> {
+    fn entry(line: &str) -> Option<(&str, u8, &str, &str)> {
+        let (k, v) = line.split_once('=')?;
+        let mut parts = k.trim().split('.');
+        let kind = parts.next()?;
+        let index = parts.next()?.parse().ok()?;
+        Some((kind, index, parts.next().unwrap_or(""), v.trim()))
+    }
+    let mut rules: Vec<Rule> = Vec::new();
+    for line in text.lines() {
+        let Some((kind, index, rest, value)) = entry(line) else {
             continue;
         };
-        for e in entries.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if let Some(model) = name.strip_suffix(".jem") {
-                out.insert(model.to_owned(), format!("{base}/{name}"));
-            } else if root.join(format!("{base}/{name}/{name}.jem")).is_file() {
-                out.entry(name.clone())
-                    .or_insert_with(|| format!("{base}/{name}/{name}.jem"));
+        let rule = match rules.iter_mut().find(|r| r.index == index) {
+            Some(r) => r,
+            None => {
+                rules.push(Rule {
+                    index,
+                    blocks: Vec::new(),
+                    nbt: Vec::new(),
+                });
+                rules.last_mut().expect("just pushed")
             }
+        };
+        match kind {
+            "blocks" => rule.blocks = value.split_whitespace().map(str::to_owned).collect(),
+            "nbt" => rule.nbt.push((rest.to_owned(), value.to_owned())),
+            _ => {}
         }
     }
-    out
+    rules.sort_by_key(|r| r.index);
+    rules
 }
+
+/// One `nbt.<n>.<key>=<value>` condition against the mob's facts: only the keys Horizon
+/// tracks answer (a villager's `sleeping_pos`, a bee's `HasNectar`, a snow golem's
+/// `Pumpkin`); the rest never matches, as in EMF a rule only matches on data it can read.
+fn nbt_matches(key: &str, value: &str, sleeping: bool, nectar: bool, pumpkin: bool) -> bool {
+    match key {
+        "sleeping_pos" => sleeping && value == "exists:true",
+        "HasNectar" => nectar == (value != "0"),
+        // Vanilla saves the snow golem's pumpkin-removed flag under the tag `Pumpkin`
+        // (`Pumpkin: 1b` is a golem sheared of it), whose string form the pack's `raw:`
+        // compares (ETF's NBTProperty `raw:` instruction).
+        "Pumpkin" => match value {
+            "raw:1b" => pumpkin,
+            "raw:0b" => !pumpkin,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// The rules' `rule_index` for one mob's facts: the highest rule whose conditions match —
+/// the standing block one of `blocks`' entries, every `nbt` condition holding — 0 when
+/// none does. A rule without conditions never matches: a plain model variant, not a state.
+fn matching_rule_index(
+    rules: &[Rule],
+    standing: Option<&str>,
+    sleeping: bool,
+    nectar: bool,
+    pumpkin: bool,
+) -> f32 {
+    rules
+        .iter()
+        .filter(|r| !r.blocks.is_empty() || !r.nbt.is_empty())
+        .filter(|r| {
+            (r.blocks.is_empty()
+                || standing.is_some_and(|s| {
+                    let s = s.strip_prefix("minecraft:").unwrap_or(s);
+                    r.blocks.iter().any(|b| b == s)
+                }))
+                && r.nbt
+                    .iter()
+                    .all(|(k, v)| nbt_matches(k, v, sleeping, nectar, pumpkin))
+        })
+        .map(|r| r.index)
+        .max()
+        .unwrap_or(0) as f32
+}
+
+/// The random-model rules' number for `m`: the block under its feet, whether a villager
+/// sleeps, a bee carries nectar, a snow golem was sheared of its pumpkin — a grazing
+/// Fresh Animations cow reads 2.
+pub fn rule_index(rules: &[Rule], m: &Mob) -> f32 {
+    matching_rule_index(
+        rules,
+        m.standing_on.as_deref(),
+        super::villager::sleeping(m),
+        super::bee::has_nectar(m),
+        m.species() == Species::SnowGolem && m.extra.sheared,
+    )
+}
+
+/// The CEM model names with a layer key of their own; any other name `n` is `n#main`.
+const LAYERS: &[(&str, &str)] = &[
+    ("sheep_wool", "sheep#wool"),
+    ("creeper_charge", "creeper#armor"),
+    ("slime_outer", "slime#outer"),
+    ("drowned_outer", "drowned#outer"),
+    ("stray_outer", "stray#outer"),
+    ("bogged_outer", "bogged#outer"),
+    ("wither_armor", "wither#armor"),
+    ("breeze_wind", "breeze#wind"),
+    // Horizon draws both llamas' decor on one layer, and both undead horses' armour.
+    ("llama_decor", "llama#decor"),
+    ("trader_llama_decor", "llama#decor"),
+    ("cat_collar", "cat#collar"),
+    ("pig_saddle", "pig#saddle"),
+    ("strider_saddle", "strider#saddle"),
+    ("nautilus_saddle", "nautilus#saddle"),
+    ("tropical_fish_a", "tropical_fish_small#main"),
+    ("tropical_fish_b", "tropical_fish_large#main"),
+    ("tropical_fish_pattern_a", "tropical_fish_small#pattern"),
+    ("tropical_fish_pattern_b", "tropical_fish_large#pattern"),
+    ("puffer_fish_big", "pufferfish_big#main"),
+    ("puffer_fish_medium", "pufferfish_medium#main"),
+    ("puffer_fish_small", "pufferfish_small#main"),
+    ("skeleton_horse_armor", "undead_horse_armor#main"),
+    ("zombie_horse_armor", "undead_horse_armor#main"),
+];
 
 /// The model layer a CEM model name reshapes.
 fn layer_key(name: &str) -> String {
@@ -133,31 +352,49 @@ fn layer_key(name: &str) -> String {
         let (model, layer) = adult.split_once('#').unwrap_or((&adult, "main"));
         return format!("{model}_baby#{layer}");
     }
-    match name {
-        "sheep_wool" => "sheep#wool",
-        "creeper_charge" => "creeper#armor",
-        "slime_outer" => "slime#outer",
-        "drowned_outer" => "drowned#outer",
-        "stray_outer" => "stray#outer",
-        "bogged_outer" => "bogged#outer",
-        "wither_armor" => "wither#armor",
-        "breeze_wind" => "breeze#wind",
-        "llama_decor" | "trader_llama_decor" => "llama#decor",
-        "cat_collar" => "cat#collar",
-        "pig_saddle" => "pig#saddle",
-        "strider_saddle" => "strider#saddle",
-        "nautilus_saddle" => "nautilus#saddle",
-        "tropical_fish_a" => "tropical_fish_small#main",
-        "tropical_fish_b" => "tropical_fish_large#main",
-        "tropical_fish_pattern_a" => "tropical_fish_small#pattern",
-        "tropical_fish_pattern_b" => "tropical_fish_large#pattern",
-        "puffer_fish_big" => "pufferfish_big#main",
-        "puffer_fish_medium" => "pufferfish_medium#main",
-        "puffer_fish_small" => "pufferfish_small#main",
-        "zombie_horse_armor" | "skeleton_horse_armor" => "undead_horse_armor#main",
-        _ => return format!("{name}#main"),
+    match LAYERS.iter().find(|(n, _)| *n == name) {
+        Some((_, key)) => (*key).to_owned(),
+        None => format!("{name}#main"),
     }
-    .to_owned()
+}
+
+/// The layer of a model layer key: `wool` of `sheep#wool`.
+fn layer_suffix(key: &str) -> &str {
+    key.split_once('#').map_or(key, |(_, layer)| layer)
+}
+
+/// Models without a file of their own that take another's (OptiFine's and Entity Model
+/// Features' tables), besides the babies: (model, the model it takes).
+const FALLBACKS: &[(&str, &str)] = &[
+    ("cat_collar", "cat"),
+    ("player_slim", "player"),
+    ("salmon_large", "salmon"),
+    ("salmon_small", "salmon"),
+];
+
+/// The model `name` takes when it has no file: [`FALLBACKS`], or a baby's adult (`sheep_wool`
+/// for `sheep_baby_wool`). The baby nautilus has none (OptiFine's and Entity Model Features'
+/// tables).
+fn falls_back_to(name: &str) -> Option<String> {
+    if let Some((_, to)) = FALLBACKS.iter().find(|(from, _)| *from == name) {
+        return Some((*to).to_owned());
+    }
+    (name.contains("_baby") && !name.starts_with("nautilus_baby"))
+        .then(|| name.replacen("_baby", "", 1))
+}
+
+/// The model names that take `name`'s file when they have none ([`falls_back_to`] the other
+/// way): the babies of an adult and [`FALLBACKS`].
+fn fallback_names(name: &str) -> Vec<String> {
+    let mut out: Vec<String> = FALLBACKS
+        .iter()
+        .filter(|(_, to)| *to == name)
+        .map(|(from, _)| (*from).to_owned())
+        .collect();
+    if !name.contains("_baby") {
+        out.extend(baby_names(name).filter(|baby| !baby.starts_with("nautilus_baby")));
+    }
+    out
 }
 
 /// The baby model names that fall back to the adult `name`: `_baby` before any of its
@@ -286,8 +523,13 @@ fn vanilla_part(model: &str, part: &str) -> String {
         ("cod" | "tropical_fish_a" | "tropical_fish_b", "fin_back" | "fin_top") => {
             Some("top_fin".into())
         }
-        (_, "fin_right") if model.starts_with("puffer") => Some("right_blue_fin".into()),
-        (_, "fin_left") if model.starts_with("puffer") => Some("left_blue_fin".into()),
+        // The big and medium pufferfish have blue fins; the small one has plain `right_fin`s
+        // (the fin animation in aquatic.rs).
+        ("puffer_fish_big" | "puffer_fish_medium", "fin_right") => Some("right_blue_fin".into()),
+        ("puffer_fish_big" | "puffer_fish_medium", "fin_left") => Some("left_blue_fin".into()),
+        // RabbitModel's hind feet (rabbit.rs).
+        ("rabbit", "left_foot") => Some("left_hind_foot".into()),
+        ("rabbit", "right_foot") => Some("right_hind_foot".into()),
         (_, "fin_right") => Some("right_fin".into()),
         (_, "fin_left") => Some("left_fin".into()),
         (_, "fin_bottom") => Some("bottom_fin".into()),
@@ -315,29 +557,52 @@ fn vanilla_part(model: &str, part: &str) -> String {
 }
 
 impl CemLayer {
-    /// `vanilla` reshaped by `jem`, the model `name`'s file.
-    fn build(vanilla: &Part, jem: &EntityModel, name: &str) -> Self {
+    /// `vanilla` reshaped by `jem`, the model `name`'s file, whose random-model `rules`
+    /// feed the animations' `rule_index`.
+    fn build(vanilla: &Part, jem: &EntityModel, name: &str, rules: &[Rule]) -> Self {
         let model = name.replace("_baby", "");
         let mut out = vanilla.clone();
         let mut count = 0;
         let mut ids = HashMap::new();
+        let mut anchors = Vec::new();
+        // The vanilla nodes this file names, resolved before any is replaced: what a
+        // replaced node's own children are measured against (an entry can name a part below
+        // one an earlier entry replaced). The same resolution an entry's own target takes,
+        // fallback to the raw name included.
+        let named: std::collections::HashSet<String> = jem
+            .parts
+            .iter()
+            .map(|p| {
+                let target = vanilla_part(&model, &p.part);
+                if super::render::find_part(&out, &target).is_some() {
+                    target
+                } else {
+                    p.part.clone()
+                }
+            })
+            .filter(|target| super::render::find_part(&out, target).is_some())
+            .collect();
         // Each entry's `this` and `part`, and its animations.
         let mut entries = Vec::new();
         for p in &jem.parts {
             let target = vanilla_part(&model, &p.part);
-            let target = if find(&out, &target) {
+            let target = if super::render::find_part(&out, &target).is_some() {
                 target
             } else {
                 p.part.clone()
             };
-            let mut bone = part(&p.bone, &mut count, &mut ids);
-            bone.pose[6..9].fill(p.scale);
+            let bone = part(&p.bone, &mut count, &mut ids, &mut anchors);
             let Some(node) = find_mut(&mut out, &target) else {
                 log::warn!("Horizon: custom entity model {name}: no part {}", p.part);
                 continue;
             };
             if !p.attach {
                 node.polygons.clear();
+                // A replaced node's own children that no entry names are the vanilla
+                // geometry the replacement stands in for: EMF hides them
+                // (`EMFModelPartRoot.addAndSetVariantOfJem`), or a villager's nose draws
+                // beside the pack's own.
+                hide_unnamed(node, &named);
             }
             // A replacing entry stands in for the vanilla part; an attached one is its own.
             let this = if p.attach {
@@ -353,24 +618,14 @@ impl CemLayer {
             vanilla: &|p| vanilla_part(&model, p),
             ids: &ids,
         };
-        let animation = super::cem_anim::compile_animation(name, &names, &entries);
+        let animation = super::cem_anim::compile_animation(name, &names, &entries, rules);
         Self {
             model: Arc::new(out),
             animation,
             texture: jem.texture.as_deref().and_then(atlas_name),
+            anchors,
         }
     }
-}
-
-/// The atlas name of a texture resource path: `assets/minecraft/textures/entity/x.png` is
-/// `entity/x`. Textures outside a `textures/` folder are not in the atlas.
-fn atlas_name(path: &str) -> Option<String> {
-    let rest = path.strip_prefix("assets/minecraft/textures/")?;
-    Some(rest.strip_suffix(".png").unwrap_or(rest).to_owned())
-}
-
-fn find(part: &Part, name: &str) -> bool {
-    part.name == name || part.children.iter().any(|c| find(c, name))
 }
 
 /// The first part named `name`, depth first (`ModelPart.getChild` through the tree).
@@ -381,35 +636,82 @@ fn find_mut<'a>(part: &'a mut Part, name: &str) -> Option<&'a mut Part> {
     part.children.iter_mut().find_map(|c| find_mut(c, name))
 }
 
-/// A baked bone as a model part. Its name, `cem#<n>`, is unique in the model, so its pose is
-/// its own whatever the files call their ids.
-/// `ids` gets the bone's id, if it has one, under that name.
-fn part(bone: &Bone, count: &mut usize, ids: &mut HashMap<String, String>) -> Part {
+/// The vanilla children of a replaced node that no entry names and no model family addresses
+/// lose their polygons (the nodes stay, so a pack can still pose them): they are what the
+/// replacement stands in for. The parts every family can address keep theirs, and so does
+/// everything the file itself went on to name.
+fn hide_unnamed(node: &mut Part, named: &std::collections::HashSet<String>) {
+    const KEEP: &[&str] = &[
+        "head",
+        "hat",
+        "body",
+        "arms",
+        "right_arm",
+        "left_arm",
+        "right_leg",
+        "left_leg",
+        "right_hind_leg",
+        "left_hind_leg",
+        "right_front_leg",
+        "left_front_leg",
+    ];
+    for child in &mut node.children {
+        if named.contains(&child.name)
+            || KEEP.contains(&child.name.as_str())
+            || child.name.starts_with("cem#")
+        {
+            continue;
+        }
+        child.polygons.clear();
+        hide_unnamed(child, named);
+    }
+}
+
+/// A baked bone as a model part, its pose the bone's own translate, rotation and scale —
+/// what a pack's animation write replaces. Its name, `cem#<n>`, is unique in the model, so
+/// its pose is its own whatever the files call their ids.
+/// `ids` gets the bone's id, if it has one, under that name; `anchors` its `attachments`.
+fn part(
+    bone: &Bone,
+    count: &mut usize,
+    ids: &mut HashMap<String, String>,
+    anchors: &mut Vec<(String, String, [f32; 3])>,
+) -> Part {
     let name = format!("cem#{count}");
     *count += 1;
     if let Some(id) = &bone.id {
         ids.insert(name.clone(), id.clone());
     }
+    for (kind, at) in &bone.attachments {
+        anchors.push((name.clone(), kind.clone(), *at));
+    }
     let [x, y, z] = bone.pivot;
     let [rx, ry, rz] = bone.rotation;
+    let [sx, sy, sz] = bone.scale;
     Part {
         name,
-        pose: [x, y, z, rx, ry, rz, 1.0, 1.0, 1.0],
+        pose: [x, y, z, rx, ry, rz, sx, sy, sz],
         polygons: bone
             .quads
             .iter()
             .map(|q| Polygon {
                 normal: q.normal,
                 vertices: q.vertices,
+                cull_back: false,
             })
             .collect(),
-        children: bone.children.iter().map(|c| part(c, count, ids)).collect(),
+        children: bone
+            .children
+            .iter()
+            .map(|c| part(c, count, ids, anchors))
+            .collect(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn plane(name: &str, children: Vec<Part>) -> Part {
         Part {
@@ -417,6 +719,7 @@ mod tests {
             pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
             polygons: vec![Polygon {
                 normal: [0.0, 0.0, -1.0],
+                cull_back: false,
                 vertices: [[0.0; 5]; 4],
             }],
             children,
@@ -468,9 +771,55 @@ mod tests {
             ("strider", "hair_left_top", "left_top_bristle"),
             ("puffer_fish_big", "spikes_front_top", "top_front_fin"),
             ("squid", "tentacle0", "tentacle0"),
+            ("puffer_fish_medium", "fin_left", "left_blue_fin"),
+            ("puffer_fish_small", "fin_right", "right_fin"),
+            ("rabbit", "left_foot", "left_hind_foot"),
         ] {
             assert_eq!(vanilla_part(model, part), vanilla, "{model} {part}");
         }
+    }
+
+    #[test]
+    fn random_model_rules_feed_rule_index() {
+        // Fresh Animations' cow: rule 2 grazes on grass, wheat or hay.
+        let cow = parse_rules("models.2=1\nblocks.2=grass_block wheat hay_block");
+        assert_eq!(
+            matching_rule_index(&cow, Some("minecraft:grass_block"), false, false, false),
+            2.0
+        );
+        assert_eq!(
+            matching_rule_index(&cow, Some("stone"), false, false, false),
+            0.0
+        );
+        assert_eq!(matching_rule_index(&cow, None, false, false, false), 0.0);
+        // A bee on a flower without nectar; a sleeping villager; a sheared snow golem.
+        let bee = parse_rules("models.2=1\nblocks.2=dandelion poppy\nnbt.2.HasNectar=0");
+        assert_eq!(
+            matching_rule_index(&bee, Some("poppy"), false, false, false),
+            2.0
+        );
+        assert_eq!(
+            matching_rule_index(&bee, Some("poppy"), false, true, false),
+            0.0
+        );
+        let villager = parse_rules("models.1=1\nnbt.1.sleeping_pos=exists:true");
+        assert_eq!(
+            matching_rule_index(&villager, None, true, false, false),
+            1.0
+        );
+        assert_eq!(
+            matching_rule_index(&villager, None, false, false, false),
+            0.0
+        );
+        let golem = parse_rules("models.1=1\nnbt.1.Pumpkin=raw:1b");
+        assert_eq!(matching_rule_index(&golem, None, false, false, true), 1.0);
+        assert_eq!(matching_rule_index(&golem, None, false, false, false), 0.0);
+        // A rule without conditions is a plain variant, never a state.
+        let plain = parse_rules("models.3=1");
+        assert_eq!(
+            matching_rule_index(&plain, Some("grass_block"), true, true, true),
+            0.0
+        );
     }
 
     #[test]
@@ -503,14 +852,14 @@ mod tests {
             vec![plane("head", vec![plane("hat", vec![])])],
         ));
         let cow = Arc::new(plane("root", vec![plane("right_hind_leg", vec![])]));
-        let vanilla: HashMap<&str, &Arc<Part>> = [
-            ("zombie#main", &zombie),
-            ("zombie_baby#main", &zombie),
-            ("cow#main", &cow),
+        let vanilla: HashMap<&str, (&Arc<Part>, &str)> = [
+            ("zombie#main", (&zombie, "minecraft:zombie")),
+            ("zombie_baby#main", (&zombie, "minecraft:zombie")),
+            ("cow#main", (&cow, "minecraft:cow")),
         ]
         .into_iter()
         .collect();
-        let models = CemModels::over(&root, &vanilla);
+        let (models, _) = CemModels::from_files(&root, &jem_files(&root), &vanilla);
         fs::remove_dir_all(&root).unwrap();
 
         let adult = models.layer("zombie#main").unwrap();
@@ -529,5 +878,488 @@ mod tests {
         let leg = get(&models.layer("cow#main").unwrap().model, "right_hind_leg");
         assert_eq!((leg.polygons.len(), leg.children.len()), (0, 1));
         assert!(models.layer("sheep#main").is_none());
+    }
+
+    const BOX: &str = r#""boxes": [{"coordinates": [0, 0, 0, 1, 1, 1], "textureOffset": [0, 0]}]"#;
+
+    /// A `.jem` with one entry on `part`, attached or replacing it.
+    fn jem(part: &str, attach: bool) -> String {
+        format!(r#"{{"models": [{{"part": "{part}", "attach": {attach}, {BOX}}}]}}"#)
+    }
+
+    /// A fresh pack folder for the test `test` holding `files` (paths under `assets/minecraft/`).
+    fn pack(test: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("horizon-cem-{test}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for (path, text) in files {
+            let path = root.join("assets/minecraft").join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+        }
+        root
+    }
+
+    /// The models of the pack `files` over the `layers`, the same tree for each.
+    fn models(test: &str, files: &[(&str, &str)], layers: &[&str], tree: &Part) -> CemModels {
+        let root = pack(test, files);
+        let tree = Arc::new(tree.clone());
+        let vanilla: HashMap<&str, (&Arc<Part>, &str)> = layers
+            .iter()
+            .map(|k| (*k, (&tree, "minecraft:test")))
+            .collect();
+        let (models, _) = CemModels::from_files(&root, &jem_files(&root), &vanilla);
+        fs::remove_dir_all(&root).unwrap();
+        models
+    }
+
+    /// Whether the layer `key`'s part `name` was replaced (lost its own face) or had a box
+    /// attached (kept it); None without the layer. Either way the box joins as a child.
+    fn attached(models: &CemModels, key: &str, name: &str) -> Option<bool> {
+        let part = get(&models.layer(key)?.model, name);
+        assert_eq!(part.children.len(), 1, "{key} {name}: one custom box");
+        Some(part.polygons.len() == 1)
+    }
+
+    #[test]
+    fn a_baby_with_its_own_file_takes_it_not_the_adults() {
+        let (adult, baby) = (jem("head", false), jem("head", true));
+        let files = [
+            ("optifine/cem/zombie.jem", adult.as_str()),
+            ("optifine/cem/zombie_baby.jem", baby.as_str()),
+        ];
+        let tree = plane("root", vec![plane("head", vec![])]);
+        let models = models("baby", &files, &["zombie#main", "zombie_baby#main"], &tree);
+        assert_eq!(attached(&models, "zombie#main", "head"), Some(false));
+        assert_eq!(attached(&models, "zombie_baby#main", "head"), Some(true));
+    }
+
+    #[test]
+    fn two_names_of_one_layer_give_it_the_first_by_name() {
+        let (llama, trader) = (jem("body", false), jem("body", true));
+        let files = [
+            ("optifine/cem/trader_llama_decor.jem", trader.as_str()),
+            ("optifine/cem/llama_decor.jem", llama.as_str()),
+        ];
+        let tree = plane("root", vec![plane("body", vec![])]);
+        // Written trader first, `llama_decor` still shapes the layer, and the baby's (both
+        // fall back to the adult files).
+        let models = models("decor", &files, &["llama#decor", "llama_baby#decor"], &tree);
+        assert_eq!(attached(&models, "llama#decor", "body"), Some(false));
+        assert_eq!(attached(&models, "llama_baby#decor", "body"), Some(false));
+    }
+
+    #[test]
+    fn other_models_fall_back_but_the_baby_nautilus_does_not() {
+        let (replace, attach) = (jem("body", false), jem("body", true));
+        let cat = format!(
+            r#"{{"texture": "textures/entity/cat/custom.png", "models": [
+                {{"part": "body", {BOX}}}]}}"#
+        );
+        let files = [
+            ("optifine/cem/salmon.jem", replace.as_str()),
+            ("optifine/cem/salmon_large.jem", attach.as_str()),
+            ("optifine/cem/nautilus.jem", replace.as_str()),
+            ("optifine/cem/cat.jem", cat.as_str()),
+        ];
+        let tree = plane("root", vec![plane("body", vec![])]);
+        let models = models(
+            "fallbacks",
+            &files,
+            &[
+                "salmon#main",
+                "salmon_small#main",
+                "salmon_large#main",
+                "nautilus#main",
+                "nautilus_baby#main",
+                "cat#main",
+                "cat#collar",
+                "cat_baby#collar",
+            ],
+            &tree,
+        );
+        // The small salmon has no file: salmon.jem's. The large one has its own.
+        assert_eq!(attached(&models, "salmon_small#main", "body"), Some(false));
+        assert_eq!(attached(&models, "salmon_large#main", "body"), Some(true));
+        assert_eq!(attached(&models, "nautilus#main", "body"), Some(false));
+        assert!(models.layer("nautilus_baby#main").is_none());
+        // The collar takes the cat's geometry, but its own collar texture stays.
+        let texture = |key: &str| models.layer(key).unwrap().texture.clone();
+        assert_eq!(texture("cat#main").as_deref(), Some("entity/cat/custom"));
+        assert_eq!(attached(&models, "cat#collar", "body"), Some(false));
+        assert_eq!(texture("cat#collar"), None);
+        // So does the baby's, two fallbacks down: `cat_baby_collar`, `cat_collar`, `cat`.
+        assert_eq!(attached(&models, "cat_baby#collar", "body"), Some(false));
+        assert_eq!(texture("cat_baby#collar"), None);
+    }
+
+    #[test]
+    fn a_broken_file_gives_way_to_the_next() {
+        let (replace, attach) = (jem("body", false), jem("body", true));
+        let files = [
+            // The first name of the layer is broken: the second shapes it.
+            ("optifine/cem/llama_decor.jem", "{"),
+            ("optifine/cem/trader_llama_decor.jem", attach.as_str()),
+            // EMF's file is broken: OptiFine's stands.
+            ("emf/cem/cow.jem", "{"),
+            ("optifine/cem/cow.jem", replace.as_str()),
+            // The baby's own file is broken: the adult's falls back onto it.
+            ("optifine/cem/zombie_baby.jem", "{"),
+            ("optifine/cem/zombie.jem", attach.as_str()),
+        ];
+        let tree = plane("root", vec![plane("body", vec![])]);
+        let models = models(
+            "broken",
+            &files,
+            &["llama#decor", "cow#main", "zombie_baby#main"],
+            &tree,
+        );
+        assert_eq!(attached(&models, "llama#decor", "body"), Some(true));
+        assert_eq!(attached(&models, "cow#main", "body"), Some(false));
+        assert_eq!(attached(&models, "zombie_baby#main", "body"), Some(true));
+    }
+
+    #[test]
+    fn an_unknown_part_is_skipped_and_the_rest_applies() {
+        let file =
+            format!(r#"{{"models": [{{"part": "wings", {BOX}}}, {{"part": "head", {BOX}}}]}}"#);
+        let tree = plane("root", vec![plane("head", vec![])]);
+        let models = models(
+            "unknown",
+            &[("optifine/cem/zombie.jem", file.as_str())],
+            &["zombie#main"],
+            &tree,
+        );
+        assert_eq!(attached(&models, "zombie#main", "head"), Some(false));
+        fn custom(p: &Part) -> usize {
+            usize::from(p.name.starts_with("cem#")) + p.children.iter().map(custom).sum::<usize>()
+        }
+        assert_eq!(custom(&models.layer("zombie#main").unwrap().model), 1);
+    }
+
+    /// A mob type `id` of `species` whose body and `layers` are all `tree`, with the vanilla
+    /// `texture`.
+    fn mob_kind(
+        id: &str,
+        species: super::super::Species,
+        anim: super::super::Anim,
+        texture: &str,
+        layers: &[&str],
+        tree: &Part,
+    ) -> Arc<MobType> {
+        let mut kind = (*super::super::sensor_scan_tests::kind()).clone();
+        kind.id = id.into();
+        kind.texture = texture.into();
+        kind.species = species;
+        kind.anim = anim;
+        kind.model = Arc::new(tree.clone());
+        kind.layers = layers
+            .iter()
+            .map(|k| ((*k).to_owned(), Arc::new(tree.clone())))
+            .collect();
+        Arc::new(kind)
+    }
+
+    /// How many vertices `render` draws of `mob` in each of `sprites`, laid far apart in the
+    /// atlas: the sprite a vertex's UV falls in says what it drew with. `sprites[0]`, the
+    /// `.jem`'s texture, is in the atlas only with `custom`.
+    fn sprite_counts(
+        mob: &super::super::Mob,
+        models: &Arc<CemModels>,
+        sprites: &[&str],
+        custom: bool,
+    ) -> Vec<usize> {
+        let data = super::super::MobData {
+            states: Vec::new(),
+            placements: Default::default(),
+            heightmaps: Default::default(),
+            animations: Default::default(),
+            biome_tags: Default::default(),
+            entity_tags: Default::default(),
+            villager_hats: Default::default(),
+            cem: std::sync::RwLock::new(models.clone()),
+            random_textures: Default::default(),
+            emissive: Default::default(),
+            blinks: Default::default(),
+            pois: Default::default(),
+            species_placements: Default::default(),
+        };
+        // Sprite i spans u and v from 0.2 i to 0.2 i + 0.1.
+        let atlas = |name: &str| -> Option<[f32; 4]> {
+            let i = sprites.iter().position(|s| *s == name)?;
+            let lo = i as f32 * 0.2;
+            (custom || i != 0).then_some([lo, lo, lo + 0.1, lo + 0.1])
+        };
+        let mut vertices = Vec::new();
+        super::super::render::render(
+            mob,
+            0.0,
+            glam::DVec3::ZERO,
+            &atlas,
+            0xf0f0,
+            &data,
+            &mut vertices,
+        );
+        let mut counts = vec![0; sprites.len()];
+        for v in &vertices {
+            let u = v.uv[0];
+            let i = ((u + 0.05) / 0.2).floor() as usize;
+            assert!(
+                i < sprites.len() && u - i as f32 * 0.2 <= 0.1 + 1e-4,
+                "a UV between the sprites: {u}"
+            );
+            counts[i] += 1;
+        }
+        counts
+    }
+
+    /// A spider whose `.jem` replaces its body: the body draws with the `.jem`'s texture, the
+    /// eyes (an overlay on the body's model) with theirs on the new geometry, and a texture the
+    /// atlas lacks leaves the vanilla one. A sheep's wool, a layer with a model of its own,
+    /// takes its `.jem`'s texture.
+    #[test]
+    fn a_jem_texture_paints_its_layer_and_leaves_the_overlays() {
+        use super::super::{Anim, Mob, Species};
+        let tree = |part: &str| Part {
+            name: "root".into(),
+            pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            polygons: Vec::new(),
+            children: vec![plane(part, vec![])],
+        };
+        let textured = |texture: &str| {
+            format!(
+                r#"{{"texture": "textures/{texture}.png", "models": [
+                    {{"part": "body", {BOX}}}]}}"#
+            )
+        };
+        let spider = textured("entity/spider/custom");
+        let cem = Arc::new(models(
+            "render",
+            &[("optifine/cem/spider.jem", spider.as_str())],
+            &["spider#main"],
+            &tree("body1"),
+        ));
+        let mob = Mob::new(
+            1,
+            mob_kind(
+                "minecraft:spider",
+                Species::Spider,
+                Anim::Spider,
+                "entity/spider/spider",
+                &["spider#main"],
+                &tree("body1"),
+            ),
+            horizon_core::geometry::Vec3::ZERO,
+            0.0,
+        );
+        let sprites = [
+            "entity/spider/custom",
+            "entity/spider/spider_eyes",
+            "entity/spider/spider",
+        ];
+        // The custom box's six faces, four corners each, for the body and again for the eyes;
+        // the replaced body part's own face is gone.
+        assert_eq!(sprite_counts(&mob, &cem, &sprites, true), [24, 24, 0]);
+        assert_eq!(sprite_counts(&mob, &cem, &sprites, false), [0, 24, 24]);
+
+        let wool = textured("entity/sheep/custom_wool");
+        let cem = Arc::new(models(
+            "render-sheep",
+            &[("optifine/cem/sheep_wool.jem", wool.as_str())],
+            &["sheep#main", "sheep#wool"],
+            &tree("body"),
+        ));
+        let mob = Mob::new(
+            1,
+            mob_kind(
+                "minecraft:sheep",
+                Species::Sheep,
+                Anim::Sheep,
+                "entity/sheep/sheep",
+                &["sheep#main", "sheep#wool"],
+                &tree("body"),
+            ),
+            horizon_core::geometry::Vec3::ZERO,
+            0.0,
+        );
+        let sprites = [
+            "entity/sheep/custom_wool",
+            "entity/sheep/sheep_wool",
+            "entity/sheep/sheep",
+        ];
+        // The wool's custom box in the `.jem`'s texture; the vanilla body's one face.
+        assert_eq!(sprite_counts(&mob, &cem, &sprites, true), [24, 0, 4]);
+        assert_eq!(sprite_counts(&mob, &cem, &sprites, false), [0, 24, 4]);
+    }
+
+    /// A wolf armour `.jem`'s texture paints the armour, the first layer on its model, and
+    /// not the cracks drawn over it on the same model.
+    #[test]
+    fn armour_cracks_keep_their_texture() {
+        use super::super::{Anim, Mob, Species, WOLF_ARMOR_DURABILITY};
+        let tree = Part {
+            name: "root".into(),
+            pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            polygons: Vec::new(),
+            children: vec![plane("body", vec![])],
+        };
+        let file = format!(
+            r#"{{"texture": "textures/entity/wolf/custom_armor.png", "models": [
+                {{"part": "body", {BOX}}}]}}"#
+        );
+        let layers = ["wolf#main", "wolf_armor#main"];
+        let cem = Arc::new(models(
+            "cracks",
+            &[("optifine/cem/wolf_armor.jem", file.as_str())],
+            &layers,
+            &tree,
+        ));
+        let mut mob = Mob::new(
+            1,
+            mob_kind(
+                "minecraft:wolf",
+                Species::Wolf,
+                Anim::Wolf,
+                "entity/wolf/wolf",
+                &layers,
+                &tree,
+            ),
+            horizon_core::geometry::Vec3::ZERO,
+            0.0,
+        );
+        mob.extra.tame = true;
+        mob.extra.body = Some("minecraft:wolf_armor".into());
+        // Worn through: the high cracks.
+        mob.extra.body_damage = WOLF_ARMOR_DURABILITY;
+        let sprites = [
+            "entity/wolf/custom_armor",
+            "entity/equipment/wolf_body/armadillo_scute",
+            "entity/wolf/wolf_armor_crackiness_high",
+            "entity/wolf/wolf_collar",
+        ];
+        // The armour's custom box in the `.jem`'s texture, the cracks' over the same box in
+        // theirs, and the collar on the vanilla body (whose own texture isn't in the atlas).
+        assert_eq!(sprite_counts(&mob, &cem, &sprites, true), [24, 0, 24, 4]);
+        assert_eq!(sprite_counts(&mob, &cem, &sprites, false), [0, 24, 24, 4]);
+    }
+
+    /// Every layer of [`LAYERS`] and [`FALLBACKS`] is in Horizon's own models, every baby layer
+    /// there is one a baby model name maps to, and so are the parts a sample of part names is
+    /// renamed to.
+    #[test]
+    #[ignore = "requires prepared entity models in HORIZON_TEST_RESOURCES"]
+    fn names_reach_horizons_models() {
+        let root = std::env::var_os("HORIZON_TEST_RESOURCES").expect("HORIZON_TEST_RESOURCES");
+        let types: HashMap<String, Arc<MobType>> = super::super::MobTypes::load(Path::new(&root))
+            .unwrap()
+            .types
+            .into_iter()
+            .map(|(k, v)| (k, Arc::new(v)))
+            .collect();
+        let vanilla = vanilla_layers(&types);
+        let mut missing = Vec::new();
+        for (name, key) in LAYERS {
+            if !vanilla.contains_key(key) {
+                missing.push(format!("{name}: no layer {key}"));
+            }
+        }
+        for name in FALLBACKS.iter().flat_map(|(name, takes)| [*name, *takes]) {
+            let key = layer_key(name);
+            if !vanilla.contains_key(key.as_str()) {
+                missing.push(format!("{name}: no layer {key}"));
+            }
+        }
+        // `sheep_baby#wool` is `sheep_baby_wool`'s: the baby name of a name of `sheep#wool`.
+        for key in vanilla.keys() {
+            let Some((model, layer)) = key.split_once('#') else {
+                continue;
+            };
+            let Some(adult) = model.strip_suffix("_baby") else {
+                continue;
+            };
+            let adult_key = format!("{adult}#{layer}");
+            let reached = LAYERS
+                .iter()
+                .map(|(name, _)| *name)
+                .chain([adult])
+                .filter(|name| layer_key(name) == adult_key)
+                .flat_map(baby_names)
+                .any(|baby| layer_key(&baby) == *key);
+            if !reached {
+                missing.push(format!("{key}: no baby model name maps to it"));
+            }
+        }
+        // A sample of the renamed parts.
+        for (model, part) in [
+            ("zombie", "headwear"),
+            ("cow", "leg1"),
+            ("cow", "leg4"),
+            ("camel", "back_left_leg"),
+            ("camel", "front_right_leg"),
+            ("spider", "leg1"),
+            ("spider", "leg8"),
+            ("spider", "neck"),
+            ("spider", "body"),
+            ("villager", "headwear2"),
+            ("villager", "bodywear"),
+            ("witch", "headwear2"),
+            ("witch", "bodywear"),
+            ("chicken", "bill"),
+            ("chicken", "chin"),
+            ("llama", "chest_right"),
+            ("llama", "chest_left"),
+            ("turtle", "body2"),
+            ("ravager", "jaw"),
+            ("bee", "body"),
+            ("bee", "torso"),
+            ("warden", "body"),
+            ("warden", "torso"),
+            ("snow_golem", "body"),
+            ("snow_golem", "body_bottom"),
+            ("snow_golem", "right_hand"),
+            ("snow_golem", "left_hand"),
+            ("slime", "body"),
+            ("magma_cube", "core"),
+            ("magma_cube", "segment1"),
+            ("blaze", "stick1"),
+            ("ghast", "tentacle1"),
+            ("squid", "tentacle1"),
+            ("silverfish", "body1"),
+            ("silverfish", "wing1"),
+            ("endermite", "body1"),
+            ("guardian", "spine1"),
+            ("guardian", "tail1"),
+            ("wither", "body1"),
+            ("wither", "head1"),
+            ("phantom", "left_wing"),
+            ("phantom", "tail2"),
+            ("cat", "tail"),
+            ("ocelot", "tail"),
+            ("bat", "outer_right_wing"),
+            ("cod", "fin_back"),
+            ("cod", "fin_right"),
+            ("cod", "tail"),
+            ("tropical_fish_b", "fin_top"),
+            ("tropical_fish_b", "fin_bottom"),
+            ("puffer_fish_big", "fin_right"),
+            ("puffer_fish_medium", "fin_left"),
+            ("puffer_fish_small", "fin_right"),
+            ("puffer_fish_big", "spikes_front_top"),
+            ("rabbit", "left_foot"),
+            ("rabbit", "right_foot"),
+            ("sniffer", "middle_left_leg"),
+            ("strider", "hair_left_top"),
+            ("horse", "neck"),
+            ("horse", "mouth"),
+        ] {
+            let key = layer_key(model);
+            let target = vanilla_part(model, part);
+            let found = vanilla
+                .get(key.as_str())
+                .is_some_and(|(tree, _)| super::super::render::find_part(tree, &target).is_some());
+            if !found {
+                missing.push(format!("{model} {part}: no part {target} in {key}"));
+            }
+        }
+        assert!(missing.is_empty(), "{missing:#?}");
     }
 }

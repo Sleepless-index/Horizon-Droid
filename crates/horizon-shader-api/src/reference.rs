@@ -46,6 +46,7 @@ pub fn markdown() -> String {
             StageKind::Sky => "[sky]",
             StageKind::Vertex => "[vertex]",
             StageKind::Material => "[material]",
+            StageKind::Vertex => "[vertex]",
             StageKind::Weather => "[weather]",
             StageKind::Tonemap => "[tonemap]",
         };

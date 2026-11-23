@@ -3,7 +3,7 @@
 //! (flint and steel / fire charge).
 use super::Game;
 use horizon_client::{
-    Result, collisions::SceneCollisions, items::ItemStack, mesher::Vertex, mobs::Who,
+    Result, collisions::SceneCollisions, items::ItemStack, mesher::Vertex, mobs::Who, text::Text,
 };
 use horizon_core::{
     geometry::{Aabb, Vec3},
@@ -14,6 +14,8 @@ use horizon_world::level::flags as level_flags;
 
 #[derive(Clone, Debug)]
 pub(super) struct PrimedTnt {
+    /// When it joined its list (`horizon_client::join_seq`); set by the list.
+    pub(super) join: horizon_client::join_seq::JoinSeq,
     /// The entity id a server tracks it by (0 until it is tracked).
     pub id: u32,
     pub position: Vec3,
@@ -25,7 +27,7 @@ pub(super) struct PrimedTnt {
     pub guest: Option<u32>,
 }
 impl PrimedTnt {
-    const SIZE: f64 = 0.98;
+    pub(super) const SIZE: f64 = 0.98;
     pub(super) fn bounds(&self) -> Aabb {
         let h = Self::SIZE / 2.0;
         Aabb::new(
@@ -43,23 +45,29 @@ impl PrimedTnt {
         collision: &horizon_world::block_collision::BlockCollisionRegistry<'_>,
         assets: &horizon_client::assets::Assets,
         facts: &horizon_client::blocks::BlockFacts,
-    ) -> Result<()> {
+        fluids: &horizon_client::motion::FluidResources,
+        border: Option<&horizon_core::geometry::border::BorderGeometry>,
+    ) -> Result<Vec<BlockPos>> {
         self.previous = self.position;
-        self.velocity.y -= 0.04;
-        let mut scene = SceneCollisions {
+        self.velocity.y -= self.get_gravity();
+        let scene = SceneCollisions {
             world,
             binding: collision,
             subject: None,
         };
         let wanted = self.velocity;
+        // Entity.collide: the world border's walls stop it too.
+        let border = border.map(|b| (b, [self.position.x, self.position.z]));
         let moved = scene
-            .resolve(self.bounds(), wanted, 0.0, self.on_ground)
+            .resolve_in_border(self.bounds(), wanted, 0.0, self.on_ground, border)
             .unwrap_or(Vec3::ZERO);
-        self.position = Vec3::new(
-            self.position.x + moved.x,
-            self.position.y + moved.y,
-            self.position.z + moved.z,
-        );
+        if horizon_client::entities::move_applies(wanted, moved) {
+            self.position = Vec3::new(
+                self.position.x + moved.x,
+                self.position.y + moved.y,
+                self.position.z + moved.z,
+            );
+        }
         self.on_ground = wanted.y < 0.0 && moved.y != wanted.y;
         if moved.x != wanted.x {
             self.velocity.x = 0.0;
@@ -68,7 +76,39 @@ impl PrimedTnt {
             self.velocity.z = 0.0;
         }
         if moved.y != wanted.y {
-            self.velocity.y = 0.0;
+            // Entity.restituteMovementAfterCollisions: slime bounces it.
+            let below = world.block(
+                self.position.x.floor() as i32,
+                (self.position.y - f64::from(1.0e-5_f32)).floor() as i32,
+                self.position.z.floor() as i32,
+            );
+            self.velocity.y = horizon_client::entities::vertical_collision_velocity(
+                wanted.y,
+                moved.y,
+                0.04,
+                wanted.y < 0.0,
+                &*facts.get(below).name == "minecraft:slime_block",
+            );
+        }
+        // Entity.applyEffectsFromBlocks: a bubble column lifts or drags it, and the
+        // columns it is at the top of send their surface particles.
+        let mut tops = Vec::new();
+        self.push_by_bubble_column_over(world, assets.registry, facts, collision, |pos| {
+            tops.push(pos)
+        });
+        if self.on_ground {
+            // Entity.applyEffectsFromBlocks -> SlimeBlock.stepOn.
+            let under = world.block(
+                self.position.x.floor() as i32,
+                (self.position.y - f64::from(0.2_f32)).floor() as i32,
+                self.position.z.floor() as i32,
+            );
+            if &*facts.get(under).name == "minecraft:slime_block"
+                && let Some(scale) = horizon_client::entities::slime_step_on_scale(self.velocity.y)
+            {
+                self.velocity.x *= scale;
+                self.velocity.z *= scale;
+            }
         }
         self.velocity = Vec3::new(
             self.velocity.x * 0.98,
@@ -85,33 +125,38 @@ impl PrimedTnt {
         self.fuse -= 1;
         if self.fuse > 0 {
             // PrimedTnt updates immersion after moving and decrementing its fuse.
-            let mut fluids =
-                horizon_world::entity_fluid::EntityFluidInteraction::new([WATER, LAVA]);
-            let mut fluid_world = TntFluidWorld {
-                tnt: self,
-                world,
-                assets,
-                facts,
-            };
-            fluids
-                .update(&mut fluid_world, false, 4096)
-                .map_err(|e| std::io::Error::other(e.to_string()))?;
-            fluids.apply_current(&mut fluid_world, WATER, 0.014)?;
-            fluids.apply_current(
-                &mut fluid_world,
-                LAVA,
-                if world.fast_lava {
-                    0.007
-                } else {
-                    0.0023333333333333335
-                },
-            )?;
+            self.push_by_fluid(world, fluids);
         }
-        Ok(())
+        Ok(tops)
     }
 }
 
 impl Game<'_> {
+    /// Asks the mods whether the TNT at `pos` may be primed
+    /// (`native_tnt_primed`); the acting guest, if any, is its player.
+    pub(super) fn tnt_prime_allowed(&mut self, pos: BlockPos) -> bool {
+        let mut cancel = false;
+        self.native_tnt_primed(self.lan_acting_uuid, [pos.x, pos.y, pos.z], &mut cancel);
+        !cancel
+    }
+    /// Primes TNT a level event announced, or, when the mods refuse, puts
+    /// back the block the fire or signal had already taken out.
+    pub(super) fn prime_tnt_event(&mut self, pos: BlockPos, rot: f64) {
+        if self.tnt_prime_allowed(pos) {
+            self.add_primed_tnt(pos, rot, 80, None, None);
+            return;
+        }
+        // Refused: the level queued the fuse sound and the game event right
+        // after the prime; they are dropped as they come up.
+        self.tnt_refused = Some(pos);
+        let Some(tnt) = self.pack.assets.registry.default_state("minecraft:tnt") else {
+            return;
+        };
+        if self.world.block(pos.x, pos.y, pos.z) == self.world.air {
+            let flags = level_flags::UPDATE_CLIENTS | level_flags::UPDATE_SKIP_ON_PLACE;
+            self.with_level(|b, level, ticks| b.set_block(level, ticks, pos, tnt, flags));
+        }
+    }
     /// `new PrimedTnt(level, x + 0.5, y, z + 0.5, owner)`; `short` applies
     /// `wasExploded`'s random short fuse. Plays `entity.tnt.primed` for primes.
     pub(super) fn spawn_primed_tnt(
@@ -158,8 +203,12 @@ impl Game<'_> {
             f64::from(pos.y),
             f64::from(pos.z) + 0.5,
         );
+        // An id from the entity counter at once, so a command can name it.
+        self.next_entity += 1;
         self.tnts.push(PrimedTnt {
-            id: 0,
+            join: Default::default(),
+            no_gravity: false,
+            id: self.next_entity,
             position,
             previous: position,
             velocity: Vec3::new(-rot.sin() * 0.02, f64::from(0.2f32), -rot.cos() * 0.02),
@@ -183,12 +232,18 @@ impl Game<'_> {
                 i += 1;
                 continue;
             }
-            t.tick(
+            let tops = t.tick(
                 &self.world,
                 self.collision,
                 &self.pack.assets,
                 self.res.facts(),
+                &self.res.motion().fluids,
+                Some(self.border.geometry()),
             )?;
+            for pos in tops {
+                self.bubble_column_particles(pos);
+            }
+            let t = &mut self.tnts[i];
             if t.fuse <= 0 {
                 let center = [
                     t.position.x,
@@ -196,7 +251,7 @@ impl Game<'_> {
                     t.position.z,
                 ];
                 let bounds = t.bounds();
-                let (owner, guest) = (t.owner, t.guest);
+                let (owner, guest, power) = (t.owner, t.guest, t.power);
                 let in_water = self.bounds_in_water(bounds);
                 self.tnts.remove(i);
                 count -= 1;
@@ -206,15 +261,17 @@ impl Game<'_> {
                 // `Explosion.getIndirectSourceEntity`: a player-lit TNT names
                 // its igniter, which `blast_attacker` and the damage type read.
                 self.combat.blast_guest = guest;
-                self.combat.blast_owner = match owner {
-                    Some(Who::Player) => self
-                        .lan
-                        .as_ref()
-                        .and_then(|host| self.player_attacker(host, guest)),
-                    Some(Who::Mob(_)) | None => None,
-                };
+                self.combat.blast_owner = tnt_blast_owner(
+                    owner,
+                    || {
+                        self.lan
+                            .as_ref()
+                            .and_then(|host| self.player_attacker(host, guest))
+                    },
+                    |id| self.mob_display_name(id),
+                );
                 let result = self.with_hive_emptying_blast(|g| {
-                    g.server_explode(center, 4.0, interaction, false)
+                    g.server_explode(center, power, interaction, false)
                 });
                 self.combat.blast_owner = None;
                 self.combat.blast_guest = None;
@@ -540,7 +597,8 @@ impl Game<'_> {
                 continue;
             }
             for m in self.mobs.iter_mut().filter(|m| m.extra.mount == Some(id)) {
-                let offset = horizon_client::mobs::riders::vehicle_attachment(m);
+                // Primed TNT's box is 0.98 wide.
+                let offset = horizon_client::mobs::riders::vehicle_attachment(m, 0.98);
                 m.position = tnt_seat(pos, offset);
                 m.previous = tnt_seat(prev, offset);
                 m.velocity = Vec3::ZERO;
@@ -550,6 +608,19 @@ impl Game<'_> {
                 m.ai.nav.stop();
             }
         }
+    }
+}
+
+/// `PrimedTnt.getOwner` as the blast's causing entity: the player, or a mob
+/// that is still in the level (null once it is gone).
+fn tnt_blast_owner(
+    owner: Option<Who>,
+    player: impl FnOnce() -> Option<(u32, Text)>,
+    mob_name: impl Fn(u32) -> Option<Text>,
+) -> Option<(u32, Text)> {
+    match owner? {
+        Who::Player => player(),
+        Who::Mob(id) => mob_name(id).map(|name| (id, name)),
     }
 }
 
@@ -574,6 +645,8 @@ mod tests {
         use horizon_core::geometry::Direction;
         use horizon_world::piston_push::bounce_velocity;
         let mut tnt = PrimedTnt {
+            join: Default::default(),
+            no_gravity: false,
             id: 0,
             position: Vec3::new(0.5, 1.0, 0.5),
             previous: Vec3::new(0.5, 1.0, 0.5),
@@ -589,6 +662,56 @@ mod tests {
         assert!(!tnt.on_ground);
     }
 
+    /// `Entity.collectColliders` (#7080): the world border's wall stops primed
+    /// TNT. A border of size 10 around (20, 20) has its east wall at x = 25;
+    /// the TNT starts at x = 24 on the test scene's flat ground, 1.5 east.
+    #[test]
+    fn the_world_border_stops_primed_tnt() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = horizon_client::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let facts = horizon_client::blocks::BlockFacts::load(&root, assets.registry).unwrap();
+        let fluids = horizon_client::motion::FluidResources::new(&assets, &facts).unwrap();
+        let collision = horizon_client::collisions::load(&root, assets.registry).unwrap();
+        let world = horizon_client::world::World::test_scene(&assets, &render, 3).unwrap();
+        let border =
+            horizon_core::geometry::border::BorderGeometry::new([20.0, 20.0], 10.0, 29_999_984)
+                .unwrap();
+        for bordered in [false, true] {
+            let at = Vec3::new(24.0, 4.0, 20.5);
+            let mut tnt = PrimedTnt {
+                join: Default::default(),
+                no_gravity: false,
+                id: 0,
+                position: at,
+                previous: at,
+                velocity: Vec3::new(1.5, 0.0, 0.0),
+                fuse: 80,
+                on_ground: true,
+                owner: None,
+                guest: None,
+                power: 4.0,
+            };
+            let border = bordered.then_some(&border);
+            tnt.tick(&world, &collision, &assets, &facts, &fluids, border)
+                .unwrap();
+            let east = tnt.bounds().max_position().x;
+            if bordered {
+                assert!(
+                    (east - 25.0).abs() < 1.0e-7,
+                    "stops on the wall, got {east}"
+                );
+            } else {
+                assert!(east > 25.0, "no border: goes on, got {east}");
+            }
+        }
+    }
+
     #[test]
     fn primed_tnt_follows_water_currents_after_moving() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -600,6 +723,7 @@ mod tests {
         let assets = horizon_client::assets::Assets::load(&root).unwrap();
         let render = assets.reload(&root).unwrap();
         let facts = horizon_client::blocks::BlockFacts::load(&root, assets.registry).unwrap();
+        let fluids = horizon_client::motion::FluidResources::new(&assets, &facts).unwrap();
         let collision = horizon_client::collisions::load(&root, assets.registry).unwrap();
         let mut world = horizon_client::world::World::test_scene(&assets, &render, 3).unwrap();
         let stone = assets.registry.default_state("minecraft:stone").unwrap();
@@ -616,6 +740,8 @@ mod tests {
         world.set(21, 4, 20, flowing).unwrap();
         let at = Vec3::new(20.5, 4.0, 20.5);
         let mut tnt = PrimedTnt {
+            join: Default::default(),
+            no_gravity: false,
             id: 0,
             position: at,
             previous: at,
@@ -625,7 +751,8 @@ mod tests {
             owner: None,
             guest: None,
         };
-        tnt.tick(&world, &collision, &assets, &facts).unwrap();
+        tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+            .unwrap();
         assert_eq!(
             tnt.position.x, at.x,
             "current is applied after motion, not before"
@@ -636,13 +763,15 @@ mod tests {
             tnt.velocity
         );
         assert_eq!(tnt.fuse, 79);
-        tnt.tick(&world, &collision, &assets, &facts).unwrap();
+        tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+            .unwrap();
         assert!((tnt.position.x - at.x - 0.014).abs() < 1e-12);
         assert!(tnt.on_ground);
         tnt.position = at;
         tnt.velocity = Vec3::ZERO;
         tnt.fuse = 1;
-        tnt.tick(&world, &collision, &assets, &facts).unwrap();
+        tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+            .unwrap();
         assert_eq!(tnt.fuse, 0);
         assert_eq!(
             tnt.velocity.x, 0.0,
@@ -652,7 +781,8 @@ mod tests {
         tnt.position = at;
         tnt.velocity = Vec3::ZERO;
         tnt.fuse = 80;
-        tnt.tick(&world, &collision, &assets, &facts).unwrap();
+        tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+            .unwrap();
         assert_eq!(
             tnt.velocity.x, 0.0,
             "still water must not add horizontal motion"
@@ -667,10 +797,165 @@ mod tests {
             .unwrap();
         tnt.on_ground = false;
         tnt.velocity = Vec3::ZERO;
-        tnt.tick(&world, &collision, &assets, &facts).unwrap();
+        tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+            .unwrap();
         assert!(
             tnt.position.y < at.y && tnt.velocity.y < 0.0,
             "TNT sinks; water does not add buoyancy"
         );
     }
+
+    #[test]
+    fn a_soul_sand_bubble_column_lifts_primed_tnt() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = horizon_client::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let facts = horizon_client::blocks::BlockFacts::load(&root, assets.registry).unwrap();
+        let fluids = horizon_client::motion::FluidResources::new(&assets, &facts).unwrap();
+        let collision = horizon_client::collisions::load(&root, assets.registry).unwrap();
+        let mut world = horizon_client::world::World::test_scene(&assets, &render, 3).unwrap();
+        let water = assets.registry.default_state("minecraft:water").unwrap();
+        let soul_sand = assets
+            .registry
+            .default_state("minecraft:soul_sand")
+            .unwrap();
+        // Soul sand makes an up-pushing column (`drag=false`); the block's
+        // default state is the down-dragging one.
+        let drag_down = assets
+            .registry
+            .default_state("minecraft:bubble_column")
+            .unwrap();
+        let mut up = assets.registry.state(drag_down).unwrap().clone();
+        up.properties.insert("drag".into(), "false".into());
+        let column = assets.registry.resolve(&up).unwrap();
+        for y in 3..=8 {
+            world.set(20, y, 20, column).unwrap();
+        }
+        world.set(20, 2, 20, soul_sand).unwrap();
+        world.set(20, 9, 20, water).unwrap();
+        // BubbleColumnBlock.entityInside: the columns its box touches lift it
+        // (Entity.handleOnInsideBubbleColumn / handleOnAboveBubbleColumn).
+        let at = Vec3::new(20.5, 6.0, 20.5);
+        let mut tnt = PrimedTnt {
+            join: Default::default(),
+            no_gravity: false,
+            id: 0,
+            position: at,
+            previous: at,
+            velocity: Vec3::ZERO,
+            fuse: 80,
+            on_ground: false,
+            owner: None,
+            guest: None,
+            power: 4.0,
+        };
+        for _ in 0..10 {
+            tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+                .unwrap();
+        }
+        assert!(
+            tnt.velocity.y > 0.0,
+            "soul sand lifts primed TNT, got {:?}",
+            tnt.velocity
+        );
+        assert!(
+            tnt.position.y > at.y,
+            "the column carries it up, got {}",
+            tnt.position.y
+        );
+        // Without the column the same TNT only falls.
+        for y in 3..=8 {
+            world.set(20, y, 20, water).unwrap();
+        }
+        tnt.position = at;
+        tnt.velocity = Vec3::ZERO;
+        tnt.on_ground = false;
+        for _ in 0..4 {
+            tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+                .unwrap();
+        }
+        assert!(
+            tnt.position.y < at.y,
+            "water alone does not lift it, got {}",
+            tnt.position.y
+        );
+    }
+
+    /// `Entity.onAboveBubbleColumn` sends the surface particles only from the top of
+    /// a column: `tick` names the column block it is at the top of, and none while
+    /// the column has water above it.
+    #[test]
+    fn primed_tnt_reports_the_surface_of_a_bubble_column() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("movement-properties.nbt").exists() {
+            return;
+        }
+        let assets = horizon_client::assets::Assets::load(&root).unwrap();
+        let render = assets.reload(&root).unwrap();
+        let facts = horizon_client::blocks::BlockFacts::load(&root, assets.registry).unwrap();
+        let fluids = horizon_client::motion::FluidResources::new(&assets, &facts).unwrap();
+        let collision = horizon_client::collisions::load(&root, assets.registry).unwrap();
+        let mut world = horizon_client::world::World::test_scene(&assets, &render, 3).unwrap();
+        let water = assets.registry.default_state("minecraft:water").unwrap();
+        let soul_sand = assets
+            .registry
+            .default_state("minecraft:soul_sand")
+            .unwrap();
+        let default = assets
+            .registry
+            .default_state("minecraft:bubble_column")
+            .unwrap();
+        let mut up = assets.registry.state(default).unwrap().clone();
+        up.properties.insert("drag".into(), "false".into());
+        let column = assets.registry.resolve(&up).unwrap();
+        for y in 3..=8 {
+            world.set(20, y, 20, column).unwrap();
+        }
+        world.set(20, 2, 20, soul_sand).unwrap();
+        let at = Vec3::new(20.5, 6.0, 20.5);
+        let primed = || PrimedTnt {
+            join: Default::default(),
+            no_gravity: false,
+            id: 0,
+            position: at,
+            previous: at,
+            velocity: Vec3::ZERO,
+            fuse: 80,
+            on_ground: false,
+            owner: None,
+            guest: None,
+            power: 4.0,
+        };
+        let mut tops = Vec::new();
+        let mut tnt = primed();
+        for _ in 0..30 {
+            tops.extend(
+                tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+                    .unwrap(),
+            );
+        }
+        assert!(!tops.is_empty(), "it reaches the top of the column");
+        assert!(
+            tops.iter().all(|p| *p == BlockPos::new(20, 8, 20)),
+            "only the surface block, got {tops:?}"
+        );
+        // Water above the top block: it is no longer the surface.
+        world.set(20, 9, 20, water).unwrap();
+        let mut tnt = primed();
+        for _ in 0..10 {
+            assert!(
+                tnt.tick(&world, &collision, &assets, &facts, &fluids, None)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
 }
+horizon_client::impl_joined!(PrimedTnt);

@@ -2,6 +2,7 @@
 exclude = ["launcher", "crates/horizon-telemetry-server", "crates/horizon-mod-registry", "third_party/wgpu-hal", "third_party/winit", "third_party/naga"]
 members = [
     "crates/horizon-android",
+    "crates/horizon-client-lib",
     "crates/horizon-core",
     "crates/horizon-dualsense",
     "crates/horizon-narrator",
@@ -12,6 +13,7 @@ members = [
     "crates/horizon-client-core",
     "crates/horizon-client-input",
     "crates/horizon-client-render",
+    "crates/horizon-cosmetics",
     "crates/horizon-command",
     "crates/horizon-items",
     "crates/horizon-server-files",

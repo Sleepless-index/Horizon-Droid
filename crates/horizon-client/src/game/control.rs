@@ -146,19 +146,25 @@ impl Game<'_> {
             self.answer(request, event_loop);
         }
         while let Some(request) = self.control.as_ref().and_then(|c| c.try_recv()) {
+            // Once per line received, not once per handler: a deferred `ui`
+            // comes back through `ui_wait` and must not be traced twice.
+            self.note_socket_line(&request.line);
             self.agent_command_seen();
             self.answer(request, event_loop);
             if self.pending_save.is_some() {
                 break;
             }
         }
-        if self.control.is_some() {
+        // A recording made from the F3 keys or the Settings page has no socket,
+        // and still wants its events.
+        if self.control.is_some() || self.repro.recording_active() {
             self.watch_events();
         }
         if self.screen == Screen::Options
             && self.ui.options.page() == horizon_client::options_ui::Page::Agent
         {
             self.ui.options.agent_status = self.agent_status_lines();
+            self.ui.options.agent_recording = self.repro.recording_active();
         }
     }
 
@@ -210,6 +216,14 @@ impl Game<'_> {
             self.sign_input(None, Some(text));
             return Ok(());
         }
+        // The title's screens: the world name, the seed, a server's address.
+        // A screen opened over the title (Options, say) keeps its own text.
+        if title_owns_text(&self.screen, self.title.is_some())
+            && let Some(title) = &mut self.title
+        {
+            title.type_text(text);
+            return Ok(());
+        }
         match self.screen {
             Screen::Chat => self.chat_type(text),
             Screen::CommandBlock => self.command_block_type(text),
@@ -257,6 +271,15 @@ impl Game<'_> {
         result
     }
 
+    /// A recorded control line fed back by a replay: not new input, so the
+    /// trace does not see it, and its reply has no one waiting.
+    pub(super) fn replay_line(&mut self, line: &str, event_loop: &dyn EventLoopCtl) {
+        let (reply, _) = std::sync::mpsc::channel();
+        if let Err(e) = self.control_command(line, &reply, event_loop) {
+            log::warn!("Horizon: replay: {line}: {e}");
+        }
+    }
+
     fn control_command_inner(
         &mut self,
         line: &str,
@@ -283,6 +306,12 @@ impl Game<'_> {
             super::agent::Handled::No => {}
         }
         if let Some(value) = self.events_command(&words, reply)? {
+            return Ok(value);
+        }
+        if let Some(value) = self.input_trace.command(&words)? {
+            return Ok(Some(value));
+        }
+        if let Some(value) = self.repro_command(&words, line, reply)? {
             return Ok(value);
         }
         if let Some(value) = self.saves_control(&words, line, reply)? {
@@ -317,6 +346,8 @@ impl Game<'_> {
                 .chain(super::events::HELP)
                 .chain(super::saves_control::HELP)
                 .chain(super::pad::HELP)
+                .chain(super::input_trace::HELP)
+                .chain(super::repro::HELP)
                 .collect::<Vec<_>>() }))),
             "setblock" | "fill" | "particle" | "signedit" => self.render_command(&words),
             "section-draws" => {
@@ -415,8 +446,20 @@ impl Game<'_> {
                 }
                 Ok(Some(json!({ "ok": true, "sides": r.section_sides() })))
             }
+            "gpu-culling" => {
+                let r = self.renderer.as_mut().ok_or("no renderer")?;
+                match words.get(1).copied() {
+                    None => {}
+                    Some("on") => r.set_gpu_culling(true)?,
+                    Some("off") => r.set_gpu_culling(false)?,
+                    Some(other) => return Err(format!("unknown GPU culling mode {other}").into()),
+                }
+                Ok(Some(json!({ "ok": true, "gpu_culling": r.gpu_culling() })))
+            }
             "sculk" => Ok(Some(self.sculk_command(&words)?)),
+            "hello" => Ok(Some(hello())),
             "status" => Ok(Some(self.control_status())),
+            "memory" => Ok(Some(self.memory_report())),
             "stall" => {
                 let millis: u64 = arg(1)?.parse()?;
                 if millis > 5000 {
@@ -434,7 +477,7 @@ impl Game<'_> {
                                 json!({ "game_time": g.world.game_time, "projectiles": g.projectiles_status() })
                             })
                         })
-                        .ok_or("the integrated server stopped")?
+                        .ok_or(super::integrated::NO_ANSWER)?
                 } else {
                     json!({ "game_time": self.world.game_time, "projectiles": self.projectiles_status() })
                 };
@@ -450,7 +493,7 @@ impl Game<'_> {
                 if let Some(server) = &self.integrated {
                     server
                         .call(move |g| g.agent.hold_server = held)
-                        .ok_or("the integrated server stopped")?;
+                        .ok_or(super::integrated::NO_ANSWER)?;
                 } else if self.remote.is_some() {
                     return Err("server-hold requires the world's host".into());
                 } else {
@@ -580,7 +623,7 @@ impl Game<'_> {
                     }
                 };
                 match arg(2)? {
-                    "down" => self.control_key_down(key)?,
+                    "down" => self.control_key_down(key, physical)?,
                     "up" => {
                         self.keys.remove(&key);
                         self.physical_keys.remove(&key);
@@ -588,10 +631,10 @@ impl Game<'_> {
                     // The system's auto-repeat while the key is held.
                     "repeat" => {
                         self.physical_keys.insert(physical);
-                        self.mapped_key(key, true, true)?;
+                        self.mapped_key(key, true, true, key)?;
                     }
                     "tap" => {
-                        self.control_key_down(key)?;
+                        self.control_key_down(key, physical)?;
                         self.keys.remove(&key);
                         self.physical_keys.remove(&physical);
                         self.debug_key(physical, horizon_client::debug_keys::KeyAction::Release);
@@ -714,7 +757,7 @@ impl Game<'_> {
                     let command = format!("give @s {item} {count}");
                     server
                         .call(move |g| g.owner_console_command(&command))
-                        .ok_or("the integrated server stopped")?;
+                        .ok_or(super::integrated::NO_ANSWER)?;
                     return Ok(Some(json!({ "ok": true, "given": count })));
                 }
                 let max = info.max_stack;
@@ -767,7 +810,7 @@ impl Game<'_> {
                 if let Some(server) = &self.integrated {
                     server
                         .call(move |g| g.world.day_time = time)
-                        .ok_or("the integrated server stopped")?;
+                        .ok_or(super::integrated::NO_ANSWER)?;
                 }
                 ok()
             }
@@ -786,7 +829,7 @@ impl Game<'_> {
                     let center = self.player.as_ref().map_or(Vec3::ZERO, |p| p.position);
                     let value = server
                         .call(move |g| g.in_owner_level(|g| g.control_mobs_at(radius, center)))
-                        .ok_or("the integrated server stopped")?;
+                        .ok_or(super::integrated::NO_ANSWER)?;
                     return Ok(Some(value));
                 }
                 Ok(Some(self.control_mobs(radius)))
@@ -796,7 +839,7 @@ impl Game<'_> {
                 if let Some(server) = &self.integrated {
                     let value = server
                         .call(|g| g.control_hurt_log())
-                        .ok_or("the integrated server stopped")?;
+                        .ok_or(super::integrated::NO_ANSWER)?;
                     return Ok(Some(value));
                 }
                 Ok(Some(self.control_hurt_log()))
@@ -1022,7 +1065,7 @@ impl Game<'_> {
                 if let Some(server) = &self.integrated {
                     server
                         .call(move |g| g.control_save(all).map_err(|e| e.to_string()))
-                        .ok_or("the integrated server stopped")??;
+                        .ok_or(super::integrated::NO_ANSWER)??;
                 } else if self.remote.is_none() {
                     self.begin_control_save(all, reply.clone())?;
                     return Ok(None);
@@ -1079,7 +1122,7 @@ impl Game<'_> {
         Ok(())
     }
 
-    fn control_key_down(&mut self, key: KeyCode) -> Result<()> {
+    fn control_key_down(&mut self, key: KeyCode, raw: KeyCode) -> Result<()> {
         self.physical_keys.insert(key);
         // The window's shortcuts come before any screen, here too.
         if self.screenshot_shortcut(key, false) {
@@ -1101,7 +1144,7 @@ impl Game<'_> {
             return Ok(());
         }
         if self.keys.insert(key) {
-            self.key_pressed(key)?;
+            self.key_pressed(key, raw)?;
         }
         Ok(())
     }
@@ -1188,7 +1231,7 @@ impl Game<'_> {
         json!({ "ok": true, "players": players })
     }
 
-    fn control_status(&self) -> Value {
+    pub(super) fn control_status(&self) -> Value {
         let player = self.player.as_ref().map(|p| {
             json!({
                 "position": [p.position.x, p.position.y, p.position.z],
@@ -1232,6 +1275,8 @@ impl Game<'_> {
                 "section_draw_calls": r.section_draw_calls,
                 "terrain_pass_draws": r.terrain_pass_draws,
                 "culled_sections": r.culled_sections(),
+                "gpu_culling": r.gpu_culling(),
+                "gpu_frame": r.gpu_frame(),
                 "uploaded_bytes": r.uploaded_bytes,
                 "resident_sections": r.resident_sections(),
                 "arena_bytes": arena_bytes,
@@ -1331,6 +1376,12 @@ impl Game<'_> {
         let (target, sampled) = self.lod.as_ref().map_or((0, 0), |lod| lod.progress());
         status["lod"]["target_tiles"] = target.into();
         status["lod"]["sampled_target_tiles"] = sampled.into();
+        let (wanted, refined) = self
+            .lod
+            .as_ref()
+            .map_or((0, 0), |lod| lod.detail_progress());
+        status["lod"]["detail_target_columns"] = wanted.into();
+        status["lod"]["refined_target_columns"] = refined.into();
         status["pending_uploads"] = self.pending_uploads.len().into();
         status["destroying"] = json!(destroying);
         status["physical_keys"] = json!(physical_keys);
@@ -1354,6 +1405,11 @@ impl Game<'_> {
         status["border"] = json!({ "center": self.border.center(), "size": self.border.size() });
         // The scoreboard sidebar the HUD shows.
         status["sidebar"] = self.sidebar_status();
+        // Who caused the input, and whether a repro recording runs.
+        let mut input = self.input_trace.summary();
+        self.repro
+            .fill_summary(&mut input, self.input_trace.events());
+        status["input"] = input;
         status
     }
 }
@@ -1384,6 +1440,10 @@ fn released_modifier(line: &str) -> Option<KeyCode> {
 
 fn key_code(name: &str) -> Option<KeyCode> {
     let name = name.to_ascii_lowercase();
+    // The game's own names (`key.keyboard.w`), which a recording writes.
+    if let Some(code) = horizon_client::keybinds::key_code(&name) {
+        return Some(code);
+    }
     let letters = [
         KeyCode::KeyA,
         KeyCode::KeyB,
@@ -1462,6 +1522,33 @@ fn key_code(name: &str) -> Option<KeyCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_title_takes_text_only_on_its_own_screens() {
+        assert!(title_owns_text(&Screen::Playing, true));
+        assert!(!title_owns_text(&Screen::Playing, false));
+        assert!(!title_owns_text(&Screen::Options, true));
+        assert!(!title_owns_text(&Screen::Chat, true));
+    }
+
+    #[test]
+    fn hello_names_the_protocol_the_release_and_the_command_groups() {
+        let reply = hello();
+        assert_eq!(reply["release"], horizon_core::release::VERSION);
+        let protocol = reply["protocol"].as_str().unwrap();
+        let parts: Vec<_> = protocol.split('.').collect();
+        assert!(
+            parts.len() == 3 && parts.iter().all(|p| p.parse::<u32>().is_ok()),
+            "{protocol}"
+        );
+        let features = reply["features"].as_array().unwrap();
+        assert!(!features.is_empty());
+        let mut names: Vec<_> = features.iter().filter_map(Value::as_str).collect();
+        assert_eq!(names.len(), features.len());
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), features.len(), "a group is named twice");
+    }
 
     #[test]
     fn taps_and_ups_always_release_their_key() {

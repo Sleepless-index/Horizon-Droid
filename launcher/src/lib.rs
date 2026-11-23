@@ -16,6 +16,8 @@ pub mod github_mods;
 pub mod heads;
 pub mod i18n;
 pub mod import;
+#[cfg(windows)]
+pub mod installer;
 pub mod instances;
 pub mod java;
 pub mod java_launch;
@@ -46,4 +48,5 @@ pub mod sources;
 pub mod tailscale;
 pub mod telemetry;
 pub mod themes;
+pub mod wardrobe;
 pub mod worlds;

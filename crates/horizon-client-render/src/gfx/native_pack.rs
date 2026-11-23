@@ -48,7 +48,17 @@ impl NativePack {
         let shadow = report
             .shadow
             .as_ref()
-            .map(|s| NativeShadow::new(device, terrain, &frame, &s.solid_materials))
+            .map(|s| {
+                let vertex = report.stages.iter().find(|s| s.kind == StageKind::Vertex);
+                NativeShadow::new(
+                    device,
+                    terrain,
+                    &frame,
+                    &s.solid_materials,
+                    vertex,
+                    constants,
+                )
+            })
             .transpose()?;
         // The mirror is drawn for a material that reads it, while `[reflection] option` is on.
         let option = report.reflection.as_ref().and_then(|r| r.option.as_ref());
@@ -123,6 +133,8 @@ impl NativePack {
             labels.extend(post.labels().into_iter().map(str::to_owned));
         }
         let pack = Self {
+            particle_lights: report.manifest.particle_lights.clone(),
+            light_colors: report.manifest.lights.clone(),
             frame,
             sky,
             material,

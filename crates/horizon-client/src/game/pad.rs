@@ -64,6 +64,9 @@ pub(super) struct Pads {
     late_releases: Vec<Button>,
     /// The merged state of the last poll.
     pub(super) state: PadState,
+    /// The hardware's buttons at the last poll, for `input-log`'s `pad`
+    /// events: the merged state hides which source moved.
+    last_hardware: PadState,
     /// The pad drove the game last (the mouse and keyboard hand control back).
     pub(super) in_use: bool,
     pub(super) style: GlyphStyle,
@@ -637,7 +640,7 @@ impl Game<'_> {
                 let screen_open = self.screen != Screen::Playing || self.title.is_some();
                 self.toggles.pad_toggle(SNEAK, screen_open);
                 self.sync_toggle(SNEAK);
-                self.key_pressed(KeyCode::ShiftLeft)
+                self.key_pressed(KeyCode::ShiftLeft, KeyCode::ShiftLeft)
             }
             // The touch button must always land, screen or not.
             "key.sneak" => self.hold_toggle(0, down),
@@ -651,7 +654,7 @@ impl Game<'_> {
                     }
                     Ok(())
                 } else if let Some(key) = key_code(default) {
-                    self.mapped_key(key, down, false)
+                    self.mapped_key(key, down, false, key)
                 } else {
                     Ok(())
                 }
@@ -679,7 +682,7 @@ impl Game<'_> {
             self.close_book();
             return Ok(());
         }
-        self.key_pressed(KeyCode::Escape)
+        self.key_pressed(KeyCode::Escape, KeyCode::Escape)
     }
 
     /// The left stick as the move vector, while playing.

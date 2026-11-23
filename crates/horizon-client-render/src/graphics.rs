@@ -19,20 +19,28 @@ pub const HDR_MARKER: &str = "horizon-hdr-pending";
 pub struct Reported {
     pub paper_white: u32,
     pub peak: u32,
+    /// The display's darkest black, in hundredths of a nit.
+    pub black: u32,
 }
 
-static REPORTED: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
+static REPORTED: [AtomicU32; 3] = [AtomicU32::new(0), AtomicU32::new(0), AtomicU32::new(0)];
 
 /// Sets what the system reports (the renderer, when it opens its surface).
 pub fn report(reported: Option<Reported>) {
-    let (paper_white, peak) = reported.map_or((0, 0), |r| (r.paper_white, r.peak));
+    let (paper_white, peak, black) =
+        reported.map_or((0, 0, 0), |r| (r.paper_white, r.peak, r.black));
     REPORTED[0].store(paper_white, Ordering::Relaxed);
     REPORTED[1].store(peak, Ordering::Relaxed);
+    REPORTED[2].store(black, Ordering::Relaxed);
 }
 /// What the system reports, if it does.
 pub fn reported() -> Option<Reported> {
-    let [paper_white, peak] = REPORTED.each_ref().map(|n| n.load(Ordering::Relaxed));
-    (peak > 0).then_some(Reported { paper_white, peak })
+    let [paper_white, peak, black] = REPORTED.each_ref().map(|n| n.load(Ordering::Relaxed));
+    (peak > 0).then_some(Reported {
+        paper_white,
+        peak,
+        black,
+    })
 }
 
 /// Simple-level presets. `Custom` leaves every option as the player set it.
@@ -76,6 +84,47 @@ impl Preset {
             .into_iter()
             .find(|p| p.name() == s)
             .unwrap_or_default()
+    }
+}
+
+/// Entity occlusion strategy. The synchronous mode preserves the original
+/// same-frame CPU test; asynchronous results only hide a mesh when their
+/// camera, bounds and occluder evidence still match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum EntityCullingMode {
+    #[default]
+    Off,
+    Synchronous,
+    Asynchronous,
+}
+impl EntityCullingMode {
+    pub const ALL: [EntityCullingMode; 3] = [
+        EntityCullingMode::Off,
+        EntityCullingMode::Synchronous,
+        EntityCullingMode::Asynchronous,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Synchronous => "sync",
+            Self::Asynchronous => "async",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Synchronous => "Synchronous",
+            Self::Asynchronous => "Asynchronous",
+        }
+    }
+    fn parse(s: &str) -> Self {
+        match s {
+            // Keep graphics files written before the mode selector readable.
+            "true" | "synchronous" | "sync" => Self::Synchronous,
+            "false" | "off" => Self::Off,
+            "asynchronous" | "async" => Self::Asynchronous,
+            _ => Self::default(),
+        }
     }
 }
 
@@ -196,7 +245,8 @@ impl GraphicsApi {
 /// What the frame limiter does in the last half millisecond before a frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Pacing {
-    /// Sleep the whole wait: no CPU spent spinning, a little less precise.
+    /// Sleep the whole wait: no CPU spent spinning, a little less precise; frames
+    /// keep to a fixed grid of slots, so late wake-ups don't lower the frame rate.
     #[default]
     Efficient,
     /// Vanilla's `FramerateLimiter`: sleep, then spin until the deadline.
@@ -385,7 +435,7 @@ static TRANSLUCENT_BATCHING_OFFERED: std::sync::atomic::AtomicBool =
 /// Whether the device can batch translucent quads (`Graphics::translucent_batching`): set when
 /// the renderer starts; not without indirect multi-draw or on OpenGL, which loops over a
 /// multi-draw's entries on the CPU, nor where vanilla frames draw flat (they read the section
-/// arena's translucent quads).
+/// arena's translucent quads). Where it can't, the settings grey its switch out.
 pub fn offer_translucent_batching(on: bool) {
     TRANSLUCENT_BATCHING_OFFERED.store(on, std::sync::atomic::Ordering::Relaxed);
 }
@@ -464,6 +514,9 @@ pub struct Graphics {
     pub lod_distance: u32,
     /// How finely far terrain is drawn; Full unless the player picks Reduced.
     pub far_detail: FarDetail,
+    /// Far terrain from servers' BlueMap web maps; no server has one unless
+    /// the player names it (`blueMap:` lines) or turns on auto-detect.
+    pub blue_map: crate::bluemap::Settings,
     /// Skip sections hidden behind closed ones (vanilla's occlusion graph).
     pub cave_culling: bool,
     /// Skip drawing entities hidden behind opaque terrain.
@@ -509,8 +562,9 @@ pub struct Graphics {
     /// HDR peak brightness the world's highlights reach, in nits; 0 is Auto:
     /// what the system reports for the display ([`Graphics::peak_nits`]).
     pub hdr_peak: u32,
-    /// HDR black level: the display's darkest black, in hundredths of a nit (0 for
-    /// an OLED's true black). Shadows are lifted onto it, and the HDR metadata says it.
+    /// HDR black level: the display's darkest black, in hundredths of a nit; 0 is Auto:
+    /// what the system reports, else true black. Shadows are lifted onto it, and the HDR
+    /// metadata says it.
     pub hdr_black_level: u32,
     /// HDR brightness of the HUD and menus, in percent of paper white (25..=100); the
     /// first-person hand stays at the world's.
@@ -528,9 +582,11 @@ pub struct Graphics {
     /// The graphics API (Windows only; see `GraphicsApi`).
     pub api: GraphicsApi,
     /// Translucent quads in vertex buffers of their own (`gfx`'s translucent arena), so their
-    /// back-to-front draws go out in a few calls, for a little more video memory. Off by
-    /// default for now; read when a renderer is made (start, resource-pack reload), where it is
-    /// offered (`translucent_batching_offered`).
+    /// back-to-front draws go out in a few calls, for a little more video memory. On by
+    /// default (Translucent Batching, Advanced graphics); read when a renderer is made (start,
+    /// resource-pack reload), where it is offered (`translucent_batching_offered`). Its key is
+    /// `batchTranslucent`: `translucentBatching`, which every save wrote as false while it was
+    /// off by default and had no switch, stays ignored.
     pub translucent_batching: bool,
     /// The shader pack picked in `shaderpacks/` (`shader_pack_list`); empty: none. Its key is
     /// not `shaderPack`, which versions before the clean-room rewrite saved and which stays
@@ -543,9 +599,18 @@ impl Default for Graphics {
             preset: Preset::Custom,
             lod_distance: 0,
             far_detail: FarDetail::Full,
+            blue_map: crate::bluemap::Settings::default(),
             cave_culling: true,
             entity_culling: false,
             leaf_culling: LeafCullingMode::Off,
+            cache_shulker_boxes: false,
+            // Sign text has used its renderer cache independently of the new model caches.
+            cache_signs: true,
+            cache_decorated_pots: false,
+            cache_bells: false,
+            cache_chests: false,
+            cache_banners: false,
+            cache_copper_golem_statues: false,
             chunk_updates: 0,
             upload_budget_kib: 0,
             texture_budget_mib: 0,
@@ -585,6 +650,14 @@ impl Graphics {
         let mut g: Self = fs::read_to_string(dir.join(FILE))
             .map(|t| Self::parse(&t))
             .unwrap_or_default();
+        g.blue_map.servers = match fs::read_to_string(dir.join(crate::bluemap::SERVERS_FILE)) {
+            Ok(text) => crate::bluemap::Settings::parse_servers(&text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => {
+                log::warn!("{}: {e}; no BlueMap is named", crate::bluemap::SERVERS_FILE);
+                Vec::new()
+            }
+        };
         if fs::remove_file(dir.join(HDR_MARKER)).is_ok() && g.hdr {
             g.hdr = false;
             g.save(dir);
@@ -628,6 +701,29 @@ impl Graphics {
                     }
                 }
                 "leafCulling" => g.leaf_culling = LeafCullingMode::parse(value),
+                "blockEntityCache" => {
+                    let enabled = flag(false);
+                    g.cache_shulker_boxes = enabled;
+                    g.cache_signs = enabled;
+                    g.cache_decorated_pots = enabled;
+                    g.cache_bells = enabled;
+                    g.cache_chests = enabled;
+                    g.cache_banners = enabled;
+                    g.cache_copper_golem_statues = enabled;
+                }
+                "blockEntityCacheShulkerBoxes" => {
+                    g.cache_shulker_boxes = flag(g.cache_shulker_boxes)
+                }
+                "blockEntityCacheSigns" => g.cache_signs = flag(g.cache_signs),
+                "blockEntityCacheDecoratedPots" => {
+                    g.cache_decorated_pots = flag(g.cache_decorated_pots)
+                }
+                "blockEntityCacheBells" => g.cache_bells = flag(g.cache_bells),
+                "blockEntityCacheChests" => g.cache_chests = flag(g.cache_chests),
+                "blockEntityCacheBanners" => g.cache_banners = flag(g.cache_banners),
+                "blockEntityCacheCopperGolemStatues" => {
+                    g.cache_copper_golem_statues = flag(g.cache_copper_golem_statues)
+                }
                 "chunkUpdates" => g.chunk_updates = number(g.chunk_updates).min(512),
                 "uploadBudgetKiB" => g.upload_budget_kib = number(g.upload_budget_kib).min(65536),
                 "textureBudgetMiB" => {
@@ -700,6 +796,13 @@ impl Graphics {
             bool_text(self.cave_culling),
             bool_text(self.entity_culling),
             self.leaf_culling.name(),
+            bool_text(self.cache_shulker_boxes),
+            bool_text(self.cache_signs),
+            bool_text(self.cache_decorated_pots),
+            bool_text(self.cache_bells),
+            bool_text(self.cache_chests),
+            bool_text(self.cache_banners),
+            bool_text(self.cache_copper_golem_statues),
             self.chunk_updates,
             self.upload_budget_kib,
             self.texture_budget_mib,
@@ -763,6 +866,14 @@ impl Graphics {
             0 => reported().map_or(1000, |r| r.peak),
             n => n,
         }
+    }
+    /// The black level, in nits: the player's, or on Auto what the system reports, else 0.
+    pub fn black_level_nits(&self) -> f32 {
+        let hundredths = match self.hdr_black_level {
+            0 => reported().map_or(0, |r| r.black),
+            n => n,
+        };
+        hundredths as f32 / 100.0
     }
     /// Worker threads for chunk generation and meshing.
     pub fn worker_threads(&self) -> usize {
@@ -865,9 +976,22 @@ mod tests {
             preset: Preset::Balanced,
             lod_distance: 256,
             far_detail: FarDetail::Reduced,
+            blue_map: crate::bluemap::Settings {
+                radius: 40,
+                auto_detect: true,
+                // In their own file (`bluemap::SERVERS_FILE`).
+                servers: Vec::new(),
+            },
             cave_culling: false,
             entity_culling: true,
             leaf_culling: LeafCullingMode::SolidAggressive,
+            cache_shulker_boxes: true,
+            cache_signs: true,
+            cache_decorated_pots: true,
+            cache_bells: true,
+            cache_chests: true,
+            cache_banners: true,
+            cache_copper_golem_statues: true,
             chunk_updates: 12,
             upload_budget_kib: 4096,
             texture_budget_mib: 1536,
@@ -898,6 +1022,28 @@ mod tests {
             shader_pack: "Golden Hour".into(),
         };
         assert_eq!(Graphics::parse(&g.serialize()), g);
+        for mode in EntityCullingMode::ALL {
+            let graphics = Graphics {
+                entity_culling: mode,
+                ..Graphics::default()
+            };
+            assert_eq!(Graphics::parse(&graphics.serialize()), graphics);
+        }
+        assert_eq!(
+            Graphics::parse("entityCulling:true\n").entity_culling,
+            EntityCullingMode::Synchronous
+        );
+        assert_eq!(
+            Graphics::parse("entityCulling:false\n").entity_culling,
+            EntityCullingMode::Off
+        );
+        // A map named here (a shared instance's, a pack's) is no map.
+        assert!(
+            Graphics::parse("blueMap:play.example.net https://map.example.net\n")
+                .blue_map
+                .servers
+                .is_empty()
+        );
         assert_eq!(Graphics::parse(""), Graphics::default());
         // Translucent Batching is opt-in for now: only the file turns it on.
         assert!(!Graphics::default().translucent_batching);
@@ -1049,10 +1195,12 @@ mod tests {
             assert_eq!(g.lod_distance_on(&discrete), distance);
         }
         assert!(
-            crate::graphics_ui::rows(crate::graphics_ui::Level::Simple)
-                .iter()
-                .any(|row| matches!(row, crate::graphics_ui::Row::Setting(s)
-                    if s.text.contains(&format!("{INTEGRATED_LOD_DISTANCE} chunks")))),
+            crate::graphics_ui::rows()
+                .into_iter()
+                .flat_map(|(_, groups)| groups.into_iter().flat_map(|(_, rows)| rows))
+                .any(|r| r
+                    .text
+                    .contains(&format!("{INTEGRATED_LOD_DISTANCE} chunks"))),
             "the LOD Distance description names the cap"
         );
     }

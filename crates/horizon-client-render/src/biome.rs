@@ -5,7 +5,6 @@ use horizon_core::{noise::SimplexNoise, position::BlockPos, random::LegacyRandom
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, HashMap},
-    fs,
     path::Path,
     sync::Arc,
 };
@@ -175,7 +174,10 @@ fn color(v: &Value) -> Option<u32> {
 }
 fn colormap(root: &Path, name: &str) -> Result<Vec<u32>> {
     let path = root.join(format!("assets/minecraft/textures/colormap/{name}.png"));
-    let mut decoder = png::Decoder::new(std::io::BufReader::new(fs::File::open(path)?));
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(horizon_core::prepared_files::read(
+        &path,
+    )?));
+    decoder.ignore_checksums(true);
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder.read_info()?;
     let mut bytes = vec![0; reader.output_buffer_size().ok_or("colormap too large")?];
@@ -332,10 +334,13 @@ impl Biomes {
             tags,
         };
         let mut list = Vec::new();
-        let mut names: Vec<_> = fs::read_dir(root.join("data/minecraft/worldgen/biome"))?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|e| e == "json"))
+        // The folder's own files (not its subfolders'), by file name: through `json_folder`,
+        // from the prepared data file when there is one.
+        let folder = horizon_world::json_folder::read(&root.join("data/minecraft/worldgen/biome"))?;
+        let mut files: Vec<_> = folder
+            .files
+            .iter()
+            .filter(|f| !f.name.contains('/'))
             .collect();
         names.sort();
         for path in names {
@@ -500,6 +505,25 @@ impl Biomes {
             }
         }
         changed.then_some(out)
+    }
+
+    /// This table (the biome files') with its colours passed through `f`, when
+    /// they differ from `current`'s: what a refresh of a table already
+    /// coloured by `f` once must not compound.
+    pub fn recolored_from(
+        &self,
+        current: &Self,
+        f: impl FnMut(&str, &mut BiomeColors),
+    ) -> Option<Self> {
+        let out = self.with_colors(f).unwrap_or_else(|| self.clone());
+        let tints = |b: &BiomeInfo| (b.grass, b.foliage, b.dry_foliage, b.water);
+        let same = out.list.len() == current.list.len()
+            && out
+                .list
+                .iter()
+                .zip(&current.list)
+                .all(|(a, b)| tints(a) == tints(b));
+        (!same).then_some(out)
     }
 }
 

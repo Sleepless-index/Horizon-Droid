@@ -92,8 +92,9 @@ pub(crate) fn prepare_with_models(
         .filter(|name| registry.default_state(name).is_some())
         .map(|name| name.strip_prefix("minecraft:").unwrap_or(name))
         .collect();
-    let catalog =
+    let mut catalog =
         StateModels::from_facts_with_models(root, registry, &blocks, sprites, &facts, models)?;
+    catalog.bake_standalone(root, sprites, models, standalone())?;
     let mut placements = Vec::new();
     let mut states = Vec::new();
     for (index, (name, properties)) in GALLERY.iter().enumerate() {
@@ -102,7 +103,16 @@ pub(crate) fn prepare_with_models(
             .state(state)
             .ok_or("missing gallery registry state")?;
         let position = BlockPos::new((index % 4) as i32 * 4 - 7, 4, (index / 4) as i32 * 4 + 14);
-        let selected = catalog.collect(state, position)?;
+        // A state no definition binds (a pack's partial blockstate file
+        // without vanilla's below it) is left out, as the mesher skips it,
+        // instead of failing the whole pack.
+        let selected = match catalog.collect(state, position) {
+            Ok(selected) => selected,
+            Err(e) => {
+                log::warn!("Horizon: gallery block {name} has no model: {e}");
+                continue;
+            }
+        };
         states.push(json!({"block":actual.name,"properties":actual.properties,"state_id":state.0,
             "position":[position.x,position.y,position.z],
             "models":selected.iter().map(|(v,_)| json!({"model":v.model,"rotations":v.rotations,"uv_lock":v.uv_lock})).collect::<Vec<_>>()}));
@@ -164,4 +174,24 @@ pub fn load_visibility(
         })
         .collect::<std::result::Result<_, &str>>()?;
     Ok(FaceVisibility::new(&occlusion, &definitions)?)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn standalone_names_are_namespaced_sorted_and_set_once() {
+        assert!(super::standalone().is_empty());
+        let names = [
+            "lanef:block/b",
+            "nonamespace",
+            ":x",
+            "lanef:",
+            "lanef:block/a",
+            "lanef:block/b",
+        ];
+        assert!(super::register_standalone(names.map(str::to_owned).into()));
+        assert_eq!(super::standalone(), ["lanef:block/a", "lanef:block/b"]);
+        assert!(!super::register_standalone(vec!["other:block/c".into()]));
+        assert_eq!(super::standalone(), ["lanef:block/a", "lanef:block/b"]);
+    }
 }

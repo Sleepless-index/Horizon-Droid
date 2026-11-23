@@ -1,10 +1,15 @@
 //! Read-only lifecycle observations for native mods on authoritative servers.
-//! The deprecated in-frame path delivers no lifecycle events. A paused pass
+//! A paused pass
 //! observes nothing; a frozen world reports `world_running: false` except during a step.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{Game, execution_role::ExecutionRole};
+// Their old home, for mixin code that names them here.
+pub(super) use horizon_client::mod_api::{
+    NativeAuthority, NativeLifecycleContext, NativeTickId, NativeWorldEpoch, ServerTickPhase,
+    WorldPhase,
+};
 
 /// Epoch allocation spans `Game` instances (a new server `Game` per
 /// launch), so the counter is process-wide.
@@ -61,6 +66,12 @@ impl NativeLifecycle {
                 .attempt
                 .as_ref()
                 .is_some_and(|a| a.session == OpenState::Ready && a.context() == *context)
+    }
+
+    /// The epoch of the world open now, from the start of its open to the end
+    /// of its close: what a mod's entity and level handles carry.
+    pub(super) fn epoch(&self) -> Option<NativeWorldEpoch> {
+        self.attempt.map(|a| NativeWorldEpoch::new(a.epoch))
     }
 
     /// The open starts: a fresh process-wide epoch, never reused.
@@ -194,6 +205,8 @@ impl Game<'_> {
 
     /// `error_text` is the engine's own error text, unchanged.
     pub(super) fn native_lifecycle_world_failed(&mut self, error_text: &str) {
+        // The levels that opened before the failure close first.
+        self.native_levels_closing();
         if let Some(context) = self.native_lifecycle.world_open_failed() {
             self.native_world_lifecycle(&context, WorldPhase::WorldOpenFailed, error_text);
         }
@@ -201,6 +214,7 @@ impl Game<'_> {
 
     /// Report a server-loop or shutdown failure once and retire its epoch.
     pub(super) fn native_lifecycle_close_failed(&mut self, error_text: &str) {
+        self.native_levels_closing();
         if let Some(context) = self.native_lifecycle.world_close_failed() {
             self.native_world_lifecycle(&context, WorldPhase::WorldCloseFailed, error_text);
         }
@@ -211,6 +225,8 @@ impl Game<'_> {
         if self.remote.is_some() {
             return;
         }
+        // Each level closes after the final save (`LevelEvent.Unload`).
+        self.native_levels_closing();
         if let Some(context) = self.native_lifecycle.world_close_final() {
             self.native_world_lifecycle(&context, WorldPhase::WorldCloseFinal, "");
         }
@@ -300,7 +316,7 @@ mod tests {
         let mut lifecycle = opening();
         let context = lifecycle.world_open_ready().expect("the first ready fires");
         assert_eq!(context.authority, NativeAuthority::IntegratedServer);
-        assert!(context.epoch.0 >= 1, "the epoch is globally allocated");
+        assert!(context.epoch.get() >= 1, "the epoch is globally allocated");
         assert!(lifecycle.world_open_ready().is_none(), "at most once");
     }
 
@@ -313,7 +329,7 @@ mod tests {
         assert!(lifecycle.server_tick_start(true).is_none());
         lifecycle.begin_open(NativeAuthority::IntegratedServer);
         let context = lifecycle.world_open_ready().expect("the retry opens fresh");
-        assert!(context.epoch.0 > failed_epoch.0, "a fresh epoch");
+        assert!(context.epoch.get() > failed_epoch.get(), "a fresh epoch");
     }
 
     #[test]
@@ -322,7 +338,7 @@ mod tests {
         lifecycle.world_open_ready();
         lifecycle.begin_close();
         let context = lifecycle.world_close_final().expect("the close fires");
-        assert!(context.epoch.0 >= 1);
+        assert!(context.epoch.get() >= 1);
         assert!(
             lifecycle.world_close_final().is_none(),
             "a repeated close request is a no-op"

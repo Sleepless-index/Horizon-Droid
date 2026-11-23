@@ -2308,7 +2308,9 @@ pub fn session_for_game(
         &mut accounts,
         offline_without_owner,
     )?;
-    let _ = accounts.save();
+    if let Err(e) = accounts.save() {
+        eprintln!("Horizon: the accounts are not saved: {e}");
+    }
     Ok(session_file(game_home, pass))
 }
 
@@ -2328,7 +2330,9 @@ pub fn session_for_game_as(
         &mut accounts,
         who,
     );
-    let _ = accounts.save();
+    if let Err(e) = accounts.save() {
+        eprintln!("Horizon: the accounts are not saved: {e}");
+    }
     Ok(session_file(game_home, pass?))
 }
 
@@ -2380,7 +2384,9 @@ pub fn java_player() -> Result<crate::java_launch::Player, String> {
         store(),
         &mut accounts,
     );
-    let _ = accounts.save();
+    if let Err(e) = accounts.save() {
+        eprintln!("Horizon: the accounts are not saved: {e}");
+    }
     player
 }
 
