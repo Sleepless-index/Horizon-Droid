@@ -368,17 +368,7 @@ pub struct RecipeBookCategory {
     pub icons: Vec<String>,
 }
 
-/// Context passed to custom loot conditions and functions.
-#[derive(Clone, Copy, Debug)]
-pub struct NativeLootContext<'a> {
-    pub dimension: &'a str,
-    pub origin: [f64; 3],
-    pub tool: Option<&'a ItemStack>,
-    pub explosion_radius: Option<f32>,
-    pub luck: f32,
-}
-
-
+pub use horizon_world::loot::NativeLootContext;
 
 /// Server-authoritative attachment storage types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -936,6 +926,12 @@ pub fn install_runtime_hooks(mods: Mods) {
             },
             modify_default_components: |item, components| {
                 dispatch_modify_default_components(self::mods(), item, components);
+            },
+            loot_function: |kind, data, ctx, stack| {
+                dispatch_loot_function(self::mods(), kind, data, ctx, stack);
+            },
+            loot_condition: |kind, data, ctx, holds| {
+                dispatch_loot_condition(self::mods(), kind, data, ctx, holds);
             },
         },
     );
