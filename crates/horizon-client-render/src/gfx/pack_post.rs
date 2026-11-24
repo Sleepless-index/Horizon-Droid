@@ -1751,6 +1751,19 @@ fn build_compute(
 }
 
 impl PackPost {
+    pub fn has_any_pass(&self) -> bool {
+        !self.passes.is_empty()
+            || self.terrain.is_some()
+            || self.water.is_some()
+            || self.sky.is_some()
+            || self.entities.as_ref().is_some_and(Entities::drawn)
+            || self.clouds.is_some()
+            || self.weather.is_some()
+            || self.hand.is_some()
+            || self.shadow_terrain.is_some()
+            || self.shadow_water.is_some()
+            || !self.shadow_comp.is_empty()
+    }
     /// Builds the pipelines of `post` for a screen of `screen` format.
     pub fn new(
         device: &wgpu::Device,

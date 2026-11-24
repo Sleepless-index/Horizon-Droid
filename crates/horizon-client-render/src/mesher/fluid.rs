@@ -235,7 +235,7 @@ pub(super) fn tesselate(
     let tint = if water {
         water_color & 0xFF_FFFF
     } else {
-        tables.lava_tint(kind)
+        0xFF_FFFF
     };
     let emission = if water {
         0

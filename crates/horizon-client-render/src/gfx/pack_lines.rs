@@ -50,6 +50,9 @@ pub fn inputs() -> horizon_shaders::GbuffersInputs {
             .collect(),
         after,
         alpha_test: None,
+        far_depth: false,
+        item_id_declared: false,
+        paged_maps: false,
     }
 }
 

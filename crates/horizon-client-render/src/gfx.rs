@@ -69,6 +69,7 @@ pub struct ShaderPackBuildContext {
     screen_format: wgpu::TextureFormat,
     atlas: Option<(wgpu::TextureView, [u32; 2])>,
     lightmap: wgpu::TextureView,
+    gui_size: [u32; 2],
     flat_layout: Option<wgpu::BindGroupLayout>,
     pack_terrain_flat: bool,
     celestial: Option<wgpu::TextureView>,
@@ -93,6 +94,7 @@ impl ShaderPackBuildContext {
         let world = pack_post::World {
             atlas: self.atlas.clone(),
             lightmap: self.lightmap,
+            gui_size: self.gui_size,
             terrain: self.atlas.as_ref().map(|_| pack_post::Geometry {
                 buffers: if flat { &buffers[..1] } else { &buffers },
                 table: self.flat_layout.as_ref().filter(|_| flat),
@@ -923,6 +925,7 @@ pub struct ReplacementContext {
     config: wgpu::SurfaceConfiguration,
     present_modes: Vec<wgpu::PresentMode>,
     hdr_output: Option<hdr::Output>,
+    reuse: Arc<reuse::Reuse>,
 }
 
 /// A frame to save as a PNG: F2's screenshot, an agent's `game_screenshot`,
@@ -2107,14 +2110,6 @@ async fn open_backend(
         limits.max_texture_array_layers,
     ));
     let desc = wgpu::DeviceDescriptor {
-        // Mobile drivers can spend hundreds of milliseconds reserving a new
-        // 128-256 MiB pool block. This changes allocation granularity, not
-        // resource limits, shader features, texture quality or geometry.
-        memory_hints: if cfg!(target_os = "android") {
-            wgpu::MemoryHints::MemoryUsage
-        } else {
-            wgpu::MemoryHints::Performance
-        },
         label: Some("Horizon device"),
         required_features: features,
         required_limits: limits,
@@ -2336,7 +2331,7 @@ impl Renderer {
         glint: (&[u8], u32, u32),
         glint_armor: (&[u8], u32, u32),
         forcefield: (&[u8], u32),
-        panorama_faces: &panorama::Faces,
+        panorama_faces: Arc<panorama::Faces>,
         prepared: Option<PreparedTextures>,
         mut previous: Option<ReplacementContext>,
         api: GraphicsApi,
@@ -2496,6 +2491,8 @@ impl Renderer {
         }
         // A renderer on the same device takes the previous one's shader
         // modules, layouts and pipelines where they come out the same.
+        let rebuilt = previous.is_some();
+        let fresh = previous.is_none();
         let reuse = previous.map_or_else(Default::default, |r| r.reuse.clone());
         let generation = reuse.begin();
         let kept = reuse.on(&device);
@@ -4521,13 +4518,13 @@ impl Renderer {
             panorama::Panorama::new(&device, config.format.remove_srgb_suffix(), panorama_faces);
         drop(pipelines_step);
         reuse.finish(generation);
-        if previous.is_some() {
+        if rebuilt {
             log::info!(
                 "Horizon renderer: rebuilt on the same device ({} shader modules, layouts and pipelines kept)",
                 reuse.len()
             );
         }
-        if previous.is_none() {
+        if fresh {
             startup_step(format_args!(
                 "pipelines ready (multi-draw {}, occlusion culling {}, GPU culling {}, GPU timer {})",
                 on_off(multi_draw),
@@ -4561,7 +4558,7 @@ impl Renderer {
             offscreen,
             in_flight: std::collections::VecDeque::new(),
             paced_elsewhere: false,
-            first_frame: if previous.is_none() {
+            first_frame: if fresh {
                 FirstFrame::Acquire
             } else {
                 FirstFrame::Drawn
@@ -4913,6 +4910,7 @@ impl Renderer {
             config: self.config.clone(),
             present_modes: self.present_modes.clone(),
             hdr_output: self.hdr_output,
+            reuse: self.reuse.clone(),
         }
     }
     fn replacement_context(&self) -> ReplacementContext {
@@ -4936,7 +4934,8 @@ impl Renderer {
             .spare_surface
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+            .take()
+            .map(Arc::new);
         self.offscreen = None;
         self.suspended = false;
         if cfg!(target_os = "android") || self.config.present_mode != previous.config.present_mode {
@@ -5027,7 +5026,7 @@ impl Renderer {
     pub fn set_loading_ui(
         &mut self,
         atlas: &crate::hud::HudAtlas,
-        panorama_faces: &panorama::Faces,
+        panorama_faces: Arc<panorama::Faces>,
     ) -> Result<()> {
         let limit = self.device.limits().max_texture_dimension_2d;
         if atlas.width.max(atlas.height) > limit {
@@ -5212,7 +5211,6 @@ impl Renderer {
         });
         self.panorama = panorama::Panorama::new(
             &self.device,
-            &self.queue,
             self.config.format.remove_srgb_suffix(),
             panorama_faces,
         );
@@ -5553,18 +5551,10 @@ impl Renderer {
     }
     /// Marks the cached blurred menu backdrop invalid (e.g. when entering a menu from gameplay).
     pub fn invalidate_menu_blur(&mut self) {
-        if let Some(blur) = &mut self.menu_blur {
-            blur.invalidate();
-        }
     }
     /// Whether `MenuBlur` holds a valid cached blurred backdrop for the current window and radius.
-    pub fn has_cached_menu_blur(&self, radius: f32) -> bool {
-        self.config.usage.contains(wgpu::TextureUsages::COPY_SRC)
-            && self.screenshot.is_none()
-            && self
-                .menu_blur
-                .as_ref()
-                .is_some_and(|b| b.is_cached([self.config.width, self.config.height], radius))
+    pub fn has_cached_menu_blur(&self, _radius: f32) -> bool {
+        false
     }
     /// Whether sections are drawn as one index list per frame (`flat`).
     pub fn flat_draws(&self) -> bool {
@@ -6913,6 +6903,11 @@ impl Renderer {
             screen_format: self.config.format.remove_srgb_suffix(),
             atlas: self.pack_atlas.as_ref().map(|a| (a.view.clone(), a.size())),
             lightmap: self.lightmap_view.clone(),
+            gui_size: self
+                .hud
+                .atlas_texture
+                .as_ref()
+                .map_or([1, 1], |t| [t.width(), t.height()]),
             flat_layout: self.flat.as_ref().map(|f| f.draw_layout.clone()),
             pack_terrain_flat: self.pack_terrain_flat,
             celestial: self
@@ -7684,9 +7679,6 @@ impl Renderer {
                 format: Some(self.config.format.remove_srgb_suffix()),
                 ..Default::default()
             });
-            if let Some(blur) = &self.menu_blur {
-                let _ = blur.blit_cached(&self.queue, &mut encoder, &view_target);
-            }
             let blur_at = frame.hud.blur_at;
             self.hud.draw_range(
                 &mut encoder,
@@ -9695,9 +9687,9 @@ impl Renderer {
             .and_then(|n| Some((n.material.as_ref()?, &n.frame.group)));
         let solid_pipeline = material.map_or(&self.solid, |(m, _)| &m.solid);
         self.terrain_pass_draws = (split_terrain && !flat_frame).then_some([
-            opaque_draws,
-            cutout_end - opaque_draws,
-            solid_draws - cutout_end,
+            opaque_end as u32,
+            phase1_draws - opaque_end as u32,
+            solid_draws - phase1_draws,
         ]);
         // Two solid passes only where a discard costs the GPU its hidden surface
         // removal: Apple's tiled GPUs, behind Metal. Elsewhere the second pass
@@ -10587,7 +10579,7 @@ impl Renderer {
                 |rp: &mut wgpu::RenderPass<'_>,
                  list: pack_post::TerrainList,
                  page: &dyn Fn(&mut wgpu::RenderPass<'_>, u32),
-                 geometry: Option<(u32, u32, &wgpu::BindGroupLayout)>| {
+                 geometry: Option<(u32, &wgpu::BindGroupLayout)>| {
                     use pack_post::TerrainList as L;
                     let shadow = matches!(list, L::ShadowSolid | L::ShadowTranslucent);
                     if !(if shadow {
@@ -10607,8 +10599,9 @@ impl Renderer {
                                 L::ShadowTranslucent => &flat.calls[shadow_translucent..],
                             };
                             match geometry {
-                                Some((instances, group_slot, layout)) => {
-                                    if group_slot != 3 {
+                                Some((instances, layout)) => {
+                                    let group_slot = 5;
+                                    {
                                         let indices = self.device.create_bind_group(
                                             &wgpu::BindGroupDescriptor {
                                                 label: Some("Shader pack geometry indices"),
@@ -10661,7 +10654,6 @@ impl Renderer {
                 indices: self.indices.clone(),
                 quads: cloud_quads,
             }));
-            let flat_indices = flat.map(|f| &f.indices);
             post.run(
                 &self.device,
                 &self.queue,
@@ -10674,7 +10666,6 @@ impl Renderer {
                 size,
                 [self.config.width, self.config.height],
                 &pages,
-                flat_indices,
                 &mut terrain,
             );
             self.pack_post = Some((dimension, Some(post)));
@@ -10765,16 +10756,8 @@ impl Renderer {
                 camera: frame.camera,
                 entities: frame.entities,
                 spans: frame.entity_spans,
-                motion: frame.entity_motion,
                 atlas: self.hud.atlas_texture.as_ref(),
                 quad_indices: &self.indices,
-                block_sprites: native_render::BlockSpriteArrays {
-                    views: &self.sprite_views,
-                    split: self.sprite_split,
-                    size: self.sprite_textures[0].width(),
-                    nearest: &self.sprite_nearest,
-                    filtered: &self.sprite_sampler,
-                },
             });
         }
         let overlay = Overlay {

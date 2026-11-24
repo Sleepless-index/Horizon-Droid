@@ -63,7 +63,15 @@ pub fn job<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
     } else {
         "worker"
     };
-    collect(role, Span { name, ms, cpu_ms });
+    collect(
+        role,
+        Span {
+            name,
+            ms,
+            cpu_ms,
+            depth: 0,
+        },
+    );
     value
 }
 thread_local! {
@@ -618,9 +626,4 @@ mod tests {
         assert!(slept.as_millis() < 25, "{slept:?} while asleep");
         assert!(worked.as_millis() >= 10, "{worked:?} while busy");
     }
-}
-
-pub mod startup {
-    pub fn init(_at: std::time::Instant) {}
-    pub fn step(_name: &'static str) {}
 }

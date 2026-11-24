@@ -2,7 +2,7 @@
 //! settings, kept in `horizon-extras.txt` next to `options.txt` so that file
 //! stays exactly vanilla's, and the logic behind them. Every extra is off by
 //! default; see `docs/extras.md`. Horizon's own switches outside the Extras page
-//! (No AI, Agent Control, Discord Rich Presence) are kept here too.
+//! (No AI, Agent Control) are kept here too.
 use std::{collections::VecDeque, fs, path::Path};
 
 pub const FILE: &str = "horizon-extras.txt";
@@ -44,7 +44,7 @@ impl Corner {
             Corner::BottomRight => "Bottom right",
         }
     }
-    fn parse(s: &str, default: Corner) -> Corner {
+    pub fn parse(s: &str, default: Corner) -> Corner {
         Self::ALL
             .into_iter()
             .find(|c| c.name() == s)
@@ -76,8 +76,9 @@ pub struct Extras {
     pub zoom_smooth: bool,
     /// Divide mouse turning by the zoom.
     pub zoom_sensitivity: bool,
-    /// The FPS counter and keystrokes extras are official mods now: their
-    /// old settings stay here, kept as they were.
+    /// The FPS counter and keystrokes extras are official mods now
+    /// (`moved_extras`): their old settings stay here until the game has
+    /// installed the mod for a player who had one on.
     pub fps: bool,
     pub fps_corner: Corner,
     /// Also show the minimum and 1% low.
@@ -86,8 +87,8 @@ pub struct Extras {
     pub keystrokes_corner: Corner,
     /// Clicks per second under the mouse buttons.
     pub keystrokes_cps: bool,
-    /// The official mods once installed for the extras they replace, by mod
-    /// id (`movedToMods`).
+    /// The official mods installed for the extras they replace, by mod id
+    /// (`movedToMods`): each is done once.
     pub moved: Vec<String>,
     pub minimap: bool,
     pub minimap_corner: Corner,
@@ -124,6 +125,8 @@ pub struct Extras {
     /// Agents may control the game the player starts: it opens its control socket for
     /// horizon-ctl and MCP clients (off by default; an agent's own launch always opens it).
     pub agent_control: bool,
+    /// The PvP & HUD page's options (`pvp`).
+    pub pvp: crate::pvp::Pvp,
     /// F3+R and F3+E start/stop a repro recording and write its bundle (off by
     /// default: a recording copies the world).
     pub repro_keys: bool,
@@ -194,6 +197,7 @@ impl Default for Extras {
             chat_indicator: true,
             no_ai: false,
             agent_control: false,
+            pvp: Default::default(),
             repro_keys: false,
             discord_presence: true,
             splitscreen: false,
@@ -307,13 +311,15 @@ impl Extras {
                         horizon_cosmetics::prefs::Others::parse(value).unwrap_or(e.cosmetics_others)
                 }
                 "cosmeticsAuras" => e.cosmetics_auras = flag(e.cosmetics_auras),
-                _ => {}
+key => {
+                    e.pvp.parse_line(key, value);
+                }
             }
         }
         e
     }
     pub fn serialize(&self) -> String {
-        format!(
+        let mut text = format!(
             "packBrowser:{}\nfullbright:{}\ndynamicLights:{}\nzoom:{}\nzoomKey:{}\nzoomLevel:{}\nzoomSmooth:{}\nzoomSensitivity:{}\nfps:{}\nfpsCorner:{}\nfpsLows:{}\nkeystrokes:{}\nkeystrokesCorner:{}\nkeystrokesCps:{}\nmovedToMods:{}\nminimap:{}\nminimapCorner:{}\nminimapSize:{}\nminimapShape:{}\nminimapZoom:{}\nminimapRotate:{}\nautoReconnect:{}\nuiSoundReserve:{}\nownNameTag:{}\nhideBlockParticles:{}\nmouseTweaks:{}\nmouseTweaksWheel:{}\nsort:{}\nsortKey:{}\nchatAnimation:{}\nchatIndicator:{}\n{}:{}\nagentControl:{}\nreproKeys:{}\ndiscordPresence:{}\nsplitscreen:{}\nsplitscreenTwo:{}\nsplitscreenThree:{}\nsplitscreenNames:{}\nwheelCyclesSettings:{}\nmusicOff:{}\nmusicPage:{}\ncosmeticsMine:{}\ncosmeticsOthers:{}\ncosmeticsAuras:{}\n",
             bool_text(self.pack_browser),
             bool_text(self.fullbright),
@@ -365,13 +371,16 @@ impl Extras {
             bool_text(self.cosmetics_mine),
             self.cosmetics_others.name(),
             bool_text(self.cosmetics_auras),
-        )
+        );
+        self.pvp.serialize(&mut text);
+        text
     }
     /// Binds the extra key `name` (`SORT_KEY`); false for
     /// another name (a vanilla mapping).
     pub fn set_key(&mut self, name: &str, value: String) -> bool {
         match name {
             SORT_KEY => self.sort_key = value,
+            crate::pvp::HUD_EDITOR_KEY => self.pvp.editor_key = value,
             _ => return false,
         }
         true
@@ -388,7 +397,7 @@ impl Extras {
 }
 
 /// The field-of-view modifier target `Camera.tickFov` eases toward: vanilla's
-/// (`getFieldOfViewModifier`) divided by a mod's zoom (`native_zoom`). A
+/// (`getFieldOfViewModifier`) divided by a mod's zoom (`render.set-zoom`). A
 /// zoom of 1 leaves it as is.
 pub fn fov_target(vanilla: f32, zoom: f32) -> f32 {
     if zoom == 1.0 { vanilla } else { vanilla / zoom }
@@ -509,6 +518,8 @@ pub enum Item {
     DiscordPresence,
     /// On the AI Agent page, next to Agent Control: the F3 recording shortcuts.
     ReproKeys,
+    /// On the PvP & HUD page (`pvp::rows`).
+    Pvp(crate::pvp::Opt),
     /// On the Splitscreen settings page.
     Splitscreen,
     WheelCyclesSettings,
@@ -561,6 +572,7 @@ impl Item {
     /// The language key of the caption (`horizon.*`, assets/horizon/lang).
     pub fn caption_key(self) -> &'static str {
         match self {
+            Item::Pvp(_) => "horizon.extras.pvp",
             Item::Fullbright => "horizon.extras.fullbright",
             Item::DynamicLights => "horizon.extras.dynamic_lights",
             Item::OwnNameTag => "horizon.extras.own_name_tag",
@@ -589,6 +601,7 @@ impl Item {
     /// The language key of the description shown as the row's tooltip.
     pub fn description_key(self) -> &'static str {
         match self {
+            Item::Pvp(_) => "horizon.extras.pvp.tooltip",
             Item::Fullbright => "horizon.extras.fullbright.tooltip",
             Item::DynamicLights => "horizon.extras.dynamic_lights.tooltip",
             Item::OwnNameTag => "horizon.extras.own_name_tag.tooltip",
@@ -643,6 +656,7 @@ impl Item {
             Item::AgentControl => "Agent Control",
             Item::ReproKeys => "Recording shortcuts",
             Item::DiscordPresence => "Discord Rich Presence",
+            Item::Pvp(o) => o.caption(),
             Item::Splitscreen => "Splitscreen",
             Item::WheelCyclesSettings => "Scroll wheel changes settings",
             Item::PackBrowser => "Resource pack browser",
@@ -655,6 +669,7 @@ impl Item {
     pub fn parent(self) -> Option<Item> {
         use Item::*;
         Some(match self {
+            Pvp(o) => return o.parent().map(Pvp),
             UiSoundReserve => return None,
             MouseTweaksWheel => MouseTweaks,
             SortKey => Sort,
@@ -670,6 +685,10 @@ impl Item {
     /// The English description: the fallback of [`Item::description_text`].
     pub fn description(self) -> &'static str {
         match self {
+            Item::Pvp(o) => o.description(),
+            Item::DiscordPresence => {
+                "Shows Playing Horizon on your Discord profile while Discord runs: menus, single player or multiplayer, the dimension and the time played. Never a world's name or a server's address."
+            }
             Item::Fullbright => "Show blocks and entities at full light, even in dark areas.",
             Item::DynamicLights => {
                 "Torches and other light sources held, dropped or on fire light the blocks around them."
@@ -708,9 +727,10 @@ impl Item {
             Item::NoAi => {
                 "Hides and turns off every AI feature: agent control, horizon-ctl and the MCP servers. The launcher's switch too."
             }
-            Item::DiscordPresence => {
-                "Shows Playing Horizon on your Discord profile while Discord runs: menus, single player or multiplayer, the dimension and the time played. Never a world's name or a server's address."
+            Item::PackBrowser => {
+                "Select Resource Packs gets an Add button that searches Modrinth and installs a pack into your packs folder. Off, the game never contacts Modrinth."
             }
+            Item::Pvp(o) => o.description(),
             Item::Splitscreen => {
                 "In a world, another controller can join as a new player: press A when it asks, then pick a profile and where to play."
             }
@@ -775,6 +795,7 @@ impl Item {
             Item::AgentControl => e.agent_control,
             Item::ReproKeys => e.repro_keys,
             Item::DiscordPresence => e.discord_presence,
+            Item::Pvp(o) => return o.switch(&e.pvp),
             Item::Splitscreen => e.splitscreen,
             Item::WheelCyclesSettings => e.wheel_cycles_settings,
             Item::PackBrowser => e.pack_browser,
@@ -786,6 +807,7 @@ impl Item {
     pub fn value(self, e: &Extras) -> String {
         match self {
             Item::SortKey => crate::keybinds::display_name(&e.sort_key).plain(),
+            Item::Pvp(o) if o.switch(&e.pvp).is_none() => o.value(&e.pvp).unwrap_or_default(),
             Item::CosmeticsMine => match e.cosmetics_mine {
                 true => crate::lang::get_or("horizon.extras.cosmetics.shown", "Shown"),
                 false => crate::lang::get_or("horizon.extras.cosmetics.hidden", "Hidden"),
@@ -808,6 +830,18 @@ impl Item {
             },
         }
     }
+    pub fn slider_position(self, e: &Extras) -> Option<f32> {
+        match self {
+            Item::Pvp(o) => o.slider_position(&e.pvp),
+            _ => None,
+        }
+    }
+    pub fn set_slider(self, e: &mut Extras, position: f32) -> bool {
+        match self {
+            Item::Pvp(o) => o.set_slider(&mut e.pvp, position),
+            _ => false,
+        }
+    }
     /// A click (`back` for the right button: it turns the three-way cosmetics button the other
     /// way; every other item left is a switch, so both flip it). The sort key binds instead.
     pub fn cycle(self, e: &mut Extras, back: bool) {
@@ -828,6 +862,7 @@ impl Item {
             Item::AgentControl => e.agent_control = !e.agent_control,
             Item::ReproKeys => e.repro_keys = !e.repro_keys,
             Item::DiscordPresence => e.discord_presence = !e.discord_presence,
+            Item::Pvp(o) => o.cycle(&mut e.pvp, back),
             Item::Splitscreen => e.splitscreen = !e.splitscreen,
             Item::WheelCyclesSettings => e.wheel_cycles_settings = !e.wheel_cycles_settings,
             Item::PackBrowser => e.pack_browser = !e.pack_browser,
@@ -844,6 +879,7 @@ impl Item {
     pub fn key_name(self) -> Option<&'static str> {
         match self {
             Item::SortKey => Some(SORT_KEY),
+            Item::Pvp(crate::pvp::Opt::HudEditorKey) => Some(crate::pvp::HUD_EDITOR_KEY),
             _ => None,
         }
     }
@@ -926,7 +962,6 @@ mod tests {
         e.sort_key = "key.keyboard.r".into();
         e.chat_animation = true;
         e.chat_indicator = false;
-        e.discord_presence = false;
         assert!(!e.splitscreen);
         Item::Splitscreen.cycle(&mut e, false);
         assert_eq!(Item::Splitscreen.switch(&e), Some(true));

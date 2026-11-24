@@ -11,6 +11,7 @@ use std::{
 };
 use wgpu::util::DeviceExt;
 
+pub mod cit_glint;
 mod pack_text;
 
 /// A sprite's atlas region, and its size in GUI pixels: the size of the
@@ -107,6 +108,10 @@ pub struct HudAtlas {
     pub text_shader: Option<std::sync::Arc<horizon_shaders::CoreProgram>>,
     /// The packs' OptiFine random entity textures, whose variants this atlas packs.
     pub random_textures: horizon_optifine::random_textures::RandomTextures,
+    /// Their emissive overlays (`_e`), packed here too.
+    pub emissive: std::sync::Arc<horizon_optifine::emissive::Emissive>,
+    /// ETF's blinking frames (`_blink`), packed here too.
+    pub blinks: horizon_optifine::blink::Blinks,
     white: Rect,
 }
 /// Atlas rows reserved for glyphs rasterized at run time.
@@ -809,24 +814,14 @@ impl HudAtlas {
     /// The atlas of a resource root that layers packs over `defaults` (the
     /// game's own resources), whose textures give the sprites' GUI sizes.
     pub fn build_over(root: &Path, defaults: &Path) -> Result<Self> {
-        let mut atlas = Self::pack(
-            root,
-            defaults,
-            &[
-                "gui",
-                "item",
-                "block",
-                "font",
-                "environment",
-                "misc",
-                "painting",
-                "entity",
-                "particle",
-                "mob_effect",
-                "map",
-            ],
-            true,
-        )?;
+        Self::build_over_with_image(root, defaults, false)
+    }
+    /// The atlas above, with a slot for a native mod's own image
+    /// (`horizon/modimage`) only when `mod_image` says a mod is loaded that
+    /// draws one: the slot costs 4 MiB of pixels, so a game without native
+    /// mods holds none of them.
+    pub fn build_over_with_image(root: &Path, defaults: &Path, mod_image: bool) -> Result<Self> {
+        let mut atlas = Self::pack(root, defaults, WALKED_TEXTURE_FOLDERS, true, mod_image)?;
         atlas.text_shader = pack_text::load(root, defaults);
         let modifiers = horizon_polytone::sprites::SpriteModifier::read_all(root);
         if !modifiers.is_empty() {
@@ -1235,6 +1230,33 @@ impl HudAtlas {
             }
         }
     }
+    /// `layout`'s shelves at one width: the placements and the first row below
+    /// them. `first_fit` puts an image in the first shelf that is tall enough
+    /// and has room, instead of only the last one.
+    fn shelves(images: &[PackedImage], width: u32, first_fit: bool) -> (Vec<(u32, u32)>, u32) {
+        // Each shelf: its top row, its height (its first image's) and the next free column.
+        let mut shelves: Vec<(u32, u32, u32)> = Vec::new();
+        let mut placements = Vec::with_capacity(images.len());
+        for (_, w, h, _) in images {
+            let open = if first_fit {
+                shelves.iter().position(|s| s.1 >= *h && s.2 + w < width)
+            } else {
+                shelves
+                    .len()
+                    .checked_sub(1)
+                    .filter(|&i| shelves[i].1 >= *h && shelves[i].2 + w < width)
+            };
+            let i = open.unwrap_or_else(|| {
+                let top = shelves.last().map_or(0, |s| s.0 + s.1 + 1);
+                shelves.push((top, *h, 0));
+                shelves.len() - 1
+            });
+            placements.push((shelves[i].2, shelves[i].0));
+            shelves[i].2 += w + 1;
+        }
+        let glyph_region = shelves.last().map_or(1, |s| s.0 + s.1 + 1);
+        (placements, glyph_region)
+    }
     /// Pack the textures under these folders of `textures/`, and for the
     /// `full` atlas the generated sprites and the run-time slots too.
     fn pack(
@@ -1402,7 +1424,9 @@ impl HudAtlas {
             let image = decode(path)
                 .map_err(|e| log::warn!("skipped GUI texture {}: {e}", path.display()))
                 .ok()?;
-            let mcmeta = fs::read_to_string(path.with_extension("png.mcmeta")).ok();
+            let mcmeta =
+                horizon_core::prepared_files::read_to_string(&path.with_extension("png.mcmeta"))
+                    .ok();
             let animation = animation_of(mcmeta.as_deref());
             // An animated strip keeps its first frame.
             let frames = name.starts_with("block/") || name.starts_with("item/");
@@ -1487,7 +1511,7 @@ impl HudAtlas {
         }
         images.push(("horizon/white".into(), 4, 4, vec![255; 64]));
         if full {
-            Self::slots(&mut images, crate::trims::slot_size(root));
+            Self::slots(&mut images, crate::trims::slot_size(root), mod_image);
             // MissingTextureAtlasSprite.generateMissingImage: 16x16, magenta
             // and black quarters.
             let missing = (0..256)
@@ -1517,7 +1541,8 @@ impl HudAtlas {
             }
         }
         images.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
-        let (width, placements, glyph_region) = Self::layout(&images, atlas_limit)?;
+        let (width, placements, glyph_region) =
+            Self::layout_leaving_out(&mut images, &mut animated, &cit_names, atlas_limit)?;
         // A multiple of 1024 rather than a power of two: the default resources
         // need 4096x5120 (8192 rows before), Faithful 32x 4096x12288 (16384).
         let height = (glyph_region + GLYPH_ROWS).next_multiple_of(1024);
@@ -1616,6 +1641,8 @@ impl HudAtlas {
             glint_armor,
             text_shader: None,
             random_textures,
+            emissive,
+            blinks,
             font,
             white,
         })
@@ -3059,6 +3086,12 @@ impl HudRenderer {
                     Blend::Depth(_) => &self.depth_pipeline,
                     Blend::Vignette => &self.vignette_pipeline,
                     Blend::EndPortal => &self.end_portal_pipeline,
+                    Blend::CitGlint(blend) => {
+                        if let Some(cit) = &self.cit_glint {
+                            cit.draw(&mut pass, *blend, range.clone());
+                        }
+                        continue;
+                    }
                 };
                 match &self.pack_text {
                     Some(pack_text) if *blend == Blend::Alpha => {

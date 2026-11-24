@@ -65,6 +65,10 @@ const MODEL_PART_KEYS: [&str; 7] = [
 pub(crate) const ACCESSIBILITY_OPTIONS: &[Opt] = &[
     Opt::Narrator,
     Opt::ShowSubtitles,
+    #[cfg(target_os = "android")]
+    Opt::TouchHorizontalMargin,
+    #[cfg(target_os = "android")]
+    Opt::TouchVerticalMargin,
     Opt::HighContrast,
     Opt::MenuBlur,
     Opt::TextBackgroundOpacity,
@@ -94,6 +98,9 @@ pub(crate) const ACCESSIBILITY_OPTIONS: &[Opt] = &[
 /// other platforms just as `InputQuirks.EMULATE_RIGHT_CLICK_WITH_CTRL_KEY`
 /// does in Java.
 pub(crate) fn vanilla_control_options() -> Vec<Opt> {
+    if cfg!(target_os = "android") {
+        return vec![Opt::ToggleCrouch, Opt::ToggleSprint, Opt::AutoJump];
+    }
     let mut options = vec![
         Opt::ToggleCrouch,
         Opt::ToggleSprint,
@@ -123,6 +130,9 @@ pub(crate) const MOUSE_OPTIONS: &[Opt] = &[
 impl Opt {
     /// Keep controls visible while their underlying systems are still missing.
     pub(crate) fn available(self) -> bool {
+        if cfg!(target_os = "android") && self == Opt::GraphicsBackend {
+            return false;
+        }
         !matches!(
             self,
             // Stored, but there are no blocked players or signed chat yet.
@@ -177,6 +187,34 @@ impl Opt {
 
     pub(crate) fn caption(self) -> &'static str {
         match self {
+            Opt::TouchMode => "Control scheme",
+            Opt::TouchCrosshairGestures => "Touch gestures",
+            Opt::TouchAttackButtonLook => "Look while attacking",
+            Opt::TouchMouseSensitivity => "Virtual mouse sensitivity",
+            Opt::TouchAnalog => "360-degree movement",
+            Opt::TouchCircleSize => "Touch circle size",
+            Opt::TouchAttackSide => "Attack indicator side",
+            Opt::TouchHorizontalMargin => "HUD margins: left / right",
+            Opt::TouchVerticalMargin => "HUD margins: top / bottom",
+            Opt::TouchSensitivity => "Touch sensitivity",
+            Opt::TouchSensitivityHorizontal => "Horizontal sensitivity",
+            Opt::TouchSensitivityVertical => "Vertical sensitivity",
+            Opt::TouchOffhand => "Swap hands button",
+            Opt::TouchShield => "Raise shield with",
+            Opt::TouchButtonScale => "Control button size",
+            Opt::TouchInteract => "Interact button",
+            Opt::TouchLeftHand => "Left handed",
+            Opt::TouchSprintButton => "Sprint button",
+            Opt::TouchSprintToggle => "Toggle sprint button",
+            Opt::TouchInventoryControls => "Controls in inventory",
+            Opt::TouchDynamicJoystick => "Dynamic joystick",
+            Opt::TouchDynamicAreaX => "Dynamic joystick width",
+            Opt::TouchDynamicAreaY => "Dynamic joystick height",
+            Opt::AndroidGyroscope => "Gyroscope aiming",
+            Opt::AndroidGyroSensitivity => "Gyroscope sensitivity",
+            Opt::AndroidInputMode => "Input device",
+            Opt::TouchSwapJumpSneak => "Swap jump / sneak",
+            Opt::TouchAutoSprint => "Auto Sprint",
             Opt::Fov => "options.fov",
             Opt::RenderDistance => "options.renderDistance",
             Opt::SimulationDistance => "options.simulationDistance",
@@ -189,6 +227,7 @@ impl Opt {
             Opt::Volume(_) => "soundCategory.master",
             Opt::SoundDevice => "options.audioDevice",
             Opt::GuiScale => "options.guiScale",
+            Opt::DebugGuiScale => "F3 text scale",
             Opt::ViewBobbing => "options.viewBobbing",
             Opt::Gamma => "options.gamma",
             Opt::MaxFps => "options.framerateLimit",
@@ -309,6 +348,18 @@ impl Opt {
             | Opt::GlintSpeed
             | Opt::GlintStrength
             | Opt::PanoramaSpeed => Kind::Slider(s.file.double(self.file_key().unwrap()) as f32),
+            Opt::TouchCircleSize => unit(s.touch.circle_size, 16.0, 64.0),
+            Opt::TouchDynamicAreaX => unit(s.touch.dynamic_area_x, 0.0, 1.0),
+            Opt::TouchDynamicAreaY => unit(s.touch.dynamic_area_y, 0.0, 1.0),
+            Opt::TouchHorizontalMargin => unit(s.touch.horizontal_margin, 0.0, 0.12),
+            Opt::TouchVerticalMargin => unit(s.touch.vertical_margin, 0.0, 0.12),
+            Opt::DebugGuiScale => unit(s.file.int("debugGuiScale").max(0) as f32, 0.0, 6.0),
+            Opt::AndroidGyroSensitivity => unit(s.touch.gyro_sensitivity, 0.1, 3.0),
+            Opt::TouchSensitivity => unit(s.touch.sensitivity, 0.1, 3.0),
+            Opt::TouchSensitivityHorizontal => unit(s.touch.sensitivity_horizontal, 0.1, 3.0),
+            Opt::TouchSensitivityVertical => unit(s.touch.sensitivity_vertical, 0.1, 3.0),
+            Opt::TouchMouseSensitivity => unit(s.touch.virtual_mouse_sensitivity, 0.25, 3.0),
+            Opt::TouchButtonScale => unit(s.touch.button_scale, 0.5, 2.0),
             Opt::Fov => unit(s.fov, 30.0, 110.0),
             Opt::RenderDistance => unit(
                 s.render_distance as f32,
@@ -451,6 +502,122 @@ impl Opt {
     /// The widget message (OptionInstance.toString / CycleButton full name).
     pub fn label(self, s: &Settings) -> Text {
         let c = self.caption();
+        let touch_value = match self {
+            Opt::TouchMode => Some(
+                crate::touch::Mode::SCHEMES
+                    .iter()
+                    .find(|(mode, split, _)| {
+                        *mode == s.touch.mode
+                            && (!matches!(mode, crate::touch::Mode::Dpad | crate::touch::Mode::Tap)
+                                || *split == s.touch.split_controls)
+                    })
+                    .map_or("Joystick & aim crosshair", |(_, _, label)| *label)
+                    .to_owned(),
+            ),
+            Opt::TouchCircleSize => Some(format!("{} px", s.touch.circle_size.round())),
+            Opt::TouchAttackSide => Some(
+                if s.touch.attack_indicator_left {
+                    "Left"
+                } else {
+                    "Right"
+                }
+                .into(),
+            ),
+            Opt::TouchHorizontalMargin => {
+                Some(format!("{:.1}%", s.touch.horizontal_margin * 100.0))
+            }
+            Opt::TouchVerticalMargin => Some(format!("{:.1}%", s.touch.vertical_margin * 100.0)),
+            Opt::DebugGuiScale => Some(match s.file.int("debugGuiScale") {
+                n if n <= 0 => "Auto".into(),
+                n => format!("{n}x"),
+            }),
+            Opt::AndroidGyroscope => Some(if s.touch.gyroscope { "ON" } else { "OFF" }.into()),
+            Opt::AndroidGyroSensitivity => {
+                Some(format!("{:.0}%", s.touch.gyro_sensitivity * 100.0))
+            }
+            Opt::TouchSensitivity => Some(format!("{:.0}%", s.touch.sensitivity * 100.0)),
+            Opt::TouchSensitivityHorizontal => {
+                Some(format!("{:.0}%", s.touch.sensitivity_horizontal * 100.0))
+            }
+            Opt::TouchSensitivityVertical => {
+                Some(format!("{:.0}%", s.touch.sensitivity_vertical * 100.0))
+            }
+            Opt::TouchOffhand => Some(if s.touch.offhand_button { "On" } else { "Off" }.into()),
+            Opt::TouchShield => Some(
+                if s.touch.shield_button {
+                    "Button"
+                } else {
+                    "Sneak"
+                }
+                .into(),
+            ),
+            Opt::TouchMouseSensitivity => {
+                Some(format!("{:.0}%", s.touch.virtual_mouse_sensitivity * 100.0))
+            }
+            Opt::TouchAttackButtonLook => Some(
+                if s.touch.attack_button_look {
+                    "ON"
+                } else {
+                    "OFF"
+                }
+                .into(),
+            ),
+            Opt::TouchCrosshairGestures => Some(
+                if s.touch.crosshair_gestures {
+                    "ON"
+                } else {
+                    "OFF"
+                }
+                .into(),
+            ),
+            Opt::TouchButtonScale => Some(format!("{:.0}%", s.touch.button_scale * 100.0)),
+            Opt::TouchAnalog => Some(if s.touch.analog_movement { "ON" } else { "OFF" }.into()),
+            Opt::TouchInteract => Some(
+                if s.touch.contextual_interact {
+                    "ON"
+                } else {
+                    "OFF"
+                }
+                .into(),
+            ),
+            Opt::TouchLeftHand => Some(if s.touch.left_handed { "ON" } else { "OFF" }.into()),
+            Opt::TouchSprintButton => Some(if s.touch.sprint_button { "ON" } else { "OFF" }.into()),
+            Opt::TouchSprintToggle => Some(if s.touch.sprint_toggle { "ON" } else { "OFF" }.into()),
+            Opt::TouchInventoryControls => Some(
+                if s.touch.inventory_controls {
+                    "ON"
+                } else {
+                    "OFF"
+                }
+                .into(),
+            ),
+            Opt::TouchDynamicJoystick => Some(
+                if s.touch.dynamic_joystick {
+                    "ON"
+                } else {
+                    "OFF"
+                }
+                .into(),
+            ),
+            Opt::TouchDynamicAreaX => Some(format!("{:.0}%", s.touch.dynamic_area_x * 100.0)),
+            Opt::TouchDynamicAreaY => Some(format!("{:.0}%", s.touch.dynamic_area_y * 100.0)),
+            Opt::AndroidInputMode => Some(crate::android_runtime::input_mode().label().into()),
+            Opt::TouchSwapJumpSneak => {
+                Some(if s.touch.swap_jump_sneak { "ON" } else { "OFF" }.into())
+            }
+            Opt::TouchAutoSprint => Some(
+                if s.touch.sprint_with_joystick {
+                    "ON"
+                } else {
+                    "OFF"
+                }
+                .into(),
+            ),
+            _ => None,
+        };
+        if let Some(value) = touch_value {
+            return Text::literal(format!("{c}: {value}"));
+        }
         match self {
             Opt::ChatDelay => tr("options.chat.delay_none"),
             Opt::FovEffects
@@ -683,11 +850,17 @@ impl Opt {
                 "options.textureFiltering.rgss",
                 "options.textureFiltering.anisotropic",
             ][s.file.int("textureFiltering").clamp(0, 2) as usize]),
-            Opt::GraphicsBackend => tr(match s.horizon.api {
-                crate::graphics::GraphicsApi::OpenGl => "options.graphicsApi.opengl",
-                crate::graphics::GraphicsApi::Vulkan => "options.graphicsApi.vulkan",
-                _ => "options.graphicsApi.default",
-            }),
+            Opt::GraphicsBackend => tr(
+                match if cfg!(target_os = "android") {
+                    crate::android_runtime::graphics_api()
+                } else {
+                    s.horizon.api
+                } {
+                    crate::graphics::GraphicsApi::OpenGl => "options.graphicsApi.opengl",
+                    crate::graphics::GraphicsApi::Vulkan => "options.graphicsApi.vulkan",
+                    _ => "options.graphicsApi.default",
+                },
+            ),
             Opt::SmoothLighting => on_off(s.smooth_lighting),
             Opt::Clouds => tr(match s.clouds.as_str() {
                 "false" => "options.off",
@@ -810,6 +983,21 @@ impl Opt {
         let v = v.clamp(0.0, 1.0);
         let step = |lo: f32, hi: f32| (lo + v * (hi - lo)).round();
         match self {
+            Opt::TouchCircleSize => s.touch.circle_size = step(16.0, 64.0),
+            Opt::TouchDynamicAreaX => s.touch.dynamic_area_x = (v * 100.0).round() / 100.0,
+            Opt::TouchDynamicAreaY => s.touch.dynamic_area_y = (v * 100.0).round() / 100.0,
+            Opt::TouchHorizontalMargin => s.touch.horizontal_margin = (v * 120.0).round() / 1000.0,
+            Opt::TouchVerticalMargin => s.touch.vertical_margin = (v * 120.0).round() / 1000.0,
+            Opt::DebugGuiScale => s.file.set(
+                "debugGuiScale",
+                crate::options_file::V::Int(step(0.0, 6.0) as i32),
+            ),
+            Opt::AndroidGyroSensitivity => s.touch.gyro_sensitivity = 0.1 + v * 2.9,
+            Opt::TouchSensitivity => s.touch.sensitivity = 0.1 + v * 2.9,
+            Opt::TouchSensitivityHorizontal => s.touch.sensitivity_horizontal = 0.1 + v * 2.9,
+            Opt::TouchSensitivityVertical => s.touch.sensitivity_vertical = 0.1 + v * 2.9,
+            Opt::TouchMouseSensitivity => s.touch.virtual_mouse_sensitivity = 0.25 + v * 2.75,
+            Opt::TouchButtonScale => s.touch.button_scale = 0.5 + v * 1.5,
             Opt::FovEffects | Opt::DarknessPulsing => s.file.set(
                 self.file_key().unwrap(),
                 crate::options_file::V::Double(f64::from(v).powi(2)),
@@ -909,6 +1097,45 @@ impl Opt {
             }
         };
         match self {
+            Opt::TouchMode => {
+                let i = crate::touch::Mode::SCHEMES
+                    .iter()
+                    .position(|(mode, split, _)| {
+                        *mode == s.touch.mode
+                            && (!matches!(mode, crate::touch::Mode::Dpad | crate::touch::Mode::Tap)
+                                || *split == s.touch.split_controls)
+                    })
+                    .unwrap_or(0);
+                let (mode, split, _) = crate::touch::Mode::SCHEMES
+                    [usize::from(next(i as u8, crate::touch::Mode::SCHEMES.len() as u8))];
+                s.touch.mode = mode;
+                s.touch.split_controls = split;
+            }
+            Opt::AndroidGyroscope => s.touch.gyroscope ^= true,
+            Opt::TouchAnalog => s.touch.analog_movement ^= true,
+            Opt::TouchInteract => s.touch.contextual_interact ^= true,
+            Opt::TouchOffhand => s.touch.offhand_button ^= true,
+            Opt::TouchShield => s.touch.shield_button ^= true,
+            Opt::TouchLeftHand => s.touch.left_handed ^= true,
+            Opt::TouchSprintButton => s.touch.sprint_button ^= true,
+            Opt::TouchSprintToggle => s.touch.sprint_toggle ^= true,
+            Opt::TouchInventoryControls => s.touch.inventory_controls ^= true,
+            Opt::TouchDynamicJoystick => s.touch.dynamic_joystick ^= true,
+            Opt::TouchCrosshairGestures => s.touch.crosshair_gestures ^= true,
+            Opt::TouchAttackButtonLook => s.touch.attack_button_look ^= true,
+            Opt::AndroidInputMode => {
+                let all = crate::android_gamepad::InputMode::ALL;
+                let i = all
+                    .iter()
+                    .position(|m| *m == crate::android_runtime::input_mode())
+                    .unwrap_or(0);
+                crate::android_runtime::configure_input(
+                    all[usize::from(next(i as u8, all.len() as u8))],
+                );
+            }
+            Opt::TouchAttackSide => s.touch.attack_indicator_left ^= true,
+            Opt::TouchSwapJumpSneak => s.touch.swap_jump_sneak ^= true,
+            Opt::TouchAutoSprint => s.touch.sprint_with_joystick ^= true,
             Opt::GuiScale => {
                 let max = crate::window::calculate_scale(framebuffer, 0, s.force_unicode) as u32;
                 let value = s.gui_scale.min(max);
@@ -1198,6 +1425,9 @@ fn set_filtering(s: &mut Settings, anisotropy_bit: i32, filtering: i32) {
 /// `Options.preferredGraphicsBackend`'s tooltip: the restart note once the choice differs from
 /// the startup one, the description, and Vulkan's warning.
 fn graphics_api_tooltip(s: &Settings) -> Text {
+    if cfg!(target_os = "android") {
+        return Text::literal("Selected in Horizon Android launcher > Setup.");
+    }
     let line = |key: &str| lang::get_or(key, key);
     let mut lines = Vec::new();
     if s.horizon.api != s.startup_api {
@@ -1238,6 +1468,8 @@ pub enum Page {
     NativePackOptions(usize, u8),
     /// The picked `shaders/` pack's options (`shader_options`), one of its screens at a time.
     ShaderOptions,
+    /// The Polytone config entries of the selected resource packs (`polytone_config`).
+    PolytoneConfig,
     /// Horizon's graphics settings (`graphics_ui`).
     Graphics,
     GraphicsAdvanced,
@@ -1246,8 +1478,11 @@ pub enum Page {
     HdrCalibration,
     /// Horizon's controller settings and button binds.
     Controller,
+    Touch,
     PadBinds,
     Extras,
+    /// PvP & HUD (`pvp`): the extras a PvP player sets, on their own page.
+    Pvp,
     /// CreditsAndAttributionScreen.
     Credits,
     /// Horizon Settings: every page Horizon adds, as a mod's settings
@@ -1277,16 +1512,25 @@ enum Act {
     Key(&'static str),
     ResetKey(&'static str),
     ResetKeys,
+    KeyboardProfile,
     /// Controller binds: wait for a button, reset one, reset all.
     PadKey(&'static str),
     ResetPadKey(&'static str),
     ResetPadKeys,
     ToggleMod(usize),
+    /// PvP & HUD's PvP preset (`pvp::apply_preset`).
+    PvpPreset,
+    /// PvP & HUD's Edit HUD button.
+    HudEditor,
     /// Pick `s.shader_packs[i]`, or turn it off when it is the pick.
     PickShaderPack(usize),
     OpenShaderPackFolder,
     /// Open the picked pack's Shader Options page.
     ShaderOptions,
+    /// The Pack Config page: the entry `.0` takes its next value (the previous with Shift held).
+    PolytoneStep(String),
+    PolytonePreset,
+    PolytoneReset,
     /// Open the options page of the Horizon pack `s.shader_packs[.0]`.
     NativePackOptions(usize),
     /// Option `.1` of that pack: its next value.
@@ -1311,6 +1555,10 @@ enum Act {
     /// Credits & Attribution's Credits button (WinScreen without the poem).
     Credits,
     CopyAgentDetails,
+    #[cfg(target_os = "android")]
+    TouchControls,
+    #[cfg(target_os = "android")]
+    SkinChanger,
     /// AI Agent: start or stop the repro recording.
     ToggleRecording,
     /// AI Agent: write the repro bundle now.
@@ -1336,6 +1584,11 @@ enum WKind {
         label: Text,
         value: f32,
         name: String,
+    },
+    ExtraSlider {
+        label: Text,
+        value: f32,
+        item: crate::extras::Item,
     },
     Text {
         text: Text,
@@ -1435,10 +1688,17 @@ pub enum Event {
     /// A shader pack was picked or turned off: save and apply it.
     ShaderPack,
     OpenShaderPackFolder,
+    /// Open the mod's own settings page (capability `ui`): the installed
+    /// mod's index in `mods.installed`.
+    ModSettings(usize),
     /// The Shader Options page opened: read the picked pack's options into `shader_options`.
     OpenShaderOptions,
     /// The Shader Options page closed with changes: save them and load the pack again.
     ShaderOptions,
+    /// The Pack Config page opened: read the selected packs' config entries into `polytone_config`.
+    OpenPolytoneConfig,
+    /// The Pack Config page closed with changes: save the choices and reload the packs.
+    PolytoneConfig,
     /// The options of `shader_packs[.0]`, a Horizon pack, changed: save them (the pack reloads
     /// with them).
     NativePackOptions(usize),
@@ -1450,8 +1710,14 @@ pub enum Event {
     NativeButton(usize, usize),
     /// Roll the credits (`CreditsAndAttributionScreen.openCreditsScreen`).
     Credits,
+    /// PvP & HUD's Edit HUD: open the HUD editor over the game.
+    HudEditor,
     /// Copy how an agent connects (the AI Agent page).
     CopyAgentDetails,
+    #[cfg(target_os = "android")]
+    TouchControls,
+    #[cfg(target_os = "android")]
+    SkinChanger,
     /// The AI Agent page's recording button: start or stop.
     ToggleRecording,
     /// The AI Agent page's export button.
@@ -1505,6 +1771,7 @@ pub struct OptionsUi {
     /// The shader pack option whose slider is held, and the handle's own position: it follows
     /// the pointer while the option takes the nearest of its values.
     shader_dragging: Option<(String, f32)>,
+    extra_dragging: Option<(crate::extras::Item, f32)>,
     /// Shift is held during the click (it resets a shader pack option to its default).
     pub shift: bool,
     /// The pressed slider's own position (`AbstractSliderButton.value`) and
@@ -1583,6 +1850,11 @@ pub struct OptionsUi {
     /// The list's rows as last laid out: each row's top and bottom (GUI
     /// pixels), for the narration's row under the mouse.
     row_bands: Vec<[f32; 2]>,
+    /// The Extras or PvP & HUD items that take a whole row (`wide_extras`), measured
+    /// when the page is drawn.
+    wide_extras: Vec<crate::extras::Item>,
+    /// Other local players are joined: leave before turning splitscreen off.
+    pub split_joined: bool,
 }
 impl Default for OptionsUi {
     fn default() -> Self {
@@ -1595,6 +1867,7 @@ impl Default for OptionsUi {
             scroll: 0.0,
             dragging: None,
             shader_dragging: None,
+            extra_dragging: None,
             shift: false,
             slider_value: None,
             scrollbar_drag_y: None,
@@ -1634,6 +1907,8 @@ impl Default for OptionsUi {
             framebuffer: [1280, 720],
             split_guest: false,
             row_bands: Vec::new(),
+            wide_extras: Vec::new(),
+            split_joined: false,
         }
     }
 }
@@ -1659,9 +1934,25 @@ fn inactive(mut w: Widget) -> Widget {
     w
 }
 fn option_widget(s: &Settings, opt: Opt, x: f32, y: f32, w: f32) -> Widget {
-    // OptionsSubScreen.addContents: the narrator button is active only while
-    // the narrator is (`narratorButton.active = narrator.isActive()`).
-    if !opt.available() || opt == Opt::Narrator && !horizon_narrator::is_active() {
+    let touch_available = match opt {
+        Opt::TouchAnalog | Opt::TouchAutoSprint | Opt::TouchDynamicJoystick => {
+            s.touch.mode != crate::touch::Mode::Dpad
+        }
+        Opt::TouchDynamicAreaX | Opt::TouchDynamicAreaY => {
+            s.touch.dynamic_joystick && s.touch.mode != crate::touch::Mode::Dpad
+        }
+        Opt::TouchSprintButton => {
+            s.touch.mode != crate::touch::Mode::Dpad && !s.touch.sprint_with_joystick
+        }
+        Opt::TouchInteract => !s.touch.crosshair(),
+        Opt::TouchCrosshairGestures | Opt::TouchAttackButtonLook => s.touch.crosshair(),
+        Opt::TouchSwapJumpSneak => s.touch.mode == crate::touch::Mode::Dpad,
+        _ => true,
+    };
+    if !opt.available()
+        || !touch_available
+        || opt == Opt::Narrator && !horizon_narrator::is_active()
+    {
         return inactive(button(x, y, w, opt.label(s), Act::Cycle(opt)));
     }
     // VideoSettingsScreen.tick: Max Anisotropy only works with Anisotropic filtering.
@@ -1685,6 +1976,33 @@ fn option_widget(s: &Settings, opt: Opt, x: f32, y: f32, w: f32) -> Widget {
         Kind::Cycle => button(x, y, w, opt.label(s), Act::Cycle(opt)),
     }
 }
+fn extras_rows(page: Page) -> Vec<Result<crate::extras::Item, &'static str>> {
+    match page {
+        Page::Pvp => crate::pvp::rows()
+            .into_iter()
+            .map(|r| r.map(crate::extras::Item::Pvp))
+            .collect(),
+        _ => crate::extras::rows(),
+    }
+}
+/// The items of `page`'s rows whose label, with any of their first values, is wider than a
+/// half-width button holds (`width` measures text with the screen's font): those take the
+/// whole row, so no label is cut short, in any language.
+fn wide_extras(s: &Settings, page: Page, width: impl Fn(&str) -> f32) -> Vec<crate::extras::Item> {
+    let room = 150.0 - 4.0;
+    extras_rows(page)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|&item| {
+            let mut e = s.extras.clone();
+            (0..4).any(|_| {
+                let label = format!("{}: {}", item.caption(), item.value(&e));
+                item.cycle(&mut e, false);
+                width(&label) > room
+            })
+        })
+        .collect()
+}
 /// What a button opening one of Horizon's pages says on hover.
 fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
     Some(match page {
@@ -1693,6 +2011,7 @@ fn horizon_page_tooltip(page: Page) -> Option<&'static str> {
         Page::GraphicsAdvanced => "horizon.pages.graphics_advanced.tooltip",
         Page::Controller => "horizon.pages.controller.tooltip",
         Page::Extras => "horizon.pages.extras.tooltip",
+        Page::Pvp => "horizon.pages.pvp.tooltip",
         Page::Agent => "horizon.pages.agent.tooltip",
         Page::SplitProfiles => "horizon.pages.split_profiles.tooltip",
         Page::ShaderPacks => "horizon.pages.shader_packs.tooltip",
@@ -1757,6 +2076,43 @@ fn native_pack_option_rows(s: &Settings, i: usize, at: u8) -> Vec<Row> {
             .chunks(columns)
             .map(|row| Row::Buttons(widget(&row[0]), row.get(1).map(widget))),
     );
+    rows
+}
+fn polytone_config_rows(s: &Settings) -> Vec<Row> {
+    let Some(config) = &s.polytone_config else {
+        return vec![Row::Header("horizon.polytone_config.loading")];
+    };
+    if config.is_empty() {
+        return vec![Row::Header("horizon.polytone_config.none")];
+    }
+    let mut widgets: Vec<Widget> = Vec::new();
+    if config.has_presets() {
+        widgets.push(button(
+            0.0,
+            0.0,
+            310.0,
+            Text::literal(config.preset_label()),
+            Act::PolytonePreset,
+        ));
+    }
+    let mut rows: Vec<Row> = widgets.drain(..).map(|w| Row::Buttons(w, None)).collect();
+    let buttons: Vec<Widget> = config
+        .ids()
+        .iter()
+        .map(|id| {
+            button(
+                0.0,
+                0.0,
+                150.0,
+                Text::literal(config.button_label(id)),
+                Act::PolytoneStep(id.clone()),
+            )
+        })
+        .collect();
+    let mut buttons = buttons.into_iter();
+    while let Some(a) = buttons.next() {
+        rows.push(Row::Buttons(a, buttons.next()));
+    }
     rows
 }
 fn shader_option_rows(s: &Settings) -> Vec<Row> {
@@ -1874,6 +2230,8 @@ fn tooltip_text(s: &Settings, wd: &Widget) -> Option<Text> {
         Act::Cycle(opt) => Some(opt.tooltip_key(s)),
         Act::Push(Page::Language) => Some("options.language.tooltip".into()),
         Act::Push(Page::Accessibility) => Some("options.accessibility.tooltip".into()),
+        Act::PvpPreset => Some("horizon.pvp.preset.tooltip".into()),
+        Act::HudEditor => Some("horizon.pvp.editor.tooltip".into()),
         _ => None,
     };
     if let Some(key) = key.filter(|key| lang::has(key)) {
@@ -2048,8 +2406,30 @@ impl OptionsUi {
         self.settings_search.focused
             && matches!(self.page(), Page::Video | Page::Controls | Page::KeyBinds)
     }
+    #[cfg(target_os = "android")]
+    pub fn android_edit_value(&mut self, atlas: &HudAtlas) -> String {
+        if self.page() == Page::Packs
+            && let Some(pack) = &mut self.pack_screen
+        {
+            return pack.android_edit_value(&crate::screen_draw::Measure(&atlas.font));
+        }
+        let edit = if self.page() == Page::Language {
+            &mut self.language_search
+        } else {
+            &mut self.settings_search
+        };
+        edit.move_cursor_to_end(false);
+        edit.value.clone()
+    }
     /// Whether the resource pack screen is open (not Create World's data packs on the same
     /// page).
+    fn cycle_extra(&mut self, s: &mut Settings, item: crate::extras::Item, back: bool) {
+        item.cycle(&mut s.extras, back);
+        if self.pack_browser != s.extras.pack_browser {
+            self.pack_browser = s.extras.pack_browser;
+            self.pack_screen = None;
+        }
+    }
     pub fn resource_packs_open(&self) -> bool {
         self.page() == Page::Packs && self.data_pack_dir.is_none()
     }
@@ -2159,7 +2539,9 @@ impl OptionsUi {
     /// Open a page whose Done/Escape returns directly to the calling screen.
     pub fn open_at(&mut self, in_world: bool, page: Page) {
         self.stack.clear();
-        self.data_pack_dir = None;
+        if self.data_pack_dir.take().is_some() {
+            self.pack_infos.clear();
+        }
         self.focus = None;
         self.focus_from_keyboard = false;
         self.can_change_value = false;
@@ -2255,12 +2637,15 @@ impl OptionsUi {
             Page::NativeMod(_) => "Mod Settings",
             Page::ShaderPacks => "horizon.pages.shader_packs",
             Page::ShaderOptions | Page::NativePackOptions(..) => "horizon.pages.shader_options",
+            Page::PolytoneConfig => "horizon.pages.polytone_config",
             Page::Graphics | Page::GraphicsAdvanced | Page::GraphicsHdr | Page::HdrCalibration => {
                 "options.videoTitle"
             }
             Page::Controller => "horizon.pages.controller",
             Page::PadBinds => "horizon.pages.controller_binds",
             Page::Extras => "horizon.pages.extras",
+            Page::Pvp => "horizon.pages.pvp",
+            Page::Touch => "Touch Controls",
             Page::Credits => "credits_and_attribution.screen.title",
             Page::Horizon => "horizon.pages.settings",
             Page::Agent => "horizon.pages.agent",
@@ -2357,10 +2742,11 @@ impl OptionsUi {
     fn list_rows(&self, s: &Settings) -> Vec<Row> {
         match self.page() {
             Page::SplitSetup => Vec::new(),
-            Page::Extras => {
+            Page::Extras | Page::Pvp => {
                 // Each section's switches two to a row, as vanilla's
-                // OptionsList.addSmall lays out an options screen.
-                let extra = |item: crate::extras::Item| {
+                // OptionsList.addSmall lays out an options screen; one whose label would run
+                // past half a row (`wide_extras`) gets the whole row.
+                let extra = |item: crate::extras::Item, width: f32| {
                     let value = Text::option_name_value(
                         Text::literal(item.caption_text()),
                         Text::literal(item.value(&s.extras)),
@@ -2372,7 +2758,32 @@ impl OptionsUi {
                     } else {
                         Text::literal(value)
                     };
-                    let widget = button(0.0, 0.0, 150.0, label, Act::Extra(item));
+                    if let Some(value) = item.slider_position(&s.extras) {
+                        let held = self.extra_dragging.filter(|(i, _)| *i == item);
+                        let shown = held.map_or(value, |h| h.1);
+                        let widget = Widget {
+                            x: 0.0,
+                            y: 0.0,
+                            w: width,
+                            h: 20.0,
+                            kind: WKind::ExtraSlider {
+                                label,
+                                value: shown,
+                                item,
+                            },
+                            list: false,
+                            row: 0,
+                        };
+                        return if item
+                            .parent()
+                            .is_some_and(|parent| parent.switch(&s.extras) == Some(false))
+                        {
+                            inactive(widget)
+                        } else {
+                            widget
+                        };
+                    }
+                    let widget = button(0.0, 0.0, width, label, Act::Extra(item));
                     // A setting of a switch that is off does nothing: inactive,
                     // as vanilla greys out an option that can't apply.
                     if item
@@ -2384,17 +2795,33 @@ impl OptionsUi {
                         widget
                     }
                 };
+                // PvP & HUD opens with its preset and the editor; Extras doesn't repeat them,
+                // nor the way to PvP & HUD (Horizon Settings has it).
                 let mut rows = Vec::new();
+                if self.page() == Page::Pvp {
+                    let preset = button(0.0, 0.0, 150.0, tr("horizon.pvp.preset"), Act::PvpPreset);
+                    // The editor moves what the game shows: only from a world.
+                    let edit = button(0.0, 0.0, 150.0, tr("horizon.pvp.editor"), Act::HudEditor);
+                    let edit = if self.in_world { edit } else { inactive(edit) };
+                    rows.push(Row::Buttons(preset, Some(edit)));
+                }
                 let mut section = Vec::new();
                 let flush = |rows: &mut Vec<Row>, section: &mut Vec<crate::extras::Item>| {
-                    rows.extend(
-                        section
-                            .chunks(2)
-                            .map(|c| Row::Buttons(extra(c[0]), c.get(1).map(|&b| extra(b)))),
-                    );
-                    section.clear();
+                    let mut half = None;
+                    for item in section.drain(..) {
+                        if self.wide_extras.contains(&item) {
+                            rows.extend(half.take().map(|h| Row::Buttons(extra(h, 150.0), None)));
+                            rows.push(Row::Buttons(extra(item, 310.0), None));
+                        } else if let Some(h) = half.take() {
+                            rows.push(Row::Buttons(extra(h, 150.0), Some(extra(item, 150.0))));
+                        } else {
+                            half = Some(item);
+                        }
+                    }
+                    rows.extend(half.map(|h| Row::Buttons(extra(h, 150.0), None)));
                 };
-                for row in crate::extras::rows() {
+                let page_rows = extras_rows(self.page());
+                for row in page_rows {
                     match row {
                         Err(header) => {
                             flush(&mut rows, &mut section);
@@ -2414,18 +2841,19 @@ impl OptionsUi {
                 vec![
                     Row::Buttons(
                         open("horizon.pages.open.graphics", Page::Graphics),
-                        Some(open(
-                            "horizon.pages.open.graphics_advanced",
-                            Page::GraphicsAdvanced,
-                        )),
+                        Some(open("horizon.pages.open.shader_packs", Page::ShaderPacks)),
                     ),
                     Row::Buttons(
-                        open("horizon.pages.open.shader_packs", Page::ShaderPacks),
-                        Some(open("horizon.pages.open.controller", Page::Controller)),
+                        open("horizon.pages.open.controller", Page::Controller),
+                        Some(open("horizon.pages.open.extras", Page::Extras)),
                     ),
                     Row::Buttons(
-                        open("horizon.pages.open.extras", Page::Extras),
+                        open("horizon.pages.open.pvp", Page::Pvp),
                         Some(open("horizon.pages.open.mods", Page::Mods)),
+                    ),
+                    Row::Buttons(
+                        open("horizon.pages.open.polytone_config", Page::PolytoneConfig),
+                        None,
                     ),
                     Row::Buttons(
                         open(
@@ -2439,22 +2867,15 @@ impl OptionsUi {
                         None,
                     ),
                     // No AI hides the AI Agent page and everything AI.
-                    Row::Buttons(
-                        self.extra_button(s, crate::extras::Item::DiscordPresence),
-                        Some(if s.extras.no_ai {
-                            self.extra_button(s, crate::extras::Item::NoAi)
-                        } else {
-                            open("horizon.pages.open.agent", Page::Agent)
-                        }),
-                    ),
-                ]
-                .into_iter()
-                .chain(
-                    (!s.extras.no_ai).then(|| {
+                    if s.extras.no_ai {
                         Row::Buttons(self.extra_button(s, crate::extras::Item::NoAi), None)
-                    }),
-                )
-                .collect()
+                    } else {
+                        Row::Buttons(
+                            open("horizon.pages.open.agent", Page::Agent),
+                            Some(self.extra_button(s, crate::extras::Item::NoAi)),
+                        )
+                    },
+                ]
             }
             Page::Agent => {
                 let mut rows = vec![Row::Buttons(
@@ -2504,13 +2925,7 @@ impl OptionsUi {
                         tr("horizon.pages.open.horizon_graphics"),
                         Act::Push(Page::Graphics),
                     ),
-                    Some(button(
-                        0.0,
-                        0.0,
-                        150.0,
-                        tr("horizon.pages.open.graphics_advanced"),
-                        Act::Push(Page::GraphicsAdvanced),
-                    )),
+                    None,
                 )];
                 rows.push(Row::Header("options.video.display.header"));
                 rows.push(Row::Big(Opt::ExclusiveMode));
@@ -2613,7 +3028,22 @@ impl OptionsUi {
                 // SkinCustomizationScreen: the seven layers, then Main Hand.
                 let mut opts: Vec<Opt> = (0..MODEL_PART_KEYS.len()).map(Opt::ModelPart).collect();
                 opts.push(Opt::MainHand);
-                pairs(&opts)
+                #[allow(unused_mut)]
+                let mut rows = pairs(&opts);
+                #[cfg(target_os = "android")]
+                if self.in_world {
+                    rows.push(Row::Buttons(
+                        button(
+                            0.0,
+                            0.0,
+                            310.0,
+                            Text::literal("Skin Changer..."),
+                            Act::SkinChanger,
+                        ),
+                        None,
+                    ));
+                }
+                rows
             }
             Page::Online => {
                 // OnlineOptionsScreen without the Xbox and friends-list parts.
@@ -2642,16 +3072,89 @@ impl OptionsUi {
                         Act::Push(Page::KeyBinds),
                     )),
                 )];
+                #[cfg(target_os = "android")]
+                rows.insert(0, Row::Big(Opt::AndroidInputMode));
                 let controls = vanilla_control_options();
+                #[cfg(target_os = "android")]
+                let controls = {
+                    let mut controls = controls;
+                    controls.push(Opt::TouchAutoSprint);
+                    controls
+                };
                 rows.extend(pairs(&controls));
-                // Horizon's controller page, after vanilla's rows.
+                rows.push(Row::Buttons(
+                    button(
+                        0.0,
+                        0.0,
+                        if cfg!(target_os = "android") {
+                            150.0
+                        } else {
+                            310.0
+                        },
+                        Text::literal("Controller Settings..."),
+                        Act::Push(Page::Controller),
+                    ),
+                    {
+                        #[cfg(target_os = "android")]
+                        {
+                            Some(button(
+                                0.0,
+                                0.0,
+                                150.0,
+                                Text::literal("Touch Controls..."),
+                                Act::Push(Page::Touch),
+                            ))
+                        }
+                        #[cfg(not(target_os = "android"))]
+                        {
+                            None
+                        }
+                    },
+                ));
+                self.filter_option_rows(rows)
+            }
+            Page::Touch => {
+                let mut rows = vec![Row::Header("Movement & Look Sensitivity")];
+                rows.push(Row::Big(Opt::TouchMode));
+                rows.extend(pairs(&[
+                    Opt::TouchCrosshairGestures,
+                    Opt::TouchAttackButtonLook,
+                    Opt::TouchSensitivity,
+                    Opt::TouchSensitivityHorizontal,
+                    Opt::TouchSensitivityVertical,
+                ]));
+                rows.push(Row::Header("HUD Buttons & Layout"));
+                rows.extend(pairs(&[
+                    Opt::TouchOffhand,
+                    Opt::TouchShield,
+                    Opt::TouchButtonScale,
+                    Opt::TouchCircleSize,
+                    Opt::TouchAttackSide,
+                    Opt::DebugGuiScale,
+                    Opt::TouchLeftHand,
+                    Opt::TouchSwapJumpSneak,
+                ]));
+                rows.push(Row::Header("Joystick, Actions & Gyroscope"));
+                rows.extend(pairs(&[
+                    Opt::TouchAnalog,
+                    Opt::TouchSprintButton,
+                    Opt::TouchSprintToggle,
+                    Opt::TouchInventoryControls,
+                    Opt::TouchInteract,
+                    Opt::TouchDynamicJoystick,
+                    Opt::TouchDynamicAreaX,
+                    Opt::TouchDynamicAreaY,
+                    Opt::AndroidGyroscope,
+                    Opt::AndroidGyroSensitivity,
+                ]));
+                #[cfg(target_os = "android")]
                 rows.push(Row::Buttons(
                     button(
                         0.0,
                         0.0,
                         310.0,
-                        tr("horizon.pages.open.controller"),
-                        Act::Push(Page::Controller),
+                        Text::literal("Customize Touch & GoyControl Layout..."),
+                        Act::TouchControls,
                     ),
                     None,
                 ));
@@ -2752,10 +3255,10 @@ impl OptionsUi {
                         let dead =
                             installed.dev || installed.id.is_empty() || self.in_world && content;
                         // Only native mods with actual settings need a second button.
-                        if installed
-                            .native
-                            .as_ref()
-                            .is_some_and(|page| !page.keys.is_empty() || !page.buttons.is_empty())
+                        if installed.has_settings
+                            || installed.native.as_ref().is_some_and(|page| {
+                                !page.keys.is_empty() || !page.buttons.is_empty()
+                            })
                         {
                             let toggle = button(0.0, 0.0, 150.0, label, Act::ToggleMod(i));
                             let settings = button(
@@ -2813,6 +3316,7 @@ impl OptionsUi {
                     .collect()
             }
             Page::ShaderOptions => shader_option_rows(s),
+            Page::PolytoneConfig => polytone_config_rows(s),
             Page::NativePackOptions(i, at) => native_pack_option_rows(s, i, at),
             _ => {
                 let _ = s;
@@ -2973,17 +3477,43 @@ impl OptionsUi {
                     list: false,
                     row: 0,
                 });
-                let mut mappings: Vec<(&str, &str)> =
-                    MAPPINGS.iter().map(|(n, _, c)| (*n, *c)).collect();
+                let keypad = s.keypad.enabled;
+                if cfg!(target_os = "android") || keypad {
+                    top = 64.0;
+                    out.push(button(
+                        cx - 150.0,
+                        39.0,
+                        300.0,
+                        Text::literal(if keypad {
+                            "Input profile: D-pad / keypad"
+                        } else {
+                            "Input profile: Keyboard"
+                        }),
+                        Act::KeyboardProfile,
+                    ));
+                }
+                let label = |name: &str| {
+                    crate::keypad::ACTIONS
+                        .iter()
+                        .find(|a| a.0 == name)
+                        .map_or_else(|| lang::get(name), |a| a.1.to_owned())
+                };
+                let mut mappings: Vec<(&str, &str)> = if keypad {
+                    crate::keypad::ACTIONS
+                        .iter()
+                        .map(|a| (a.0, "movement"))
+                        .collect()
+                } else {
+                    MAPPINGS.iter().map(|(n, _, c)| (*n, *c)).collect()
+                };
                 let query = self.settings_search.value.to_lowercase();
                 mappings.retain(|(name, _)| {
-                    query.is_empty() || lang::get(name).to_lowercase().contains(&query)
+                    query.is_empty() || label(name).to_lowercase().contains(&query)
                 });
                 mappings.sort_by(|a, b| {
                     let ca = CATEGORIES.iter().position(|c| *c == a.1).unwrap_or(99);
                     let cb = CATEGORIES.iter().position(|c| *c == b.1).unwrap_or(99);
-                    ca.cmp(&cb)
-                        .then_with(|| lang::get(a.0).cmp(&lang::get(b.0)))
+                    ca.cmp(&cb).then_with(|| label(a.0).cmp(&label(b.0)))
                 });
                 let row_left = cx - 170.0;
                 let scrollbar_x = row_left + 340.0 + 6.0 + 2.0;
@@ -3040,16 +3570,40 @@ impl OptionsUi {
                         w: 200.0,
                         h: 9.0,
                         kind: WKind::Text {
-                            text: tr(name),
+                            text: if keypad {
+                                Text::literal(label(name))
+                            } else {
+                                tr(name)
+                            },
                             color: u32::MAX,
                             centered: false,
                         },
                         list: false,
                         row: 0,
                     });
-                    let key = s.keys.get(name).to_owned();
+                    let key = if keypad {
+                        s.keypad
+                            .keys(name)
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| "key.keyboard.unknown".into())
+                    } else {
+                        s.keys.get(name).to_owned()
+                    };
                     let mut message = keybinds::display_name(&key);
-                    let conflicts = s.keys.conflicts(name);
+                    let conflicts: Vec<_> = if keypad {
+                        crate::keypad::ACTIONS
+                            .iter()
+                            .filter(|a| {
+                                a.0 != name
+                                    && s.keypad.keys(a.0).contains(&key)
+                                    && key != "key.keyboard.unknown"
+                            })
+                            .map(|a| a.0)
+                            .collect()
+                    } else {
+                        s.keys.conflicts(name)
+                    };
                     if !conflicts.is_empty() {
                         message = Text::literal("[ ")
                             .append(message.with_color(text::WHITE))
@@ -3068,7 +3622,14 @@ impl OptionsUi {
                     }
                     let reset_x = scrollbar_x - 50.0 - 10.0;
                     let change_x = reset_x - 5.0 - 75.0;
-                    let name_static = MAPPINGS.iter().find(|m| m.0 == name).map_or("", |m| m.0);
+                    let name_static = if keypad {
+                        crate::keypad::ACTIONS
+                            .iter()
+                            .find(|a| a.0 == name)
+                            .map_or("", |a| a.0)
+                    } else {
+                        MAPPINGS.iter().find(|m| m.0 == name).map_or("", |m| m.0)
+                    };
                     out.push(button(change_x, y, 75.0, message, Act::Key(name_static)));
                     if !conflicts.is_empty() {
                         out.push(Widget {
@@ -3092,11 +3653,15 @@ impl OptionsUi {
                         tr("controls.reset"),
                         Act::ResetKey(name_static),
                     );
-                    out.push(if s.keys.is_default(name) {
-                        inactive(reset)
-                    } else {
-                        reset
-                    });
+                    out.push(
+                        if (keypad && !s.keypad.bindings.contains_key(name))
+                            || (!keypad && s.keys.is_default(name))
+                        {
+                            inactive(reset)
+                        } else {
+                            reset
+                        },
+                    );
                     y += 20.0;
                     rows.end(&mut out, y);
                 }
@@ -3363,6 +3928,7 @@ impl OptionsUi {
                     Page::Mods => Some(("horizon.mods.open_folder", Act::OpenModFolder)),
                     Page::ShaderPacks => Some(("pack.openFolder", Act::OpenShaderPackFolder)),
                     Page::ShaderOptions => Some(("controls.reset", Act::ShaderReset)),
+                    Page::PolytoneConfig => Some(("controls.reset", Act::PolytoneReset)),
                     Page::NativePackOptions(i, _) => {
                         Some(("controls.reset", Act::NativePackReset(i)))
                     }
@@ -3562,6 +4128,9 @@ impl OptionsUi {
             crate::screen_draw::paint(batch, atlas, &draws);
             return;
         }
+        if matches!(self.page(), Page::Extras | Page::Pvp) {
+            self.wide_extras = wide_extras(s, self.page(), |t| atlas.font.width(t));
+        }
         let (widgets, top, bottom, content) = self.layout(s, w, h);
         self.size = (w, h);
         let in_world = self.in_world;
@@ -3687,6 +4256,22 @@ impl OptionsUi {
                 WKind::ShaderSlider { label, value, name } => {
                     let label = fitted.as_ref().map_or(label, |f| &f.0);
                     let held = self.shader_dragging.as_ref().filter(|(n, _)| n == name);
+                    let dragging = held.is_some();
+                    ui::slider(
+                        batch,
+                        atlas,
+                        wd.x,
+                        wd.y,
+                        wd.w,
+                        label,
+                        held.map_or(*value, |h| h.1),
+                        hover || dragging,
+                        true,
+                        dragging,
+                    );
+                }
+                WKind::ExtraSlider { label, value, item } => {
+                    let held = self.extra_dragging.filter(|(i, _)| i == item);
                     let dragging = held.is_some();
                     ui::slider(
                         batch,
@@ -3933,7 +4518,8 @@ impl OptionsUi {
             }
             match action {
                 crate::pack_screen::Action::OpenFolder => events.push(match &self.data_pack_dir {
-                    Some(dir) => Event::OpenDataPackFolder(dir.clone()),
+                    // The global folder, where packs stay: the screen's own folder is temporary.
+                    Some(_) => Event::OpenDataPackFolder(crate::datapack::global_dir()),
                     None => Event::OpenPackFolder,
                 }),
                 crate::pack_screen::Action::Done => events.extend(self.back(s)),
@@ -3999,6 +4585,16 @@ impl OptionsUi {
             {
                 *at = ui::slider_value(wd.x, wd.w, x);
                 options.set_position(name, *at);
+            }
+            if let Some((item, at)) = &mut self.extra_dragging
+                && let Some(wd) = widgets
+                    .iter()
+                    .find(|wd| matches!(&wd.kind, WKind::ExtraSlider { item: i, .. } if i == item))
+            {
+                *at = ui::slider_value(wd.x, wd.w, x);
+                if item.set_slider(&mut s.extras, *at) {
+                    events.push(Event::Changed);
+                }
             }
             if let Some(opt) = self.dragging
                 && let Some(wd) = widgets
@@ -4095,6 +4691,10 @@ impl OptionsUi {
                             if p == Page::ShaderPacks {
                                 events.push(Event::ListShaderPacks);
                             }
+                            if p == Page::PolytoneConfig {
+                                s.polytone_config = None;
+                                events.push(Event::OpenPolytoneConfig);
+                            }
                             if p == Page::Music {
                                 events.push(Event::ListMusicTracks);
                             }
@@ -4108,7 +4708,7 @@ impl OptionsUi {
                             if let Some(name) = item.key_name() {
                                 self.selected_key = Some(name);
                             } else {
-                                item.cycle(&mut s.extras, right);
+                                self.cycle_extra(s, item, right);
                                 events.push(Event::Changed);
                             }
                         }
@@ -4125,12 +4725,26 @@ impl OptionsUi {
                             events.push(Event::Changed);
                         }
                         Act::Key(name) => self.selected_key = Some(name),
+                        Act::KeyboardProfile => {
+                            s.keypad.enabled = !s.keypad.enabled;
+                            self.scroll = 0.0;
+                            self.selected_key = None;
+                            events.push(Event::Changed);
+                        }
                         Act::ResetKey(name) => {
-                            s.keys.set(name, KeyBinds::default_of(name));
+                            if name.starts_with("key.keypad.") {
+                                s.keypad.bindings.remove(name);
+                            } else {
+                                s.keys.set(name, KeyBinds::default_of(name));
+                            }
                             events.push(Event::Changed);
                         }
                         Act::ResetKeys => {
-                            s.keys.reset_all();
+                            if s.keypad.enabled {
+                                s.keypad.bindings.clear();
+                            } else {
+                                s.keys.reset_all();
+                            }
                             events.push(Event::Changed);
                         }
                         Act::PadKey(action) => self.selected_pad_action = Some(action),
@@ -4149,8 +4763,12 @@ impl OptionsUi {
                         }
                         Act::ModSettings(i) => {
                             events.push(Event::ButtonClick);
-                            self.push(Page::NativeMod(i));
-                            events.push(Event::NativeSettings(i));
+                            if s.mods.installed.get(i).is_some_and(|m| m.native.is_some()) {
+                                self.push(Page::NativeMod(i));
+                                events.push(Event::NativeSettings(i));
+                            } else {
+                                events.push(Event::ModSettings(i));
+                            }
                         }
                         Act::NativeKey(i, k) => {
                             self.selected_key = Some(NATIVE_KEY);
@@ -4158,6 +4776,11 @@ impl OptionsUi {
                         }
                         Act::NativeButton(i, b) => events.push(Event::NativeButton(i, b)),
                         Act::OpenModFolder => events.push(Event::OpenModFolder),
+                        Act::PvpPreset => {
+                            crate::pvp::apply_preset(s);
+                            events.push(Event::Changed);
+                        }
+                        Act::HudEditor => events.push(Event::HudEditor),
                         Act::AccessibilityHelp => events.push(Event::AccessibilityHelp),
                         Act::PickShaderPack(i) => {
                             if let Some(pack) = s.shader_packs.get(i) {
@@ -4174,6 +4797,25 @@ impl OptionsUi {
                             s.shader_options = None;
                             self.push(Page::ShaderOptions);
                             events.push(Event::OpenShaderOptions);
+                        }
+                        Act::PolytoneStep(id) => {
+                            if let Some(config) = &mut s.polytone_config {
+                                if self.shift {
+                                    config.reset(&id);
+                                } else {
+                                    config.step(&id, false);
+                                }
+                            }
+                        }
+                        Act::PolytonePreset => {
+                            if let Some(config) = &mut s.polytone_config {
+                                config.next_preset();
+                            }
+                        }
+                        Act::PolytoneReset => {
+                            if let Some(config) = &mut s.polytone_config {
+                                config.reset_all();
+                            }
                         }
                         Act::ShaderOption(name) => {
                             if let Some(options) = &mut s.shader_options {
@@ -4218,6 +4860,10 @@ impl OptionsUi {
                         }
                         Act::Credits => events.push(Event::Credits),
                         Act::CopyAgentDetails => events.push(Event::CopyAgentDetails),
+                        #[cfg(target_os = "android")]
+                        Act::TouchControls => events.push(Event::TouchControls),
+                        #[cfg(target_os = "android")]
+                        Act::SkinChanger => events.push(Event::SkinChanger),
                         Act::ToggleRecording => events.push(Event::ToggleRecording),
                         Act::ExportRepro => events.push(Event::ExportRepro),
                         Act::None => {}
@@ -4235,6 +4881,13 @@ impl OptionsUi {
                         options.set_position(&name, at);
                     }
                     self.shader_dragging = Some((name, at));
+                }
+                WKind::ExtraSlider { item, .. } => {
+                    let at = ui::slider_value(wd.x, wd.w, x);
+                    if item.set_slider(&mut s.extras, at) {
+                        events.push(Event::Changed);
+                    }
+                    self.extra_dragging = Some((item, at));
                 }
                 WKind::Slider { opt, .. } => {
                     self.can_change_value = true;
@@ -4272,7 +4925,9 @@ impl OptionsUi {
         }
         // AbstractSliderButton suppresses the press sound and plays once on
         // release, even if the pointer has left the widget or its value stayed.
-        let slider = self.dragging.take().is_some() | self.shader_dragging.take().is_some();
+        let slider = self.dragging.take().is_some()
+            | self.shader_dragging.take().is_some()
+            | self.extra_dragging.take().is_some();
         let graphics_slider = self.graphics.release();
         let calibration_slider = self.calibration.as_mut().is_some_and(|c| c.release());
         let split_drop = self.split_setup.release();
@@ -4415,7 +5070,7 @@ impl OptionsUi {
                 self.cycle_option(s, opt, amount > 0.0, framebuffer)
             }
             Some(HoveredControl::Extra(item)) if amount != 0.0 => {
-                item.cycle(&mut s.extras, amount > 0.0);
+                self.cycle_extra(s, item, amount > 0.0);
                 vec![Event::Changed]
             }
             Some(_) => Vec::new(),
@@ -4424,6 +5079,24 @@ impl OptionsUi {
                 Vec::new()
             }
         }
+    }
+    /// Touch uses direct manipulation rather than sticky keyboard selection.
+    /// Text-editor focus is independent and is retained for the IME.
+    pub fn touch_start(&mut self) {
+        self.focus = None;
+        self.graphics.focus = None;
+    }
+    /// A touchscreen scroll moves the list, never the last focused or hovered
+    /// option. Keep physical wheel handling in `wheel` separate.
+    pub fn touch_scroll(
+        &mut self,
+        s: &Settings,
+        size: (f32, f32),
+        cursor: (f32, f32),
+        amount: f32,
+    ) {
+        self.touch_start();
+        self.scroll_at(s, size, cursor, amount);
     }
     /// The mouse wheel at the cursor.
     pub fn scroll_at(&mut self, s: &Settings, size: (f32, f32), cursor: (f32, f32), amount: f32) {
@@ -4556,6 +5229,13 @@ impl OptionsUi {
         self.language_search.focused = false;
         self.can_change_value = false;
         match page {
+            Page::PolytoneConfig => {
+                if s.polytone_config.as_ref().is_some_and(|c| c.changed) {
+                    events.push(Event::PolytoneConfig);
+                } else {
+                    s.polytone_config = None;
+                }
+            }
             Page::ShaderOptions => {
                 if s.shader_options.as_ref().is_some_and(|o| o.changed) {
                     events.push(Event::ShaderOptions);
@@ -4574,6 +5254,9 @@ impl OptionsUi {
             Page::Packs => {
                 // PackSelectionScreen.onClose: PackSelectionModel.commit.
                 let data = self.data_pack_dir.take();
+                if data.is_some() {
+                    self.pack_infos.clear();
+                }
                 if let Some(p) = self.pack_screen.take()
                     && p.changed
                 {
@@ -4674,7 +5357,10 @@ impl OptionsUi {
             keys.insert(key.clone(), value);
             return vec![Event::Changed];
         }
-        if !s.extras.set_key(name, value.clone()) && !s.horizon.set_key(name, value.clone()) {
+        if name.starts_with("key.keypad.") {
+            s.keypad.set(name, value);
+        } else if !s.extras.set_key(name, value.clone()) && !s.horizon.set_key(name, value.clone())
+        {
             s.keys.set(name, &value);
         }
         vec![Event::Changed]
@@ -4997,6 +5683,10 @@ impl OptionsUi {
                             if p == Page::ShaderPacks {
                                 events.push(Event::ListShaderPacks);
                             }
+                            if p == Page::PolytoneConfig {
+                                s.polytone_config = None;
+                                events.push(Event::OpenPolytoneConfig);
+                            }
                             if p == Page::Music {
                                 events.push(Event::ListMusicTracks);
                             }
@@ -5015,7 +5705,7 @@ impl OptionsUi {
                             if let Some(name) = item.key_name() {
                                 self.selected_key = Some(name);
                             } else {
-                                item.cycle(&mut s.extras, shift);
+                                self.cycle_extra(s, item, shift);
                                 events.push(Event::Changed);
                             }
                         }
@@ -5067,6 +5757,11 @@ impl OptionsUi {
                         }
                         Act::NativeButton(i, b) => events.push(Event::NativeButton(i, b)),
                         Act::OpenModFolder => events.push(Event::OpenModFolder),
+                        Act::PvpPreset => {
+                            crate::pvp::apply_preset(s);
+                            events.push(Event::Changed);
+                        }
+                        Act::HudEditor => events.push(Event::HudEditor),
                         Act::AccessibilityHelp => events.push(Event::AccessibilityHelp),
                         Act::PickShaderPack(i) => {
                             if let Some(pack) = s.shader_packs.get(i) {
@@ -5087,6 +5782,25 @@ impl OptionsUi {
                             s.shader_options = None;
                             self.push(Page::ShaderOptions);
                             events.push(Event::OpenShaderOptions);
+                        }
+                        Act::PolytoneStep(id) => {
+                            if let Some(config) = &mut s.polytone_config {
+                                if shift {
+                                    config.reset(&id);
+                                } else {
+                                    config.step(&id, false);
+                                }
+                            }
+                        }
+                        Act::PolytonePreset => {
+                            if let Some(config) = &mut s.polytone_config {
+                                config.next_preset();
+                            }
+                        }
+                        Act::PolytoneReset => {
+                            if let Some(config) = &mut s.polytone_config {
+                                config.reset_all();
+                            }
                         }
                         Act::ShaderOption(name) => {
                             if let Some(options) = &mut s.shader_options {
@@ -5131,6 +5845,16 @@ impl OptionsUi {
                                 events.push(Event::NativePackOptions(pack));
                             }
                         }
+                        Act::KeyboardProfile => {
+                            s.keypad.enabled = !s.keypad.enabled;
+                            self.scroll = 0.0;
+                            self.selected_key = None;
+                            events.push(Event::Changed);
+                        }
+                        #[cfg(target_os = "android")]
+                        Act::TouchControls => events.push(Event::TouchControls),
+                        #[cfg(target_os = "android")]
+                        Act::SkinChanger => events.push(Event::SkinChanger),
                         Act::Credits => events.push(Event::Credits),
                         Act::CopyAgentDetails => events.push(Event::CopyAgentDetails),
                         Act::ToggleRecording => events.push(Event::ToggleRecording),
@@ -5176,6 +5900,18 @@ mod tests {
         ui.settings_search.focused = false;
         ui.show(Page::Packs);
         assert!(!ui.typing(), "the pack screen's search is not open yet");
+    }
+
+    #[test]
+    fn turning_on_the_pack_browser_reaches_the_pack_screen_without_reopening_options() {
+        let mut ui = OptionsUi::default();
+        let mut s = Settings::default();
+        assert!(!ui.pack_browser);
+        ui.cycle_extra(&mut s, crate::extras::Item::PackBrowser, false);
+        assert!(s.extras.pack_browser);
+        assert!(ui.pack_browser);
+        ui.cycle_extra(&mut s, crate::extras::Item::PackBrowser, false);
+        assert!(!ui.pack_browser);
     }
 
     #[test]
@@ -5553,6 +6289,40 @@ mod tests {
     }
 
     #[test]
+    fn the_pack_config_page_steps_entries_and_asks_to_save_on_leaving() {
+        let atlas = atlas();
+        let size = (960.0, 540.0);
+        let mut s = Settings::default();
+        let mut ui = OptionsUi::default();
+        ui.show(Page::PolytoneConfig);
+        let mut configs = horizon_polytone::pack::Configs::default();
+        configs.add_entry(
+            "p:fancy".into(),
+            &serde_json::json!({"type": "boolean", "default_value": false}),
+        );
+        s.polytone_config = Some(crate::polytone_config::PolytoneConfig::new(configs));
+        let find = |ui: &mut OptionsUi, s: &Settings, want: &Act| {
+            let (widgets, ..) = ui.layout(s, size.0, size.1);
+            let w = widgets
+                .into_iter()
+                .find(|w| matches!(&w.kind, WKind::Button { act, .. } if act == want))
+                .expect("button");
+            (w.x + w.w / 2.0, w.y + w.h / 2.0)
+        };
+        let step = Act::PolytoneStep("p:fancy".into());
+        let (x, y) = find(&mut ui, &s, &step);
+        ui.click(&mut s, &atlas, x, y, size, [854, 480], false, false);
+        let config = s.polytone_config.as_ref().unwrap();
+        assert_eq!(
+            config.value("p:fancy"),
+            Some(&horizon_polytone::pack::ConfigValue::Bool(true))
+        );
+        assert!(config.changed);
+        let events = ui.back(&mut s);
+        assert!(events.contains(&Event::PolytoneConfig));
+    }
+
+    #[test]
     fn resource_reload_error_blocks_options_until_dismissed() {
         use winit::keyboard::KeyCode;
         let atlas = atlas();
@@ -5744,6 +6514,7 @@ mod tests {
                 description: "May show HUD panels.".into(),
                 problem: id.is_empty().then(|| "Invalid package".into()),
                 dev,
+                has_settings: false,
                 native: None,
             });
         }
@@ -5811,6 +6582,7 @@ mod tests {
             description: String::new(),
             problem: None,
             dev: false,
+            has_settings: false,
             native: Some(crate::mod_list::NativePage {
                 buttons: vec!["Setting".into()],
                 ..Default::default()
@@ -5856,6 +6628,7 @@ mod tests {
             description: String::new(),
             problem: None,
             dev: false,
+            has_settings: false,
             native: Some(crate::mod_list::NativePage::default()),
         });
         ui.show(Page::Mods);
@@ -5908,6 +6681,7 @@ mod tests {
             description: String::new(),
             problem: None,
             dev: false,
+            has_settings: false,
             native: Some(crate::mod_list::NativePage {
                 keys: vec![["zoom".into(), "Zoom key".into(), "key.keyboard.z".into()]],
                 buttons: Vec::new(),
@@ -6939,6 +7713,51 @@ mod tests {
     }
 
     #[test]
+    fn touch_scroll_after_click_moves_list_without_changing_options() {
+        let atlas = atlas();
+        let size = (480.0, 160.0);
+        for slider in [false, true] {
+            let mut settings = Settings::default();
+            let mut ui = OptionsUi::default();
+            ui.show(Page::Chat);
+            let (widgets, _, _, _) = ui.layout(&settings, size.0, size.1);
+            let widget = widgets
+                .iter()
+                .find(|w| {
+                    if slider {
+                        matches!(w.kind, WKind::Slider { .. })
+                    } else {
+                        matches!(
+                            w.kind,
+                            WKind::Button {
+                                act: Act::Cycle(_),
+                                ..
+                            }
+                        )
+                    }
+                })
+                .unwrap();
+            let cursor = (widget.x + widget.w / 2.0, widget.y + widget.h / 2.0);
+            ui.click(
+                &mut settings,
+                &atlas,
+                cursor.0,
+                cursor.1,
+                size,
+                [960, 320],
+                false,
+                false,
+            );
+            ui.release();
+            let before = (settings.chat_visibility, settings.chat_opacity);
+            ui.touch_scroll(&settings, size, cursor, -2.0);
+            assert_eq!(ui.scroll, 36.0);
+            assert_eq!((settings.chat_visibility, settings.chat_opacity), before);
+            assert!(ui.focus.is_none());
+        }
+    }
+
+    #[test]
     fn classic_scrollbar_drag_is_bounded_silent_and_stops_on_release() {
         let atlas = atlas();
         let size = (480.0, 160.0);
@@ -7249,15 +8068,20 @@ mod tests {
             pushes(&mut ui),
             [
                 Page::Graphics,
-                Page::GraphicsAdvanced,
                 Page::ShaderPacks,
                 Page::Controller,
                 Page::Extras,
+                Page::Pvp,
                 Page::Mods,
+                Page::PolytoneConfig,
                 Page::SplitSetup,
                 Page::Agent,
             ]
         );
+        // PvP & HUD has its own way in here; Extras no longer carries it.
+        ui.push(Page::Extras);
+        assert!(!pushes(&mut ui).contains(&Page::Pvp));
+        ui.back(&mut Settings::default());
         // No AI hides the AI Agent page.
         let mut no_ai = Settings::default();
         no_ai.extras.no_ai = true;
@@ -7285,11 +8109,84 @@ mod tests {
         // Vanilla's own pages keep the Horizon pages they had.
         ui.stack = vec![Page::Main, Page::Video];
         let video = pushes(&mut ui);
-        for page in [Page::Graphics, Page::GraphicsAdvanced] {
-            assert!(video.contains(&page), "{page:?}");
-        }
+        assert!(video.contains(&Page::Graphics));
+        assert!(!video.contains(&Page::GraphicsAdvanced));
         ui.stack = vec![Page::Main, Page::Controls];
         assert!(pushes(&mut ui).contains(&Page::Controller));
+    }
+    #[test]
+    fn extras_and_pvp_labels_fit_their_buttons() {
+        let width = |t: &str| {
+            t.chars()
+                .map(|c| match c {
+                    'i' | '\'' | ':' | '.' | ',' | '!' => 2.0,
+                    'l' => 3.0,
+                    ' ' | 't' | 'I' => 4.0,
+                    'f' | 'k' => 5.0,
+                    _ => 6.0,
+                })
+                .sum::<f32>()
+        };
+        let s = Settings::default();
+        let mut ui = OptionsUi::default();
+        for page in [Page::Extras, Page::Pvp] {
+            ui.stack = vec![Page::Main, page];
+            ui.wide_extras = wide_extras(&s, page, width);
+            let rows = ui.list_rows(&s);
+            let buttons: Vec<&Widget> = rows
+                .iter()
+                .flat_map(|r| match r {
+                    Row::Buttons(a, b) => std::iter::once(a).chain(b.as_ref()).collect(),
+                    _ => Vec::new(),
+                })
+                .collect();
+            for b in &buttons {
+                let WKind::Button { label, .. } = &b.kind else {
+                    continue;
+                };
+                let label = label.plain();
+                assert!(width(&label) <= b.w - 4.0, "{page:?}: {label} on {}", b.w);
+            }
+            assert!(buttons.iter().any(|b| b.w == 150.0), "{page:?}");
+            assert!(buttons.iter().any(|b| b.w == 310.0), "{page:?}");
+        }
+    }
+    #[test]
+    fn touch_options_cycle_four_schemes_and_adjust_circle_and_sensitivity() {
+        let mut settings = Settings::default();
+        for i in 0..crate::touch::Mode::SCHEMES.len() {
+            let (mode, split, _) = crate::touch::Mode::SCHEMES[i];
+            assert_eq!(settings.touch.mode, mode);
+            assert_eq!(settings.touch.crosshair(), i == 0 || i == 3);
+            if mode == crate::touch::Mode::Dpad {
+                assert_eq!(settings.touch.split_controls, split);
+            }
+            Opt::TouchMode.cycle(&mut settings, false, [1280, 720]);
+        }
+        Opt::TouchAnalog.cycle(&mut settings, false, [1280, 720]);
+        Opt::TouchSprintButton.cycle(&mut settings, false, [1280, 720]);
+        assert!(settings.touch.analog_movement);
+        assert!(!settings.touch.visible(crate::touch::Control::Sprint));
+        Opt::TouchCircleSize.set_slider(&mut settings, 0.75);
+        assert_eq!(settings.touch.circle_size, 52.0);
+        Opt::TouchHorizontalMargin.set_slider(&mut settings, 0.5);
+        Opt::TouchVerticalMargin.set_slider(&mut settings, 1.0);
+        assert_eq!(settings.touch.horizontal_margin, 0.06);
+        assert_eq!(settings.touch.vertical_margin, 0.12);
+        Opt::DebugGuiScale.set_slider(&mut settings, 0.5);
+        assert_eq!(settings.file.int("debugGuiScale"), 3);
+        Opt::TouchSensitivity.set_slider(&mut settings, 0.0);
+        assert!((settings.touch.sensitivity - 0.1).abs() < 0.0001);
+        let mut ui = OptionsUi::default();
+        ui.push(Page::Touch);
+        let (widgets, _, _, _) = ui.layout(&settings, 427.0, 240.0);
+        assert!(widgets.iter().any(|w| matches!(
+            w.kind,
+            WKind::Slider {
+                opt: Opt::TouchCircleSize,
+                ..
+            }
+        )));
     }
 
     #[test]

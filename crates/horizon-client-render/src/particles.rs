@@ -26,10 +26,6 @@ use std::{
 pub use horizon_client_core::particle_type::ParticleType;
 pub use horizon_items::firework::{DYE_FIREWORK_COLORS, FireworkExplosion, FireworkShape};
 
-pub fn firework_color(index: usize) -> u32 {
-    horizon_client_core::pack_colors::firework(index, DYE_FIREWORK_COLORS[index & 15].1)
-}
-
 /// `ParticleOptions` with the parameters of the option classes used here.
 #[derive(Clone, Debug)]
 pub struct ParticleOptions {
@@ -200,8 +196,6 @@ enum Light {
     AgeEmission4,
     /// `FireflyParticle.getLightCoords`: block light fading in and out, no sky.
     Firefly,
-    /// A custom particle's `light_level`: block light is at least this.
-    MinBlock(u8),
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Behaviour {
@@ -482,8 +476,6 @@ pub struct Particle {
     /// `quadSize`.
     pub size: f32,
     pub rgba: [f32; 4],
-    modifier: Option<(std::sync::Arc<str>, f32)>,
-    custom: Option<Box<CustomRuntime>>,
     roll: f32,
     o_roll: f32,
     sprite: Sprite,
@@ -501,24 +493,6 @@ pub struct Particle {
     pre_tick: bool,
     /// `Particle.random`: the particle's own generator (`RandomSource.create()`).
     random: LegacyRandom,
-}
-/// What a particle of a pack's custom type carries: its definition and its variables.
-#[derive(Clone)]
-struct CustomRuntime {
-    def: std::sync::Arc<horizon_polytone::particles::CustomParticle>,
-    id: std::sync::Arc<str>,
-    value: f64,
-    named: std::collections::BTreeMap<String, f64>,
-    seed: u64,
-    before: [f64; 3],
-}
-impl std::fmt::Debug for CustomRuntime {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CustomRuntime")
-            .field("id", &self.id)
-            .field("value", &self.value)
-            .finish()
-    }
 }
 fn aabb_at(p: [f64; 3], w: f32, h: f32) -> Aabb {
     let w = f64::from(w) / 2.0;
@@ -854,8 +828,6 @@ impl Particle {
             light: Light::World,
             behaviour: Behaviour::Base,
             no_render: false,
-            modifier: None,
-            custom: None,
             pre_tick: false,
             frame_ticks: 0,
             random: LegacyRandom::new(0),
@@ -1026,7 +998,6 @@ impl Particle {
             Light::World => (sky, block),
             Light::FullBright => (240, 240),
             Light::Block15 => (sky, 240),
-            Light::MinBlock(level) => (sky, block.max(u32::from(level) * 16)),
             Light::AgeEmission => (sky, (block + (t * 240.0) as u32).min(240)),
             Light::AgeEmission4 => {
                 let b = self.age as f32 / self.lifetime as f32;
@@ -1244,11 +1215,6 @@ pub struct ParticleEngine {
     /// The item particles' sprites (`BreakingItemParticle`'s slime ball, snowball
     /// and cobweb models, resolved for the ground), one per model layer.
     pub item_sprites: HashMap<ParticleType, Vec<String>>,
-    modifiers: horizon_polytone::particles::ParticleModifiers,
-    modifier_seeds: u64,
-    custom: horizon_polytone::particles::CustomParticles,
-    spawn_with: Option<horizon_polytone::particles::Spawn>,
-    ticks: u64,
 }
 /// `ParticleGroup.MAX_PARTICLES` (per render group; one group here).
 const MAX_PARTICLES: usize = 16384;
@@ -1324,11 +1290,6 @@ impl ParticleEngine {
             sounds: Vec::new(),
             made: Default::default(),
             item_sprites: HashMap::new(),
-            modifiers: Default::default(),
-            modifier_seeds: 0x706d_6f64,
-            custom: Default::default(),
-            spawn_with: None,
-            ticks: 0,
         };
         engine.reload(root, atlas, translucent);
         engine
@@ -1356,361 +1317,6 @@ impl ParticleEngine {
         self.set_sprites.clear();
         self.item_sprites.clear();
         self.load_sprites(root);
-        self.modifiers = horizon_polytone::particles::ParticleModifiers::read(root);
-        self.custom = horizon_polytone::particles::CustomParticles::read(root);
-    }
-    fn apply_modifiers(&mut self, options: &ParticleOptions, particle: &mut Particle) {
-        if self.modifiers.is_empty() {
-            return;
-        }
-        let id = match &options.mod_particle {
-            Some(name) => name.clone(),
-            None => format!("minecraft:{}", options.ty.name()),
-        };
-        let mut state = horizon_polytone::particles::ParticleState {
-            age: f64::from(particle.age),
-            life: f64::from(particle.lifetime),
-            position: particle.position,
-            motion: particle.velocity,
-            size: f64::from(particle.size),
-            roll: f64::from(particle.roll),
-            rgba: particle.rgba.map(f64::from),
-            temperature: 0.8,
-            downfall: 0.4,
-            sky_light: 15.0,
-            ..Default::default()
-        };
-        let world = horizon_polytone::particles::ParticleWorld {
-            player: self.camera,
-            time: self.ticks as f64,
-            day_time: self.ticks as f64,
-            render_distance: 12.0,
-            ..Default::default()
-        };
-        self.modifier_seeds = self
-            .modifier_seeds
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        let base_size = particle.size;
-        self.modifiers
-            .apply(&id, &mut state, &world, self.modifier_seeds);
-        particle.lifetime = state.life as i32;
-        particle.velocity = state.motion;
-        particle.size = state.size as f32;
-        particle.rgba = state.rgba.map(|c| c as f32);
-        if self.modifiers.targets(&id) {
-            particle.modifier = Some((id.into(), base_size));
-        }
-    }
-
-    fn modifier_world(&self) -> horizon_polytone::particles::ParticleWorld {
-        horizon_polytone::particles::ParticleWorld {
-            player: self.camera,
-            time: self.ticks as f64,
-            day_time: self.ticks as f64,
-            render_distance: 12.0,
-            ..Default::default()
-        }
-    }
-
-    fn next_custom_seed(&mut self) -> u64 {
-        self.modifier_seeds = self
-            .modifier_seeds
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        self.modifier_seeds
-    }
-
-    fn particle_state(p: &Particle, value: f64) -> horizon_polytone::particles::ParticleState {
-        horizon_polytone::particles::ParticleState {
-            age: f64::from(p.age),
-            life: f64::from(p.lifetime),
-            position: p.position,
-            motion: p.velocity,
-            size: f64::from(p.size),
-            roll: f64::from(p.roll),
-            rgba: p.rgba.map(f64::from),
-            custom: value,
-            temperature: 0.8,
-            downfall: 0.4,
-            sky_light: 15.0,
-            ..Default::default()
-        }
-    }
-
-    /// A particle of a pack's custom type (`custom_particles/`): a billboard from the sprite set
-    /// `particles/<name>.json` names, or the vanilla particle a `semi_custom` one copies, set up
-    /// by its initializer.
-    fn make_custom(
-        &mut self,
-        o: &ParticleOptions,
-        p: [f64; 3],
-        v: [f64; 3],
-        seed: i64,
-    ) -> Option<Option<Particle>> {
-        use horizon_polytone::particles::{ParticleKind, RenderType};
-        let name = o.mod_particle.as_deref()?;
-        let def = self.custom.get(name)?.clone();
-        let spawn = self.spawn_with.take();
-        let mut particle = match &def.kind {
-            ParticleKind::Custom => {
-                let Some(&set) = self.mod_sets.get(name) else {
-                    return Some(None);
-                };
-                let mut r = LegacyRandom::new(seed);
-                let mut q = Particle::at(&mut r, ParticleType::Smoke, p);
-                q.gravity = 0.0;
-                q.velocity = v;
-                q.set_size(0.1, 0.1);
-                let sprites = &self.set_sprites[set as usize];
-                if def.random_sprite {
-                    q.sprite = Sprite::Index(
-                        sprites[r.next_int_bound(sprites.len() as i32).unwrap_or(0) as usize],
-                    );
-                } else {
-                    q.set = Some(set);
-                    q.sprite = Sprite::Index(sprites[0]);
-                }
-                q
-            }
-            ParticleKind::SemiCustom { copy_from } => {
-                let ty = ParticleType::from_name(copy_from)?;
-                self.make(&ParticleOptions::simple(ty), p, v, seed)?
-            }
-            ParticleKind::Gpu => return Some(None),
-        };
-        particle.has_physics = def.has_physics;
-        particle.no_render = def.render_type == RenderType::Invisible;
-        if def.light_level > 0 {
-            particle.light = Light::MinBlock(def.light_level);
-        }
-        let id: std::sync::Arc<str> = name.into();
-        let mut state = Self::particle_state(&particle, 0.0);
-        let mut named = std::collections::BTreeMap::new();
-        let world = self.modifier_world();
-        let seed = self.next_custom_seed();
-        let set = def.initialize(&mut state, &mut named, &world, self.custom.configs(), seed);
-        if let Some(spawn) = spawn {
-            for (slot, value) in state.rgba.iter_mut().zip(spawn.rgba) {
-                if let Some(value) = value {
-                    *slot = value.clamp(0.0, 1.0);
-                }
-            }
-            state.roll = spawn.roll.unwrap_or(state.roll);
-            state.size = spawn.size.map_or(state.size, |s| s.max(0.0));
-            state.custom = spawn.custom.unwrap_or(state.custom);
-            named.extend(spawn.named);
-        }
-        particle.lifetime = state.life as i32;
-        particle.size = state.size as f32;
-        particle.rgba = state.rgba.map(|c| c as f32);
-        particle.roll = state.roll as f32;
-        particle.o_roll = particle.roll;
-        particle.velocity = state.motion;
-        if let Some(friction) = set.friction {
-            particle.friction = friction as f32;
-        }
-        if let Some(hitbox) = set.hitbox {
-            particle.set_size(hitbox as f32, hitbox as f32);
-        }
-        particle.custom = Some(Box::new(CustomRuntime {
-            def,
-            id,
-            value: state.custom,
-            named,
-            seed,
-            before: particle.velocity,
-        }));
-        Some(Some(particle))
-    }
-
-    /// `CustomParticleInstance.tick`'s part after the base tick: the ticker (every
-    /// `tick_interval` ticks), the kill conditions and the particle's own emitters.
-    fn tick_custom(&mut self, p: &mut Particle, level: Option<&ParticleLevel>) {
-        let Some(mut custom) = p.custom.take() else {
-            return;
-        };
-        let def = custom.def.clone();
-        let tick_time = p.age.max(0) as u32 % def.tick_interval == 0;
-        let world = self.modifier_world();
-        if tick_time {
-            custom.seed = custom.seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
-            let mut state = Self::particle_state(p, custom.value);
-            let remove = def.tick(
-                &mut state,
-                &mut custom.named,
-                &world,
-                self.custom.configs(),
-                custom.seed,
-            );
-            if state.position != p.position {
-                p.set_pos(state.position);
-            }
-            p.velocity = state.motion;
-            p.size = state.size as f32;
-            p.rgba = state.rgba.map(|c| c as f32);
-            p.roll = state.roll as f32;
-            custom.value = state.custom;
-            p.removed |= remove;
-        }
-        if p.age > 1 && def.kill_when_still && p.position == p.previous {
-            p.removed = true;
-        }
-        if def.kill_on_contact && p.age > 1 {
-            let expected: f64 = (0..3)
-                .map(|i| (p.previous[i] + custom.before[i] - p.position[i]).powi(2))
-                .sum();
-            if expected > 0.000_001 {
-                p.removed = true;
-                p.velocity = [0.0; 3];
-            }
-        }
-        if let Some(level) = level
-            && def.liquid_affinity != horizon_polytone::particles::LiquidAffinity::Any
-        {
-            let at = ParticleLevel::block_at(p.position);
-            if level.world.loaded(at[0], at[2]) {
-                let wet = level.facts.get(level.world.block(at[0], at[1], at[2])).fluid
-                    != Fluid::None;
-                let wants_liquid = def.liquid_affinity
-                    == horizon_polytone::particles::LiquidAffinity::Liquids;
-                if wants_liquid != wet {
-                    p.removed = true;
-                }
-            }
-        }
-        if !p.removed && tick_time && !def.emitters.is_empty() {
-            let state = Self::particle_state(p, custom.value);
-            let mut spawns = Vec::new();
-            for emitter in &def.emitters {
-                custom.seed = custom.seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
-                spawns.extend(emitter.emit(
-                    p.position,
-                    &state,
-                    &world,
-                    self.custom.configs(),
-                    custom.seed,
-                ));
-            }
-            for spawn in spawns {
-                self.spawn(spawn);
-            }
-        }
-        p.custom = Some(custom);
-    }
-
-    /// Makes the particle an emitter asked for: a vanilla type by name, or a pack's own.
-    pub fn spawn(&mut self, spawn: horizon_polytone::particles::Spawn) {
-        let id = spawn.particle.id();
-        let options = match ParticleType::from_name(&id)
-            .filter(|_| id.starts_with("minecraft:"))
-        {
-            Some(ty) => ParticleOptions::simple(ty),
-            None => ParticleOptions::named(id),
-        };
-        let (at, motion) = (spawn.position, spawn.motion);
-        self.spawn_with = Some(spawn);
-        self.add_with(&options, at, motion, false, true);
-        self.spawn_with = None;
-    }
-
-    pub fn has_block_emitters(&self) -> bool {
-        self.custom.has_block_emitters()
-    }
-
-    /// The pack's particle emitters of a block at `pos` (`animate_tick` ones): `block` is its
-    /// `namespace:path`, `property` reads a property of its state.
-    pub fn emit_block(
-        &mut self,
-        block: &str,
-        property: &dyn Fn(&str) -> Option<String>,
-        pos: [i32; 3],
-    ) {
-        use horizon_polytone::particles::{ParticleState, rule_test};
-        let centre = [
-            f64::from(pos[0]) + 0.5,
-            f64::from(pos[1]) + 0.5,
-            f64::from(pos[2]) + 0.5,
-        ];
-        let state = ParticleState {
-            position: centre,
-            temperature: 0.8,
-            downfall: 0.4,
-            sky_light: 15.0,
-            ..Default::default()
-        };
-        let world = self.modifier_world();
-        let mut spawns = Vec::new();
-        let mut emitters = Vec::new();
-        for emitter in self.custom.block_emitters(block) {
-            let source = emitter.tick_source.as_deref().unwrap_or("animate_tick");
-            if source == "animate_tick" {
-                emitters.push(emitter);
-            }
-        }
-        for emitter in emitters {
-            self.modifier_seeds = self
-                .modifier_seeds
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            let roll = ((self.modifier_seeds >> 11) as f64) / (1u64 << 53) as f64;
-            if !rule_test(emitter.state_predicate.as_ref(), block, property, roll) {
-                continue;
-            }
-            let origin = match emitter.spawn_location.as_deref() {
-                Some("lower_corner") => [
-                    f64::from(pos[0]),
-                    f64::from(pos[1]),
-                    f64::from(pos[2]),
-                ],
-                _ => centre,
-            };
-            spawns.extend(emitter.emit(
-                origin,
-                &state,
-                &world,
-                self.custom.configs(),
-                self.modifier_seeds,
-            ));
-        }
-        for spawn in spawns {
-            self.spawn(spawn);
-        }
-    }
-
-    fn retick_modifier(&mut self, particle: &mut Particle) {
-        let Some((id, base_size)) = particle.modifier.clone() else {
-            return;
-        };
-        let mut state = horizon_polytone::particles::ParticleState {
-            age: f64::from(particle.age),
-            life: f64::from(particle.lifetime),
-            position: particle.position,
-            motion: particle.velocity,
-            size: f64::from(base_size),
-            roll: f64::from(particle.roll),
-            rgba: particle.rgba.map(f64::from),
-            temperature: 0.8,
-            downfall: 0.4,
-            sky_light: 15.0,
-            ..Default::default()
-        };
-        let world = horizon_polytone::particles::ParticleWorld {
-            player: self.camera,
-            time: self.ticks as f64,
-            day_time: self.ticks as f64,
-            render_distance: 12.0,
-            ..Default::default()
-        };
-        self.modifiers.apply_phase(
-            &id,
-            &mut state,
-            &world,
-            self.modifier_seeds,
-            horizon_polytone::particles::Phase::Tick,
-        );
-        particle.size = state.size as f32;
-        particle.rgba = state.rgba.map(|c| c as f32);
     }
     /// The sprite sets of every `particles/*.json` under `root`: vanilla's own
     /// and a native mod's (`assets/<namespace>/particles/<name>.json`).
@@ -2103,8 +1709,7 @@ impl ParticleEngine {
             return;
         }
         let seed = self.seeds.next_long();
-        if let Some(mut particle) = self.make(options, p, v, seed) {
-            self.apply_modifiers(options, &mut particle);
+        if let Some(particle) = self.make(options, p, v, seed) {
             *self.made.entry(options.ty.name()).or_default() += 1;
             // The provider has drawn, so rejecting here keeps vanilla's RNG order.
             // shortcut: counts live plus queued particles by scanning instead of
@@ -2248,9 +1853,6 @@ impl ParticleEngine {
     ) -> Option<Particle> {
         use ParticleType as T;
         let ty = o.ty;
-        if let Some(made) = self.make_custom(o, p, v, seed) {
-            return made;
-        }
         // A native mod's SimpleParticleType: vanilla's TextureSheetParticle with
         // the sprite set its particles/<name>.json names, no tint, 20..40 ticks.
         if let Some(name) = &o.mod_particle {
@@ -3862,7 +3464,6 @@ impl ParticleEngine {
         }
     }
     pub fn tick(&mut self, level: &ParticleLevel) {
-        self.ticks += 1;
         self.tick_starters();
         self.tick_explosions(level);
         for (options, feet, width, height, life) in std::mem::take(&mut self.emitters) {
@@ -3873,16 +3474,7 @@ impl ParticleEngine {
         }
         let mut particles = std::mem::take(&mut self.particles);
         for p in &mut particles {
-            if let Some(custom) = p.custom.as_mut() {
-                custom.before = p.velocity;
-            }
             self.tick_particle(p, level);
-            if p.modifier.is_some() && !p.removed {
-                self.retick_modifier(p);
-            }
-            if p.custom.is_some() && !p.removed {
-                self.tick_custom(p, Some(level));
-            }
         }
         particles.retain(|p| !p.removed);
         self.particles = particles;
@@ -5114,88 +4706,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    fn custom_pack(name: &str) -> (std::path::PathBuf, ParticleEngine) {
-        let dir = std::env::temp_dir().join(format!("horizon-custom-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        for sub in ["particles", "polytone/custom_particles", "polytone/block_modifiers"] {
-            std::fs::create_dir_all(dir.join("assets/foo").join(sub)).unwrap();
-        }
-        std::fs::write(
-            dir.join("assets/foo/particles/spark.json"),
-            br#"{"textures":["foo:spark/1"]}"#,
-        )
-        .unwrap();
-        let engine = ParticleEngine::new(&dir, &HashMap::new(), &HashSet::new());
-        (dir, engine)
-    }
-
-    #[test]
-    fn a_pack_custom_particle_is_set_up_by_its_initializer_and_moved_by_its_ticker() {
-        let (dir, _) = custom_pack("type");
-        std::fs::write(
-            dir.join("assets/foo/polytone/custom_particles/spark.json"),
-            br#"{"initializer": {"size": 0.5, "lifetime": 33, "red": 0.5, "customs": {"Phase": 4}},
-                 "ticker": {"y": "o.y + o.custom('phase')", "remove_condition": "o.age > 3"},
-                 "light_level": 7}"#,
-        )
-        .unwrap();
-        let mut engine = ParticleEngine::new(&dir, &HashMap::new(), &HashSet::new());
-        let mut made = engine
-            .make(&ParticleOptions::named("foo:spark"), [1.0, 2.0, 3.0], [0.0; 3], 5)
-            .expect("the custom particle is made");
-        assert_eq!((made.lifetime, made.size, made.rgba[0]), (33, 0.5, 0.5));
-        assert_eq!(made.light, Light::MinBlock(7));
-        engine.tick_custom(&mut made, None);
-        assert_eq!(made.position[1], 6.0);
-        assert!(!made.removed);
-        made.age = 4;
-        engine.tick_custom(&mut made, None);
-        assert!(made.removed);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_block_emitter_spawns_the_packs_particle_at_the_block() {
-        let (dir, _) = custom_pack("emitter");
-        std::fs::write(
-            dir.join("assets/foo/polytone/custom_particles/spark.json"),
-            br#"{"initializer": {"lifetime": 12}}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join("assets/foo/polytone/block_modifiers/torch.json"),
-            br#"{"targets": "minecraft:torch", "particle_emitters": [
-                {"particle": "foo:spark", "count": 2, "x": 0, "y": 0.25, "z": 0, "red": 0.75,
-                 "state_predicate": {"predicate_type": "minecraft:block_match", "block": "minecraft:torch"}}]}"#,
-        )
-        .unwrap();
-        let mut engine = ParticleEngine::new(&dir, &HashMap::new(), &HashSet::new());
-        assert!(engine.has_block_emitters());
-        engine.requested = Some(Vec::new());
-        engine.emit_block("minecraft:torch", &|_| None, [4, 70, -2]);
-        engine.emit_block("minecraft:stone", &|_| None, [4, 70, -2]);
-        let asked = engine.requested.take().unwrap();
-        assert_eq!(asked.len(), 2);
-        for (options, at, _) in &asked {
-            assert_eq!(options.mod_particle.as_deref(), Some("foo:spark"));
-            assert_eq!(*at, [4.5, 70.75, -1.5]);
-        }
-        engine.spawn_with = None;
-        engine.spawn(horizon_polytone::particles::Spawn {
-            particle: horizon_polytone::particles::ParticleRef::Id("foo:spark".into()),
-            position: [0.0; 3],
-            motion: [0.0; 3],
-            rgba: [Some(0.75), None, None, None],
-            roll: None,
-            size: None,
-            custom: None,
-            named: Default::default(),
-        });
-        let made = engine.pending.pop().expect("a particle is queued");
-        assert_eq!((made.lifetime, made.rgba[0]), (12, 0.75));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
     #[test]
     fn mod_behaviour_validates_declarations() {
         use serde_json::json;
@@ -5644,72 +5154,6 @@ mod tests {
         });
         assert_eq!(tall.len(), 64);
         assert!(tall.iter().all(|p| p[1] < 1.0));
-    }
-    #[test]
-    fn a_pack_particle_modifier_changes_only_the_particles_it_targets() {
-        let dir =
-            std::env::temp_dir().join(format!("horizon-particle-mods-{}", std::process::id()));
-        let modifiers = dir.join("assets/minecraft/polytone/particle_modifiers");
-        std::fs::create_dir_all(&modifiers).unwrap();
-        std::fs::write(
-            modifiers.join("smoke.json"),
-            br#"{"targets": "minecraft:smoke", "color": "0x00FF00", "alpha": 0.5, "life": 77}"#,
-        )
-        .unwrap();
-        let mut engine = ParticleEngine::new(&dir, &HashMap::new(), &HashSet::new());
-        engine.create(
-            &ParticleOptions::simple(ParticleType::Smoke),
-            [0.0; 3],
-            [0.0; 3],
-        );
-        engine.create(
-            &ParticleOptions::simple(ParticleType::Flame),
-            [0.0; 3],
-            [0.0; 3],
-        );
-        let smoke = engine
-            .pending
-            .iter()
-            .find(|p| p.ty == ParticleType::Smoke)
-            .unwrap();
-        let flame = engine
-            .pending
-            .iter()
-            .find(|p| p.ty == ParticleType::Flame)
-            .unwrap();
-        assert_eq!(smoke.lifetime, 77);
-        assert_eq!(smoke.rgba, [0.0, 1.0, 0.0, 0.5]);
-        assert_ne!(flame.lifetime, 77);
-        assert_ne!(flame.rgba, [0.0, 1.0, 0.0, 0.5]);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-    #[test]
-    fn a_pack_particle_modifier_fades_a_particle_as_it_ages() {
-        let dir =
-            std::env::temp_dir().join(format!("horizon-particle-fade-{}", std::process::id()));
-        let modifiers = dir.join("assets/minecraft/polytone/particle_modifiers");
-        std::fs::create_dir_all(&modifiers).unwrap();
-        std::fs::write(
-            modifiers.join("smoke.json"),
-            br#"{"targets": "minecraft:smoke", "alpha": "1 - o.age / o.life", "life": 40}"#,
-        )
-        .unwrap();
-        let mut engine = ParticleEngine::new(&dir, &HashMap::new(), &HashSet::new());
-        engine.create(
-            &ParticleOptions::simple(ParticleType::Smoke),
-            [0.0; 3],
-            [0.0; 3],
-        );
-        let mut smoke = engine.pending.pop().unwrap();
-        assert_eq!(smoke.lifetime, 40);
-        smoke.age = 10;
-        engine.retick_modifier(&mut smoke);
-        assert!((smoke.rgba[3] - 0.75).abs() < 1e-6, "{:?}", smoke.rgba);
-        smoke.age = 30;
-        engine.retick_modifier(&mut smoke);
-        assert!((smoke.rgba[3] - 0.25).abs() < 1e-6, "{:?}", smoke.rgba);
-        assert_eq!(smoke.lifetime, 40);
-        let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]
     fn spore_blossom_air_stops_at_its_particle_limit() {

@@ -246,6 +246,9 @@ impl GpuTimer {
         if device.poll(wgpu::PollType::Poll).is_err() {
             return;
         }
+        self.collect_ready(out);
+    }
+    pub(super) fn collect_ready(&mut self, out: &mut Vec<f32>) {
         for i in 0..SLOTS {
             let slot = &self.slots[(self.next + i) % SLOTS];
             if slot.state.load(Ordering::Acquire) != MAPPED {
