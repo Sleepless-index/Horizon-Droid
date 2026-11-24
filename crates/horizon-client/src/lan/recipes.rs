@@ -101,7 +101,7 @@ pub(super) fn network_recipes(
     // sets — agrees on the swapped recipe.
     let filters = horizon_items::recipe_filters::RecipeFilters::load(resources, overlay);
     all.retain(|id, r| filters.apply(id, r));
-    match horizon_client::items::Items::catalog(resources, overlay) {
+    match crate::items::Items::catalog(resources, overlay) {
         Ok(items) => all.retain(|_, r| normalize_ingredients(r, &items)),
         Err(e) => log::warn!("recipes: NeoForge's ingredient shapes stay unresolved: {e}"),
     }
@@ -127,15 +127,15 @@ pub(super) fn network_recipes(
 /// An ingredient object's flat item list: the shape NeoForge's standard
 /// kinds resolve to, or a brewing predicate's `item`. `None`: the object is
 /// a kind the loader does not know, a mod's own.
-fn flat(ing: &Value, items: &horizon_client::items::Items) -> Option<Value> {
+fn flat(ing: &Value, items: &crate::items::Items) -> Option<Value> {
     if !ing.is_object() {
         return None;
     }
-    let parsed = horizon_client::crafting::Ingredient::parse(ing, items).or_else(|| {
+    let parsed = crate::crafting::Ingredient::parse(ing, items).or_else(|| {
         // A brewing slot's item predicate: its `ingredient`, as the
         // property sets have always read it.
         ing.get("item")
-            .and_then(|v| horizon_client::crafting::Ingredient::parse(v, items))
+            .and_then(|v| crate::crafting::Ingredient::parse(v, items))
     })?;
     Some(Value::Array(
         parsed
@@ -149,7 +149,7 @@ fn flat(ing: &Value, items: &horizon_client::items::Items) -> Option<Value> {
 /// Replace each of a recipe's ingredient objects with its flat item list,
 /// so `holder_set` writes the items instead of an empty list. `false`: the
 /// recipe keeps an object the loader cannot parse.
-fn normalize_ingredients(r: &mut Value, items: &horizon_client::items::Items) -> bool {
+fn normalize_ingredients(r: &mut Value, items: &crate::items::Items) -> bool {
     let known = r["type"]
         .as_str()
         .is_some_and(|t| t.starts_with("minecraft:"));

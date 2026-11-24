@@ -704,14 +704,3 @@ mod tests {
         assert_eq!(SceneSound::BigFall.block_sound(), None);
     }
 }
-
-#[inline(never)]
-pub fn native_living_fall(
-    entity: u32,
-    kind: &str,
-    distance: &mut f64,
-    multiplier: &mut f32,
-    cancel: &mut bool,
-) {
-    crate::native_client_hooks::living_fall(entity, kind, distance, multiplier, cancel);
-}

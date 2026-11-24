@@ -357,14 +357,24 @@ pub struct Anvil {
     pub only_renaming: bool,
 }
 
-/// The inputs and result of an anvil craft (`AnvilCraftEvent.Pre` / `.Post`).
-#[derive(Clone, Default, Debug, PartialEq)]
+/// An anvil craft as `AnvilCraftEvent` reports it: the inputs and the result
+/// taken, before the crafting changed anything.
+#[derive(Clone, Debug, PartialEq)]
 pub struct AnvilCraft {
     pub left: Option<ItemStack>,
     pub right: Option<ItemStack>,
     pub output: ItemStack,
-    pub cost: i32,
-    pub repair_count: u32,
+}
+
+/// An anvil menu before a click, for `Menu::anvil_cancel`: the anvil's three
+/// slots and cost, the player's slots and the cursor.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnvilUndo {
+    inputs: Vec<Option<ItemStack>>,
+    result: Option<ItemStack>,
+    cost: i32,
+    player: Vec<Option<ItemStack>>,
+    carried: Option<ItemStack>,
 }
 
 /// `StonecutterMenu`'s state besides its slots and `selectedRecipeIndex`.
@@ -3850,15 +3860,4 @@ pub(crate) mod tests {
             assert_eq!(&*in_hand.item, "minecraft:potion");
         });
     }
-}
-
-#[inline(always)]
-pub fn native_menu_slot_rules(
-    menu: &str,
-    slot: usize,
-    stack: &ItemStack,
-    may_place: &mut bool,
-    max_stack: &mut u32,
-) {
-    crate::native_client_hooks::menu_slot_rules(menu, slot, stack, may_place, max_stack);
 }

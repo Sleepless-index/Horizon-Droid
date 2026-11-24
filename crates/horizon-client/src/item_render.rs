@@ -628,6 +628,9 @@ pub struct ItemRenderer {
     grass: Vec<i32>,
     /// `minecraft:item` registry ids (`Item.getId`).
     item_ids: HashMap<String, i32>,
+    /// The enabled packs' OptiFine CIT rules and their swapped bakes; `None`
+    /// without rules.
+    pub cit: Option<cit::CitModels>,
     polytone: Option<horizon_polytone::item_tints::ItemTints>,
     removed_tooltip_texts: Mutex<HashMap<(String, String), Arc<Vec<String>>>>,
 }
@@ -680,6 +683,23 @@ impl ItemRenderer {
     pub fn load_with_library(
         root: &Path,
         library: std::result::Result<Arc<ModelLibrary>, String>,
+    ) -> crate::Result<Self> {
+        Self::load_tables(root, library, true)
+    }
+    /// What a dedicated server reads: the item prototypes (the stacks'
+    /// default components) and ids, without the client item definitions,
+    /// the special renderers' entity models and the grass colormap, which
+    /// only drawing reads (1.4 MB and ~1,500 files).
+    pub fn load_for_server(
+        root: &Path,
+        library: std::result::Result<Arc<ModelLibrary>, String>,
+    ) -> crate::Result<Self> {
+        Self::load_tables(root, library, false)
+    }
+    fn load_tables(
+        root: &Path,
+        library: std::result::Result<Arc<ModelLibrary>, String>,
+        drawn: bool,
     ) -> crate::Result<Self> {
         let prototypes: BTreeMap<String, Components> = horizon_world::item_defaults::read(root)?
             .into_iter()

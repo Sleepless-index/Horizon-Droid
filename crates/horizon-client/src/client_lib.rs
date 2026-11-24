@@ -100,7 +100,6 @@ pub mod mobs;
 pub mod mod_content;
 pub mod mod_registry;
 pub mod native_client_hooks;
-pub use horizon_world::json_folder;
 pub mod motion;
 pub mod moved_extras;
 pub mod multiplayer;
